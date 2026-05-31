@@ -1,0 +1,19 @@
+# Caddy reverse proxy for the RMG Creator OS control server.
+# Auto-TLS via Let's Encrypt. Set the ACME email below.
+{
+	email admin@rmasters.group
+}
+
+rmg-creator-os.rmasters.group {
+	encode zstd gzip
+
+	# Gateway / orchestrator API
+	handle_path /api/* {
+		reverse_proxy gateway:8080
+	}
+
+	# Dashboard (everything else)
+	handle {
+		reverse_proxy dashboard:80
+	}
+}

@@ -1,0 +1,15 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.client_secret.json
+client_secret*.json
+credentials*.json
+
+# Node
+node_modules/
+dist/
+*.log
+
+# OS
+.DS_Store
