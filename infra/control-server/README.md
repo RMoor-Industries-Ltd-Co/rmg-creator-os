@@ -47,9 +47,40 @@ Added to `docker-compose.yml` as each service is built (gateway, dashboard,
 story-director, social-manager, allen, allie, my-poster). Each gets
 `DATABASE_URL` + `REDIS_URL` and `depends_on` db+redis.
 
+## 7. Backups — pg_dump → Google Drive (rclone)
+Daily `pg_dump`, gzipped, uploaded to Google Drive with 30-day retention via
+`backup-db.sh` (in this directory).
+
+One-time setup on the server:
+
+    # 1. Install rclone
+    curl -fsSL https://rclone.org/install.sh | bash
+    # 2. Authorize Drive. On a machine WITH a browser (e.g. your Mac):
+    #      rclone authorize "drive" <CLIENT_ID> <CLIENT_SECRET>
+    #    Complete the Google consent, then build /root/.config/rclone/rclone.conf:
+    #      [gdrive]
+    #      type = drive
+    #      client_id = <CLIENT_ID>
+    #      client_secret = <CLIENT_SECRET>
+    #      scope = drive
+    #      token = <TOKEN_JSON>
+    #    chmod 600 /root/.config/rclone/rclone.conf   # token is secret; never commit
+    # 3. Folder + script + cron:
+    rclone mkdir gdrive:rmg-backups
+    install -m755 backup-db.sh /opt/rmg-creator-os/backup-db.sh
+    echo '30 3 * * * /opt/rmg-creator-os/backup-db.sh >> /var/log/rmg-db-backup.log 2>&1' | crontab -
+
+Restore a dump:
+
+    rclone copy gdrive:rmg-backups/<file>.sql.gz /tmp/
+    gunzip -c /tmp/<file>.sql.gz | docker compose exec -T db psql -U rmgcreator rmgcreator
+
+> The OAuth token in `rclone.conf` is a live credential — it stays on the server
+> only and is never committed. `backup-db.sh` itself is version-controlled here.
+
 ## Security checklist
-- [ ] Postgres/Redis bound to the Tailscale IP only (never `0.0.0.0`)
-- [ ] Strong, unique POSTGRES_PASSWORD and REDIS_PASSWORD
-- [ ] Host firewall: allow 80/443 public; 5432/6379 only on the tailnet
-- [ ] `.env` is gitignored and present only on the server
-- [ ] Regular `pg_dump` backups of the `pgdata` volume
+- [x] Postgres/Redis bound to the Tailscale IP only (never `0.0.0.0`)
+- [x] Strong, unique POSTGRES_PASSWORD and REDIS_PASSWORD
+- [x] Host firewall: allow 80/443 public; 5432/6379 only on the tailnet
+- [x] `.env` is gitignored and present only on the server
+- [x] Daily `pg_dump` → Google Drive backups (30-day retention)
