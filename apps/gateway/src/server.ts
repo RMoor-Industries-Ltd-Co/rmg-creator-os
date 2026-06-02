@@ -3,6 +3,7 @@
 
 import cors from '@fastify/cors';
 import { createDb, runMigrations, tables } from '@rmg-creator-os/db';
+import { createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
@@ -11,9 +12,11 @@ const PORT = Number(process.env.PORT ?? 8080);
 const HOST = process.env.HOST ?? '0.0.0.0';
 const DATABASE_URL = process.env.DATABASE_URL ?? '';
 const REDIS_URL = process.env.REDIS_URL ?? '';
+const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
 
 const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
+const heygen = HEYGEN_API_KEY ? createHeyGenClient(HEYGEN_API_KEY) : null;
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
@@ -65,6 +68,69 @@ app.post<{ Body: { recipeId?: string; brand?: string; input?: JobInput } }>(
     return reply.code(201).send(job);
   }
 );
+
+// --- HeyGen (avatar video) -------------------------------------------------
+// Returns 503 until HEYGEN_API_KEY is configured on the server.
+function withHeyGen(reply: import('fastify').FastifyReply) {
+  if (!heygen) {
+    reply.code(503).send({ error: 'HeyGen not configured (set HEYGEN_API_KEY)' });
+    return null;
+  }
+  return heygen;
+}
+
+async function heygenHandler<T>(reply: import('fastify').FastifyReply, fn: () => Promise<T>) {
+  try {
+    return await fn();
+  } catch (err) {
+    if (err instanceof HeyGenError) {
+      return reply.code(err.status && err.status >= 400 ? err.status : 502).send({
+        error: err.message,
+        details: err.body
+      });
+    }
+    throw err;
+  }
+}
+
+app.get('/heygen/avatars', async (_request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  return heygenHandler(reply, () => client.listAvatars());
+});
+
+app.get('/heygen/voices', async (_request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  return heygenHandler(reply, () => client.listVoices());
+});
+
+app.post<{
+  Body: {
+    avatarId?: string;
+    voiceId?: string;
+    text?: string;
+    avatarStyle?: string;
+    dimension?: { width: number; height: number };
+    title?: string;
+  };
+}>('/heygen/videos', async (request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  const { avatarId, voiceId, text, avatarStyle, dimension, title } = request.body ?? {};
+  if (!avatarId || !voiceId || !text) {
+    return reply.code(400).send({ error: 'avatarId, voiceId, and text are required' });
+  }
+  return heygenHandler(reply, () =>
+    client.generateVideo({ avatarId, voiceId, inputText: text, avatarStyle, dimension, title })
+  );
+});
+
+app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  return heygenHandler(reply, () => client.getVideoStatus(request.params.id));
+});
 
 try {
   await app.listen({ port: PORT, host: HOST });

@@ -47,6 +47,9 @@ importers:
       '@rmg-creator-os/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@rmg-creator-os/integrations':
+        specifier: workspace:*
+        version: link:../../packages/integrations
       '@rmg-creator-os/types':
         specifier: workspace:*
         version: link:../../packages/types
@@ -85,6 +88,15 @@ importers:
       drizzle-kit:
         specifier: ^0.31.1
         version: 0.31.10
+      typescript:
+        specifier: ^5.0.0
+        version: 5.9.3
+
+  packages/integrations:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.19
       typescript:
         specifier: ^5.0.0
         version: 5.9.3

@@ -6,6 +6,7 @@ RUN corepack enable
 COPY . .
 RUN pnpm install --frozen-lockfile
 RUN pnpm --filter @rmg-creator-os/types build \
+ && pnpm --filter @rmg-creator-os/integrations build \
  && pnpm --filter @rmg-creator-os/db build \
  && pnpm --filter @rmg-creator-os/gateway build
 

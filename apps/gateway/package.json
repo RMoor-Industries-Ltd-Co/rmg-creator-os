@@ -12,6 +12,7 @@
   "dependencies": {
     "@fastify/cors": "^10.0.1",
     "@rmg-creator-os/db": "workspace:*",
+    "@rmg-creator-os/integrations": "workspace:*",
     "@rmg-creator-os/types": "workspace:*",
     "fastify": "^5.0.0",
     "ioredis": "^5.4.1"
