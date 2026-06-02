@@ -9,5 +9,10 @@
     "build": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present build",
     "typecheck": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint"
+  },
+  "pnpm": {
+    "overrides": {
+      "esbuild": ">=0.25.0"
+    }
   }
 }
