@@ -90,9 +90,10 @@ Required repo secrets (Settings → Secrets and variables → Actions):
 |---|---|
 | `CONTROL_HOST` | `45.33.96.135` (control server public IP) |
 | `CONTROL_USER` | `root` |
-| `CONTROL_SSH_KEY` | private key whose public half is in the server's `authorized_keys` |
-| `GHCR_USERNAME` | GitHub username/org (e.g. `PIAAR`) |
-| `GHCR_TOKEN` | a PAT with `read:packages` (server pulls private images) |
+| `CONTROL_SSH_KEY` | a dedicated CI deploy key (private half); its public half is in the server's `authorized_keys` |
+
+The server pulls private GHCR images using the workflow's built-in `GITHUB_TOKEN`
+(deploy job has `packages: read`) — no extra PAT needed.
 
 `deploy.yml` uses a `control` Environment — optionally add protection rules there.
 Manual deploy: run the **Deploy** workflow via *workflow_dispatch* with an image tag.

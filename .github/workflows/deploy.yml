@@ -25,6 +25,9 @@ jobs:
        github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment: control
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -68,6 +71,6 @@ jobs:
             DEPLOY_DIR="/opt/rmg-creator-os/control-server" \
             GHCR_IMAGE_PREFIX="${{ steps.vars.outputs.prefix }}" \
             IMAGE_TAG="${{ steps.vars.outputs.tag }}" \
-            GHCR_USERNAME="${{ secrets.GHCR_USERNAME }}" \
-            GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}" \
+            GHCR_USERNAME="${{ github.actor }}" \
+            GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
             bash deploy.sh
