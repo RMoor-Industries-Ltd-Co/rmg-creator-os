@@ -19,8 +19,9 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    # No depends_on yet: gateway/dashboard are added when built. Caddy resolves
-    # upstreams per-request (502s until they exist) — expected during foundation.
+    depends_on:
+      - gateway
+      - dashboard
 
   db:
     image: postgres:16-alpine
@@ -55,25 +56,29 @@ services:
       timeout: 5s
       retries: 5
 
-  # --- Application services (added as built) -------------------------------
-  # gateway:
-  #   image: ghcr.io/piaar/rmg-creator-os/gateway:${IMAGE_TAG}
-  #   restart: unless-stopped
-  #   environment:
-  #     DATABASE_URL: postgres://rmgcreator:${POSTGRES_PASSWORD}@db:5432/rmgcreator
-  #     REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
-  #   depends_on:
-  #     db: { condition: service_healthy }
-  #     redis: { condition: service_healthy }
-  #
-  # dashboard:
-  #   image: ghcr.io/piaar/rmg-creator-os/dashboard:${IMAGE_TAG}
-  #   restart: unless-stopped
-  #   depends_on: [gateway]
-  #
+  gateway:
+    image: ${GHCR_IMAGE_PREFIX}/gateway:${IMAGE_TAG}
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      DATABASE_URL: postgres://rmgcreator:${POSTGRES_PASSWORD}@db:5432/rmgcreator
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    image: ${GHCR_IMAGE_PREFIX}/dashboard:${IMAGE_TAG}
+    restart: unless-stopped
+    depends_on:
+      - gateway
+
+  # --- Future services (added as built) ------------------------------------
   # story-director / social-manager / allen / allie / my-poster:
-  #   ... same pattern; DATABASE_URL + REDIS_URL, depends_on db+redis.
-  #
+  #   image: ${GHCR_IMAGE_PREFIX}/<service>:${IMAGE_TAG}
+  #   DATABASE_URL + REDIS_URL, depends_on db+redis (same pattern as gateway).
   # life-os (Python): its own image; dashboard links to its Fillout form.
 
 volumes:

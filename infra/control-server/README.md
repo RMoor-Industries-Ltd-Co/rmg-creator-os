@@ -78,6 +78,25 @@ Restore a dump:
 > The OAuth token in `rclone.conf` is a live credential — it stays on the server
 > only and is never committed. `backup-db.sh` itself is version-controlled here.
 
+## 8. CI/CD (GitHub Actions)
+Push to `main` → **CI** (typecheck + build) → **Publish Images** (build & push
+`gateway` + `dashboard` to GHCR) → **Deploy** (scp compose/Caddyfile/deploy.sh to
+the control server, `docker login`, pull, `compose up -d`). The gateway applies
+DB migrations on startup, so each deploy self-migrates.
+
+Required repo secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `CONTROL_HOST` | `45.33.96.135` (control server public IP) |
+| `CONTROL_USER` | `root` |
+| `CONTROL_SSH_KEY` | private key whose public half is in the server's `authorized_keys` |
+| `GHCR_USERNAME` | GitHub username/org (e.g. `PIAAR`) |
+| `GHCR_TOKEN` | a PAT with `read:packages` (server pulls private images) |
+
+`deploy.yml` uses a `control` Environment — optionally add protection rules there.
+Manual deploy: run the **Deploy** workflow via *workflow_dispatch* with an image tag.
+
 ## Security checklist
 - [x] Postgres/Redis bound to the Tailscale IP only (never `0.0.0.0`)
 - [x] Strong, unique POSTGRES_PASSWORD and REDIS_PASSWORD

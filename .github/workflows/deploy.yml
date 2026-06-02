@@ -1,0 +1,73 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (default: latest)"
+        required: false
+        default: "latest"
+  workflow_run:
+    workflows: ["Publish Images"]
+    types:
+      - completed
+
+concurrency:
+  group: deploy-control
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    environment: control
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set deploy vars
+        id: vars
+        shell: bash
+        run: |
+          OWNER_LC="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            FULL_SHA="${{ github.event.workflow_run.head_sha }}"
+            TAG="${FULL_SHA:0:7}"
+          else
+            TAG="${{ github.event.inputs.image_tag }}"
+            [ -z "$TAG" ] && TAG="latest"
+          fi
+          echo "prefix=ghcr.io/$OWNER_LC/rmg-creator-os" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Copy compose, Caddyfile, and deploy script to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.CONTROL_HOST }}
+          username: ${{ secrets.CONTROL_USER }}
+          key: ${{ secrets.CONTROL_SSH_KEY }}
+          source: "infra/control-server/docker-compose.yml,infra/control-server/Caddyfile,infra/control-server/deploy.sh"
+          target: /opt/rmg-creator-os/control-server
+          strip_components: 2
+
+      - name: Run remote deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CONTROL_HOST }}
+          username: ${{ secrets.CONTROL_USER }}
+          key: ${{ secrets.CONTROL_SSH_KEY }}
+          script: |
+            cd /opt/rmg-creator-os/control-server
+            chmod +x deploy.sh
+            DEPLOY_DIR="/opt/rmg-creator-os/control-server" \
+            GHCR_IMAGE_PREFIX="${{ steps.vars.outputs.prefix }}" \
+            IMAGE_TAG="${{ steps.vars.outputs.tag }}" \
+            GHCR_USERNAME="${{ secrets.GHCR_USERNAME }}" \
+            GHCR_TOKEN="${{ secrets.GHCR_TOKEN }}" \
+            bash deploy.sh

@@ -2,7 +2,7 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
-import { createDb, tables } from '@rmg-creator-os/db';
+import { createDb, runMigrations, tables } from '@rmg-creator-os/db';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
@@ -17,6 +17,17 @@ const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
+
+// Apply pending DB migrations on startup (idempotent). Disable with RUN_MIGRATIONS=false.
+if (process.env.RUN_MIGRATIONS !== 'false') {
+  try {
+    await runMigrations(DATABASE_URL);
+    app.log.info('migrations applied');
+  } catch (err) {
+    app.log.error({ err }, 'migration failed');
+    process.exit(1);
+  }
+}
 
 app.get('/health', async (): Promise<HealthResponse> => {
   const checks: Record<string, 'ok' | 'fail'> = {};
