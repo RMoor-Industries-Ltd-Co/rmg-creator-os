@@ -1,0 +1,13 @@
+{
+  "name": "rmg-creator-os",
+  "private": true,
+  "packageManager": "pnpm@10.22.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel --if-present dev",
+    "dev:gateway": "pnpm --filter @rmg-creator-os/gateway dev",
+    "dev:dashboard": "pnpm --filter @rmg-creator-os/dashboard dev",
+    "build": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present build",
+    "typecheck": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present typecheck",
+    "lint": "pnpm -r --if-present lint"
+  }
+}
