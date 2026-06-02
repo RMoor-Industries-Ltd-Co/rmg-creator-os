@@ -8,6 +8,13 @@
       "when": 1780357567169,
       "tag": "0000_awesome_young_avengers",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1780443499882,
+      "tag": "0001_easy_gargoyle",
+      "breakpoints": true
     }
   ]
 }

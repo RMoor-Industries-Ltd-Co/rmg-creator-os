@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
+import { Studio } from './Studio';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
@@ -18,6 +19,7 @@ function Dot({ ok }: { ok: boolean }) {
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<'overview' | 'studio'>('overview');
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -33,6 +35,19 @@ export function App() {
         <p className="tagline">Minimal input → maximum social-ready output.</p>
       </header>
 
+      <nav className="tabs">
+        <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>
+          Overview
+        </button>
+        <button className={view === 'studio' ? 'active' : ''} onClick={() => setView('studio')}>
+          Studio
+        </button>
+      </nav>
+
+      {view === 'studio' && <Studio />}
+
+      {view === 'overview' && (
+      <>
       <section className="panel">
         <h2>Control plane</h2>
         {error && <p className="err">Gateway unreachable: {error}</p>}
@@ -65,6 +80,8 @@ export function App() {
           ))}
         </div>
       </section>
+      </>
+      )}
 
       <footer className="muted">
         <a href="/extra">Extra / Personal</a> · proprietary in-house ecosystem

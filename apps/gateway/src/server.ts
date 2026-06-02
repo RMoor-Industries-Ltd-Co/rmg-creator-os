@@ -2,7 +2,7 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
-import { createDb, runMigrations, tables } from '@rmg-creator-os/db';
+import { createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import { createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import Fastify from 'fastify';
@@ -105,6 +105,7 @@ app.get('/heygen/voices', async (_request, reply) => {
   return heygenHandler(reply, () => client.listVoices());
 });
 
+// Generate a video AND record it so the dashboard can show it later.
 app.post<{
   Body: {
     avatarId?: string;
@@ -113,23 +114,71 @@ app.post<{
     avatarStyle?: string;
     dimension?: { width: number; height: number };
     title?: string;
+    brand?: string;
   };
 }>('/heygen/videos', async (request, reply) => {
   const client = withHeyGen(reply);
   if (!client) return reply;
-  const { avatarId, voiceId, text, avatarStyle, dimension, title } = request.body ?? {};
+  const { avatarId, voiceId, text, avatarStyle, dimension, title, brand } = request.body ?? {};
   if (!avatarId || !voiceId || !text) {
     return reply.code(400).send({ error: 'avatarId, voiceId, and text are required' });
   }
-  return heygenHandler(reply, () =>
-    client.generateVideo({ avatarId, voiceId, inputText: text, avatarStyle, dimension, title })
-  );
+  return heygenHandler(reply, async () => {
+    const { videoId } = await client.generateVideo({
+      avatarId,
+      voiceId,
+      inputText: text,
+      avatarStyle,
+      dimension,
+      title
+    });
+    const now = new Date();
+    const [row] = await db
+      .insert(tables.videos)
+      .values({
+        id: crypto.randomUUID(),
+        heygenVideoId: videoId,
+        status: 'processing',
+        avatarId,
+        voiceId,
+        inputText: text,
+        title: title ?? null,
+        brand: brand ?? null,
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning();
+    reply.code(201);
+    return row;
+  });
 });
 
+// List recorded videos, newest first.
+app.get('/heygen/videos', async () =>
+  db.select().from(tables.videos).orderBy(desc(tables.videos.createdAt))
+);
+
+// Fetch one recorded video; refresh its status from HeyGen if still in progress.
 app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply) => {
-  const client = withHeyGen(reply);
-  if (!client) return reply;
-  return heygenHandler(reply, () => client.getVideoStatus(request.params.id));
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  const client = heygen;
+  if (row.status === 'completed' || row.status === 'failed' || !client) return row;
+
+  return heygenHandler(reply, async () => {
+    const s = await client.getVideoStatus(row.heygenVideoId);
+    const [updated] = await db
+      .update(tables.videos)
+      .set({
+        status: s.status,
+        videoUrl: s.videoUrl ?? row.videoUrl,
+        thumbnailUrl: s.thumbnailUrl ?? row.thumbnailUrl,
+        updatedAt: new Date()
+      })
+      .where(eq(tables.videos.id, row.id))
+      .returning();
+    return updated;
+  });
 });
 
 try {

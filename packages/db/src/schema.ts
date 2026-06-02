@@ -21,6 +21,22 @@ export const recipes = pgTable('recipes', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
+export const videos = pgTable('videos', {
+  id: text('id').primaryKey(),
+  heygenVideoId: text('heygen_video_id').notNull(),
+  status: text('status').notNull().default('processing'),
+  avatarId: text('avatar_id').notNull(),
+  voiceId: text('voice_id').notNull(),
+  inputText: text('input_text').notNull(),
+  title: text('title'),
+  brand: text('brand'),
+  videoUrl: text('video_url'),
+  thumbnailUrl: text('thumbnail_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** A single run of a Recipe — the unit the orchestrator tracks. */
 export const jobs = pgTable('jobs', {
   id: text('id').primaryKey(),
