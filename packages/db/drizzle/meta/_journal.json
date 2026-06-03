@@ -15,6 +15,13 @@
       "when": 1780443499882,
       "tag": "0001_easy_gargoyle",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1780452523679,
+      "tag": "0002_organic_riptide",
+      "breakpoints": true
     }
   ]
 }

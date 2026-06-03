@@ -172,7 +172,16 @@ export function Studio() {
                 </div>
               )}
               <p className="muted clip">{v.inputText}</p>
-              {v.brand && <span className="badge">{v.brand}</span>}
+              <div className="video-meta">
+                {v.driveLink ? (
+                  <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">
+                    ✓ Saved to Drive ↗
+                  </a>
+                ) : v.status === 'completed' ? (
+                  <span className="muted">saving to Drive…</span>
+                ) : null}
+                {v.brand && <span className="badge">{v.brand}</span>}
+              </div>
             </article>
           ))}
         </div>

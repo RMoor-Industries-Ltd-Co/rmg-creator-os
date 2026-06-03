@@ -33,6 +33,8 @@ export const videos = pgTable('videos', {
   brand: text('brand'),
   videoUrl: text('video_url'),
   thumbnailUrl: text('thumbnail_url'),
+  driveFileId: text('drive_file_id'),
+  driveLink: text('drive_link'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });

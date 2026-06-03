@@ -25,6 +25,8 @@ export interface VideoRow {
   brand: string | null;
   videoUrl: string | null;
   thumbnailUrl: string | null;
+  driveFileId: string | null;
+  driveLink: string | null;
   createdAt: string;
   updatedAt: string;
 }

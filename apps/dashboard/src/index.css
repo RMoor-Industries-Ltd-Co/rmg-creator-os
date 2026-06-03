@@ -96,3 +96,6 @@ footer a { color: var(--accent); text-decoration: none; }
   display: inline-block; animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.video-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; }
+.drive-link { color: var(--ok); text-decoration: none; font-size: 12px; }
+.drive-link:hover { text-decoration: underline; }

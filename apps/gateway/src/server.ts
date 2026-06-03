@@ -3,7 +3,7 @@
 
 import cors from '@fastify/cors';
 import { createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
-import { createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
+import { createDriveClient, createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
@@ -13,10 +13,19 @@ const HOST = process.env.HOST ?? '0.0.0.0';
 const DATABASE_URL = process.env.DATABASE_URL ?? '';
 const REDIS_URL = process.env.REDIS_URL ?? '';
 const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
+const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
 
 const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
 const heygen = HEYGEN_API_KEY ? createHeyGenClient(HEYGEN_API_KEY) : null;
+const drive =
+  process.env.GDRIVE_CLIENT_ID && process.env.GDRIVE_CLIENT_SECRET && process.env.GDRIVE_REFRESH_TOKEN
+    ? createDriveClient({
+        clientId: process.env.GDRIVE_CLIENT_ID,
+        clientSecret: process.env.GDRIVE_CLIENT_SECRET,
+        refreshToken: process.env.GDRIVE_REFRESH_TOKEN
+      })
+    : null;
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
@@ -158,12 +167,43 @@ app.get('/heygen/videos', async () =>
   db.select().from(tables.videos).orderBy(desc(tables.videos.createdAt))
 );
 
-// Fetch one recorded video; refresh its status from HeyGen if still in progress.
+type VideoRecord = typeof tables.videos.$inferSelect;
+
+// Once a video is completed, copy the MP4 into Drive (VIDEO_PRODUCTION) and record
+// the file id + link. Idempotent; retries on the next poll if it fails.
+async function saveVideoToDrive(row: VideoRecord): Promise<VideoRecord> {
+  if (!drive || !GDRIVE_VIDEO_FOLDER_ID) return row;
+  if (row.status !== 'completed' || !row.videoUrl || row.driveFileId) return row;
+  try {
+    const base = (row.title || row.inputText).slice(0, 40).replace(/[^\w.-]+/g, '_');
+    const { fileId, webViewLink } = await drive.uploadFromUrl({
+      url: row.videoUrl,
+      name: `${base}_${row.id.slice(0, 8)}.mp4`,
+      folderId: GDRIVE_VIDEO_FOLDER_ID,
+      mimeType: 'video/mp4'
+    });
+    const [u] = await db
+      .update(tables.videos)
+      .set({ driveFileId: fileId, driveLink: webViewLink ?? null, updatedAt: new Date() })
+      .where(eq(tables.videos.id, row.id))
+      .returning();
+    app.log.info({ id: row.id, fileId }, 'video saved to Drive');
+    return u;
+  } catch (err) {
+    app.log.error({ err, id: row.id }, 'Drive save failed (will retry)');
+    return row;
+  }
+}
+
+// Fetch one recorded video; refresh its status from HeyGen if still in progress,
+// then ensure it's archived to Drive.
 app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply) => {
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'video not found' });
   const client = heygen;
-  if (row.status === 'completed' || row.status === 'failed' || !client) return row;
+  if (row.status === 'completed' || row.status === 'failed' || !client) {
+    return saveVideoToDrive(row);
+  }
 
   return heygenHandler(reply, async () => {
     const s = await client.getVideoStatus(row.heygenVideoId);
@@ -177,7 +217,7 @@ app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply)
       })
       .where(eq(tables.videos.id, row.id))
       .returning();
-    return updated;
+    return saveVideoToDrive(updated);
   });
 });
 
