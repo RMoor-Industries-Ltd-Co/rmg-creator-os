@@ -19,6 +19,12 @@ Start new contracts from [`_template.md`](_template.md).
 | 05 | [A.L.L.I.E](05-allie.md) | `allie` | Planned |
 | 06 | [My Poster](06-my-poster.md) | `my-poster` | Planned |
 | 07 | [Life OS](07-life-os.md) | `life-os` | Live (standalone) |
+| 08 | [Character Pipeline](08-character-pipeline.md) | `character-pipeline` | Planned |
+| 09 | [Higgsfield Integration](09-higgsfield-integration.md) | `higgsfield` | Planned |
+| 10 | [ElevenLabs Integration](10-elevenlabs-integration.md) | `elevenlabs` | Planned |
+
+**Integrations note:** HeyGen (avatar video) is already built and live in
+`packages/integrations`; Higgsfield and ElevenLabs join it per the contracts above.
 
 ## Conventions
 
