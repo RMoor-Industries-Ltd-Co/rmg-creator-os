@@ -1,10 +1,12 @@
 # Contract — ElevenLabs Integration (Voice)
 
 - **Integration id:** `elevenlabs`
-- **Status:** Planned
+- **Status:** Planned — **access confirmed** (Creator plan, instant cloning enabled,
+  `ELEVENLABS_API_KEY` stored on the control server)
 - **Phase:** Creative (avatars & voice)
 - **Owner:** Rahm Moore
-- **Home:** `packages/integrations` (ElevenLabs client)
+- **Home:** `packages/integrations` (ElevenLabs client). Auth: `xi-api-key` header.
+  Plan: Creator, 300k chars/mo.
 
 ## Mission
 Create and manage a **cloned voice profile per character**, and synthesize scripts to
@@ -33,10 +35,16 @@ Create and manage a **cloned voice profile per character**, and synthesize scrip
 - **Consumers:** Character Pipeline (gateway), A.L.L.E.N (future: speech I/O may share voices).
 - **Data:** Postgres (`characters.elevenVoiceId`, `voiceSource`); Drive (samples + rendered audio).
 
-## Interface (high-level, proposed)
-- `createVoice({ name, samples })` → `{ voiceId }`
-- `listVoices()` → `Voice[]`
-- `synthesize({ voiceId, text, modelId?, format? })` → `{ audioUrl | audioBytes }`
+## Interface (actual ElevenLabs API v1)
+Auth header `xi-api-key`. Wrapped in a typed client; exposed via the gateway.
+
+    POST /v1/voices/add            # multipart: name + sample files → { voice_id }  (instant clone)
+    GET  /v1/voices                # list voices (premade + cloned)
+    POST /v1/text-to-speech/{voice_id}   # { text, model_id, voice_settings } → audio (mp3)
+    GET  /v1/user                  # subscription tier + character_count/limit (quota)
+
+Client methods: `createVoice({name, samples})`, `listVoices()`,
+`synthesize({voiceId, text, modelId?})`, `usage()`.
 
 ## Brands / characters touched
 One voice per Character; Characters are brand-scoped.
