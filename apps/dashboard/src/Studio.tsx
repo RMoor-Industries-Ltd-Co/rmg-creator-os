@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { BRANDS } from '@rmg-creator-os/types';
 import { api, TERMINAL, type HeyGenAvatar, type HeyGenVoice, type VideoRow } from './api';
 
-const BRANDS = ['', 'vlog', 'com', 'the-rahm-council', 'royal-reservations', 'busy-mf'];
+const BRAND_OPTIONS = [
+  { value: '', label: '— none —' },
+  ...BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }))
+];
 
 export function Studio() {
   const [avatars, setAvatars] = useState<HeyGenAvatar[]>([]);
@@ -122,9 +126,9 @@ export function Studio() {
           <label>
             Brand
             <select value={brand} onChange={(e) => setBrand(e.target.value)}>
-              {BRANDS.map((b) => (
-                <option key={b} value={b}>
-                  {b || '— none —'}
+              {BRAND_OPTIONS.map((b) => (
+                <option key={b.value} value={b.value}>
+                  {b.label}
                 </option>
               ))}
             </select>
