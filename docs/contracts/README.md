@@ -22,6 +22,7 @@ Start new contracts from [`_template.md`](_template.md).
 | 08 | [Character Pipeline](08-character-pipeline.md) | `character-pipeline` | Planned |
 | 09 | [Higgsfield Integration](09-higgsfield-integration.md) | `higgsfield` | Planned |
 | 10 | [ElevenLabs Integration](10-elevenlabs-integration.md) | `elevenlabs` | Planned |
+| 11 | [Asset Storage & Lifecycle](11-asset-lifecycle.md) | `asset-lifecycle` | Planned (Drive folders live) |
 
 **Integrations note:** HeyGen (avatar video) is already built and live in
 `packages/integrations`; Higgsfield and ElevenLabs join it per the contracts above.

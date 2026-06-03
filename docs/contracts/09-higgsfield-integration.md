@@ -4,12 +4,14 @@
 - **Status:** Planned
 - **Phase:** Creative (avatars & voice)
 - **Owner:** Rahm Moore
-- **Home:** `packages/integrations` (Higgsfield client)
+- **Home:** Higgsfield **MCP server** (added via `claude mcp add` — not in the connector
+  registry yet). Wrapped behind the gateway like other integrations.
 
 ## Mission
 Create a character's **visual likeness/avatar** from the operator's own **still photos
 or a short video**, producing an asset that can be registered with HeyGen for talking-head
-generation.
+generation. Also generate **video thumbnails** for the asset-lifecycle thumbnail loop
+(→ `THUMBNAIL_DESIGN`, see contract 11).
 
 ## Inputs
 - Still images and/or a short reference video of the character.
@@ -23,6 +25,7 @@ generation.
 - Upload source media to Higgsfield and trigger avatar/likeness generation.
 - Poll generation status; return the finished asset reference(s).
 - Hand the likeness image to the Character Pipeline for HeyGen registration.
+- Generate **thumbnails** for finished videos (thumbnail feedback loop).
 
 ## Out of scope (for now)
 - Final talking-head video generation (HeyGen).
