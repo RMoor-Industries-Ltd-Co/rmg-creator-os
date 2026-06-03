@@ -16,7 +16,7 @@ The umbrella. Carries its own **newsletter**. Microbrands sit under it.
 ## Brand capability matrix
 | Brand | Full name | Social | Store | Newsletter | Books |
 |---|---|:--:|:--:|:--:|:--:|
-| **RMG** | Renaissance Masters Group (master) | — | — | ✅ | — |
+| **RMG** | Renaissance Masters Group (master) | — | — | ✅ | ✅ |
 | **MSTR_RAHM** | Master Rahm | ✅ | ✅ | — | — |
 | **COM** | Conversations of Mastery | ✅ | — | ✅ | ✅ |
 | **BU$Y_MF** | Business Monday–Friday | ✅ | — | — | — |
@@ -31,6 +31,14 @@ My Poster owns product photos, descriptions, tags, and pricing for these.
 
 **Promotion:** **BU$Y_MF** is the **TikTok promo engine** that drives traffic to the
 ORR, MSTR_RAHM, and VLOG stores. (BU$Y_MF is a content brand, **not** a store.)
+
+## Books & Newsletters
+- **Books — platform: Amazon (Kindle / KDP).** Book brands: **RMG, COM, VLOG.**
+  - **RMG** publishes under the pen name **"Brother Bull."**
+  - Existing catalog: *"The Black Book on Becomming"* (RMG / Brother Bull, on Kindle).
+    *(confirm spelling — likely "Becoming")*
+- **Newsletters — platform: TBD (not yet settled).** Newsletter brands collecting email
+  leads: **RMG, COM, ORR, VLOG.**
 
 ## PIAAR — proprietary software sector
 Builds and manages the apps, **including RMG Creator OS itself**. GitHub only —

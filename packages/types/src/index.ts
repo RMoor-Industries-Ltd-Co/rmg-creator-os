@@ -36,10 +36,16 @@ export interface BrandProfile {
   channels: Channel[];
   /** Content brands get a Drive SCHEDULED/ARCHIVE folder + ClickUp creator folder. */
   contentFolder: boolean;
+  /** Author pen name used for the `books` channel, if any. */
+  penName?: string;
 }
 
+/** Books sell on Amazon (Kindle / KDP). Newsletter platform is not yet settled. */
+export const BOOK_PLATFORM = 'Amazon (Kindle / KDP)' as const;
+export const NEWSLETTER_PLATFORM: string | null = null; // TBD
+
 export const BRANDS: BrandProfile[] = [
-  { key: 'rmg', code: 'RMG', name: 'Renaissance Masters Group', channels: ['newsletter'], contentFolder: false },
+  { key: 'rmg', code: 'RMG', name: 'Renaissance Masters Group', channels: ['newsletter', 'books'], contentFolder: false, penName: 'Brother Bull' },
   { key: 'mstr-rahm', code: 'MSTR_RAHM', name: 'Master Rahm', channels: ['social', 'store'], contentFolder: true },
   { key: 'com', code: 'COM', name: 'Conversations of Mastery', channels: ['social', 'newsletter', 'books'], contentFolder: true },
   { key: 'busy-mf', code: 'BU$Y_MF', name: 'Business Monday thru Friday', channels: ['social'], contentFolder: true },
