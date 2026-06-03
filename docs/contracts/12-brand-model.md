@@ -35,8 +35,7 @@ ORR, MSTR_RAHM, and VLOG stores. (BU$Y_MF is a content brand, **not** a store.)
 ## Books & Newsletters
 - **Books — platform: Amazon (Kindle / KDP).** Book brands: **RMG, COM, VLOG.**
   - **RMG** publishes under the pen name **"Brother Bull."**
-  - Existing catalog: *"The Black Book on Becomming"* (RMG / Brother Bull, on Kindle).
-    *(confirm spelling — likely "Becoming")*
+  - Existing catalog: *"The Black Book on Becoming"* (RMG / Brother Bull, on Kindle).
 - **Newsletters — platform: TBD (not yet settled).** Newsletter brands collecting email
   leads: **RMG, COM, ORR, VLOG.**
 
