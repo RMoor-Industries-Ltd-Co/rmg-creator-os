@@ -1,11 +1,12 @@
 # Contract — Higgsfield Integration (Avatar Creation)
 
 - **Integration id:** `higgsfield`
-- **Status:** Planned
+- **Status:** Planned — **access confirmed** (CLI authenticated, ultra plan)
 - **Phase:** Creative (avatars & voice)
 - **Owner:** Rahm Moore
-- **Home:** Higgsfield **MCP server** (added via `claude mcp add` — not in the connector
-  registry yet). Wrapped behind the gateway like other integrations.
+- **Home:** Higgsfield **CLI** (`@higgsfield/cli`, recommended by Higgsfield for Claude
+  Code/Codex over their MCP). Auth via `higgsfield auth login` (device flow). Invoked
+  server-side from the gateway/worker. Add `--json` for machine-readable output.
 
 ## Mission
 Create a character's **visual likeness/avatar** from the operator's own **still photos
@@ -33,21 +34,34 @@ generation. Also generate **video thumbnails** for the asset-lifecycle thumbnail
 - Storing/serving the asset long-term (Drive).
 
 ## Dependencies
-- **External:** Higgsfield AI API + account/key.
+- **External:** Higgsfield CLI (`@higgsfield/cli`) + authenticated account (ultra plan).
 - **Consumers:** Character Pipeline (gateway).
-- **Data:** Drive (source uploads), Postgres (`characters.avatarSource`, `heygenAvatarId`).
+- **Data:** Drive (source uploads), Postgres (`characters.avatarSource`, `heygenAvatarId`,
+  `soulId`).
 
-## Interface (high-level, proposed)
-- `createAvatar({ images?, videoUrl?, options })` → `{ jobId }`
-- `getAvatarStatus(jobId)` → `{ status, assetUrl?, assetId? }`
+## Interface (actual CLI surface)
+A character "Soul" is Higgsfield's identity reference, trained from ~5 images.
+
+    higgsfield upload create ./photo.jpg            # → upload_id  (repeat ×5)
+    higgsfield soul-id create --name <char> --soul-2 \
+        --image <id1> ... --image <id5>            # → soul_id (training)
+    higgsfield soul-id wait <soul_id>              # poll until ready
+    higgsfield generate create <model> \
+        --prompt "<clean portrait>" [--image ...]  # → likeness image → register w/ HeyGen
+    higgsfield generate wait <job_id>              # poll; get asset url
+    higgsfield account status                      # credits / plan
+
+- All commands accept `--json` for parsing. Models from `higgsfield model list`.
+- Thumbnails reuse `generate create` with a thumbnail-style prompt/frame.
 
 ## Success criteria
-A handful of photos (or one short video) reliably yields a usable character likeness
-that HeyGen accepts as an avatar.
+~5 photos reliably yield a trained Soul, from which we render a clean likeness image that
+HeyGen accepts as an avatar — and per-video thumbnails on demand.
 
-## Open questions / risks
-- **Does Higgsfield expose a public API** for programmatic avatar creation, or is it
-  UI-only today? If UI-only, this becomes a manual export step (produce image → upload to
-  HeyGen) until/if an API exists. **Verify before building.**
-- Auth model + rate limits + cost per avatar.
-- Output format compatibility with HeyGen's photo-avatar ingestion.
+## Resolved / open questions
+- ✅ **Programmatic access**: confirmed via the CLI (Soul IDs) — no UI-only blocker.
+- Best path Soul → HeyGen avatar: render a clean portrait via `generate`, then register
+  that image with HeyGen's Photo Avatar / Avatar IV. (Confirm HeyGen ingestion params.)
+- Cost per Soul training + per generation (track against the ultra-plan credit pool).
+- Server-side: install + `auth login` the CLI on the control server (device flow) for the
+  automated pipeline; store the auth token securely.
