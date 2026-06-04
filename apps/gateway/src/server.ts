@@ -1075,9 +1075,13 @@ async function renderAssembly(
         if (!v) continue;
         const bytes = await bytesForVideo(v);
         if (!bytes) continue;
-        const p = join(dir, `seg_${i}.mp4`);
+        // A "video" row can actually hold a still image (e.g. a Higgsfield image
+        // model). Detect by URL so ffmpeg treats it as a slide, not a clip.
+        const isImg = /\.(png|jpe?g|webp)(\?|$)/i.test(v.videoUrl ?? '');
+        const ext = isImg ? (v.videoUrl ?? '').toLowerCase().match(/\.(png|jpe?g|webp)/)?.[1] ?? 'png' : 'mp4';
+        const p = join(dir, `seg_${i}.${ext}`);
         await writeFile(p, bytes);
-        segments.push({ type: 'video', path: p });
+        segments.push({ type: isImg ? 'image' : 'video', path: p });
       }
     }
     if (segments.length === 0) throw new Error('no usable shots in the order');
