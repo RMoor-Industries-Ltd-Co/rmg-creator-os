@@ -762,12 +762,38 @@ app.post<{
 // Background-renders a slideshow with ffmpeg, then marks the row completed.
 async function renderCustomVideo(
   videoId: string,
-  opts: { imageAssetIds: string[]; audioBytes: Buffer; audioExt: string; width: number; height: number }
+  opts: {
+    productionId: string;
+    imageAssetIds: string[];
+    audioAssetId?: string;
+    width: number;
+    height: number;
+  }
 ): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'compose-'));
   try {
-    const audioPath = join(dir, `voice.${opts.audioExt}`);
-    await writeFile(audioPath, opts.audioBytes);
+    // Resolve the voice track: an uploaded voiceover, or synth the brand voice.
+    let audioBytes: Buffer;
+    let audioExt = 'mp3';
+    if (opts.audioAssetId) {
+      const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, opts.audioAssetId));
+      if (!a?.driveFileId || !drive) throw new Error('audio asset unavailable');
+      const dl = await drive.download(a.driveFileId);
+      audioBytes = dl.bytes;
+      audioExt = (a.mimeType.split('/')[1] || 'mp3').replace(/[^\w]/g, '');
+    } else {
+      const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, opts.productionId));
+      const directed = Boolean(prod?.taggedScript);
+      const text = directed ? prod!.taggedScript! : prod?.scriptText;
+      if (!text) throw new Error('no voiceover and no script to synthesize');
+      audioBytes = await allenSpeak(text, {
+        voiceId: prod?.voiceId ?? undefined,
+        modelId: directed ? 'eleven_v3' : undefined,
+        stability: directed ? prod?.stability ?? 0.5 : undefined
+      });
+    }
+    const audioPath = join(dir, `voice.${audioExt}`);
+    await writeFile(audioPath, audioBytes);
     const imagePaths: string[] = [];
     for (const aid of opts.imageAssetIds) {
       const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, aid));
@@ -844,29 +870,9 @@ app.post<{
   if (imageAssetIds.length === 0) {
     return reply.code(400).send({ error: 'no images — upload some in the Assets step first' });
   }
-
-  // Audio: an uploaded voiceover asset, or render the brand voice via ALLEN.
-  let audioBytes: Buffer;
-  let audioExt = 'mp3';
-  try {
-    if (body.audioAssetId) {
-      const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, body.audioAssetId));
-      if (!a?.driveFileId) return reply.code(404).send({ error: 'audio asset not found' });
-      const dl = await drive.download(a.driveFileId);
-      audioBytes = dl.bytes;
-      audioExt = (a.mimeType.split('/')[1] || 'mp3').replace(/[^\w]/g, '');
-    } else {
-      const directed = Boolean(row.taggedScript);
-      const text = directed ? row.taggedScript! : row.scriptText;
-      if (!text) return reply.code(400).send({ error: 'no voiceover and no script to synthesize' });
-      audioBytes = await allenSpeak(text, {
-        voiceId: row.voiceId ?? undefined,
-        modelId: directed ? 'eleven_v3' : undefined,
-        stability: directed ? row.stability ?? 0.5 : undefined
-      });
-    }
-  } catch (err) {
-    return reply.code(502).send({ error: `audio prep failed: ${(err as Error).message}` });
+  // Need a voice source: an uploaded voiceover, or a script to synthesize.
+  if (!body.audioAssetId && !row.scriptText && !row.taggedScript) {
+    return reply.code(400).send({ error: 'no voiceover uploaded and no script to synthesize' });
   }
 
   const portrait = (body.orientation ?? 'portrait') === 'portrait';
@@ -892,8 +898,14 @@ app.post<{
     })
     .returning();
 
-  // Render in the background; the dashboard polls the row for completion.
-  void renderCustomVideo(video.id, { imageAssetIds, audioBytes, audioExt, width, height });
+  // Render in the background (audio synth + ffmpeg); the dashboard polls the row.
+  void renderCustomVideo(video.id, {
+    productionId: row.id,
+    imageAssetIds,
+    audioAssetId: body.audioAssetId,
+    width,
+    height
+  });
   return reply.code(201).send(video);
 });
 
