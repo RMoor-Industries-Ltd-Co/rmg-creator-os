@@ -12,6 +12,13 @@ rmg-creator-os.rmasters.group {
 		reverse_proxy gateway:8080
 	}
 
+	# ALLEN — AI scriptwriting service (path stripped → /draft, /speak, /health).
+	# NOTE: this exposes ALLEN's endpoints publicly; add an API-key/auth guard
+	# before relying on it externally (credit-drain risk on /draft and /speak).
+	handle_path /allen/* {
+		reverse_proxy allen:8090
+	}
+
 	# Dashboard (everything else)
 	handle {
 		reverse_proxy dashboard:80
