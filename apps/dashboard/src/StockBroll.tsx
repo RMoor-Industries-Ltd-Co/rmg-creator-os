@@ -43,6 +43,26 @@ export function StockBroll({ p }: { p: Production }) {
     }
   }
 
+  async function saveTags(id: string, tagStr: string) {
+    const tags = tagStr.split(',').map((t) => t.trim()).filter(Boolean);
+    try {
+      const v = await productions.tagVideo(id, tags);
+      setClips((cur) => cur.map((c) => (c.id === id ? v : c)));
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
+  async function saveDrive(id: string) {
+    setError(null);
+    try {
+      const v = await productions.saveToDrive(id);
+      setClips((cur) => cur.map((c) => (c.id === id ? v : c)));
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div className="stage-card">
       <div className="video-head">
@@ -79,8 +99,20 @@ export function StockBroll({ p }: { p: Production }) {
               )}
               <div className="gen-video-meta">
                 <span className="badge">{(v.config as { source?: string })?.source ?? 'stock'}</span>
+                {v.driveLink ? (
+                  <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ✓</a>
+                ) : (
+                  <button className="attach sm" onClick={() => saveDrive(v.id)} title="Save to B-Roll library">⬆ Drive</button>
+                )}
                 <button className="attach sm danger" onClick={() => remove(v.id)} title="Delete clip">✕</button>
               </div>
+              <input
+                className="tag-input"
+                type="text"
+                placeholder="tags (comma-separated)…"
+                defaultValue={((v.config as { tags?: string[] })?.tags ?? []).join(', ')}
+                onBlur={(e) => saveTags(v.id, e.target.value)}
+              />
             </div>
           ))}
         </div>

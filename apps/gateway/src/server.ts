@@ -35,6 +35,7 @@ const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
 const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
 const GDRIVE_IMAGE_FOLDER_ID = process.env.GDRIVE_IMAGE_FOLDER_ID ?? '';
 const GDRIVE_AUDIO_FOLDER_ID = process.env.GDRIVE_AUDIO_FOLDER_ID ?? '';
+const GDRIVE_BROLL_FOLDER_ID = process.env.GDRIVE_BROLL_FOLDER_ID ?? '';
 const GDRIVE_PROMPTS_FOLDER_ID = process.env.GDRIVE_PROMPTS_FOLDER_ID ?? '';
 const GDRIVE_PERSONA_PROMPTS_FOLDER_ID = process.env.GDRIVE_PERSONA_PROMPTS_FOLDER_ID ?? '';
 // Public base the gateway is reachable at, so HeyGen can fetch hosted audio.
@@ -1042,6 +1043,115 @@ async function bytesForVideo(row: VideoRecord): Promise<Buffer | null> {
   }
   return null;
 }
+
+// --- Naming + archival (predictable Drive nomenclature) ----------------------
+const slug = (s: string) =>
+  (s || '')
+    .normalize('NFKD')
+    .replace(/[^\w\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 60) || 'untitled';
+const dateStamp = () => new Date().toISOString().slice(0, 10);
+const prodBase = (p: typeof tables.productions.$inferSelect) =>
+  `${(p.brand || 'RMG').toUpperCase()}__${slug(p.title || p.topic)}`;
+
+// Save a b-roll clip into the global library with predictable name + tags.
+async function saveBrollToLibrary(v: VideoRecord): Promise<VideoRecord> {
+  if (!drive || !GDRIVE_BROLL_FOLDER_ID) return v;
+  const cfg = (v.config ?? {}) as Record<string, unknown>;
+  if (cfg.library) return v; // already in the library
+  const tags = (cfg.tags as string[] | undefined) ?? [];
+  const tagSlug = slug(tags.join('-') || v.inputText || 'clip');
+  const name = `B-ROLL__${tagSlug}__${v.source}__${v.id.slice(0, 6)}.mp4`;
+  const bytes = await bytesForVideo(v);
+  if (!bytes) return v;
+  const up = await drive.uploadBuffer({ bytes, name, folderId: GDRIVE_BROLL_FOLDER_ID, mimeType: 'video/mp4' });
+  if (tags.length) await drive.updateFile(up.fileId, { description: `tags: ${tags.join(', ')}` }).catch(() => undefined);
+  const [u] = await db
+    .update(tables.videos)
+    .set({ driveFileId: up.fileId, driveLink: up.webViewLink ?? null, config: { ...cfg, library: true, libraryName: name }, updatedAt: new Date() })
+    .where(eq(tables.videos.id, v.id))
+    .returning();
+  return u;
+}
+
+// Tag a video (stored in config + written to the Drive file description for search).
+app.patch<{ Params: { id: string }; Body: { tags?: string[] } }>('/videos/:id/tags', async (request, reply) => {
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  const tags = (request.body?.tags ?? []).map((t) => t.trim()).filter(Boolean).slice(0, 20);
+  if (drive && row.driveFileId) {
+    await drive.updateFile(row.driveFileId, { description: tags.length ? `tags: ${tags.join(', ')}` : '' }).catch(() => undefined);
+  }
+  const [u] = await db
+    .update(tables.videos)
+    .set({ config: { ...((row.config ?? {}) as Record<string, unknown>), tags }, updatedAt: new Date() })
+    .where(eq(tables.videos.id, row.id))
+    .returning();
+  return u;
+});
+
+// Save one b-roll clip to the Drive library (button on each clip).
+app.post<{ Params: { id: string } }>('/videos/:id/save-to-drive', async (request, reply) => {
+  if (!drive || !GDRIVE_BROLL_FOLDER_ID) return reply.code(503).send({ error: 'B-roll library not configured' });
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  try {
+    return await saveBrollToLibrary(row);
+  } catch (err) {
+    return reply.code(502).send({ error: `save failed: ${(err as Error).message}` });
+  }
+});
+
+// Gather + archive: move A-Roll + Final + Voice into a titled per-video folder
+// (renamed predictably), save all b-roll to the library, return every Drive link.
+app.post<{ Params: { id: string } }>('/productions/:id/archive', async (request, reply) => {
+  if (!drive || !GDRIVE_VIDEO_FOLDER_ID) return reply.code(503).send({ error: 'Drive not configured' });
+  const [p] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!p) return reply.code(404).send({ error: 'production not found' });
+
+  const base = prodBase(p);
+  const date = dateStamp();
+  try {
+    // Per-video folder (reuse if it already exists).
+    const existing = (await drive.listFolder(GDRIVE_VIDEO_FOLDER_ID)).find(
+      (f) => f.name === base && f.mimeType === 'application/vnd.google-apps.folder'
+    );
+    const folderId = existing?.id ?? (await drive.createFolder(base, GDRIVE_VIDEO_FOLDER_ID));
+
+    const vids = await db.select().from(tables.videos).where(eq(tables.videos.productionId, p.id));
+    const aroll = vids.filter((v) => v.source === 'heygen' && (v.config as { aroll?: boolean })?.aroll && v.status === 'completed').sort((a, b) => (b.approved ? 1 : 0) - (a.approved ? 1 : 0))[0];
+    const final = vids.filter((v) => v.source === 'final' && v.status === 'completed').sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))[0];
+    const audioAssets = await db.select().from(tables.assets).where(and(eq(tables.assets.productionId, p.id), eq(tables.assets.kind, 'audio')));
+    const voice = audioAssets.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))[0];
+
+    const out: Record<string, unknown> = { folder: `https://drive.google.com/drive/folders/${folderId}` };
+
+    async function move(fileId: string | null, name: string, fromFolder: string) {
+      if (!fileId) return null;
+      const r = await drive!.updateFile(fileId, { name, addParents: folderId, removeParents: fromFolder }).catch(() => null);
+      return r?.webViewLink ?? null;
+    }
+    if (aroll?.driveFileId) out.aroll = { name: `${base}__A-ROLL__${date}.mp4`, link: await move(aroll.driveFileId, `${base}__A-ROLL__${date}.mp4`, GDRIVE_VIDEO_FOLDER_ID) };
+    if (final?.driveFileId) out.final = { name: `${base}__FINAL__${date}.mp4`, link: await move(final.driveFileId, `${base}__FINAL__${date}.mp4`, GDRIVE_VIDEO_FOLDER_ID) };
+    if (voice?.driveFileId) out.voice = { name: `${base}__VOICE__${date}.mp3`, link: await move(voice.driveFileId, `${base}__VOICE__${date}.mp3`, GDRIVE_AUDIO_FOLDER_ID) };
+
+    // Save all b-roll (stock + scene videos) to the library.
+    const broll = [];
+    for (const v of vids.filter((v) => v.source === 'stock' || (v.source === 'higgsfield' && /\.(mp4|mov|webm)(\?|$)/i.test(v.videoUrl ?? '')))) {
+      const saved = await saveBrollToLibrary(v).catch(() => v);
+      broll.push({ id: v.id, name: (saved.config as { libraryName?: string })?.libraryName ?? null, link: saved.driveLink, tags: (saved.config as { tags?: string[] })?.tags ?? [] });
+    }
+    out.broll = broll;
+
+    await db.update(tables.productions).set({ stage: 'post', updatedAt: new Date() }).where(eq(tables.productions.id, p.id));
+    return out;
+  } catch (err) {
+    return reply.code(502).send({ error: `archive failed: ${(err as Error).message}` });
+  }
+});
 
 // FINAL CUT: assemble shots in the given order over the narration. Background render.
 async function renderAssembly(

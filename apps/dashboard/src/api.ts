@@ -167,6 +167,17 @@ export const productions = {
     id: string,
     body: { items: Array<{ type: 'video' | 'image'; id: string }>; orientation?: 'portrait' | 'landscape' }
   ) => req<VideoRow>(`/productions/${id}/assemble`, { method: 'POST', body: JSON.stringify(body) }),
+  tagVideo: (videoId: string, tags: string[]) =>
+    req<VideoRow>(`/videos/${videoId}/tags`, { method: 'PATCH', body: JSON.stringify({ tags }) }),
+  saveToDrive: (videoId: string) => req<VideoRow>(`/videos/${videoId}/save-to-drive`, { method: 'POST' }),
+  archive: (id: string) =>
+    req<{
+      folder: string;
+      aroll?: { name: string; link: string };
+      final?: { name: string; link: string };
+      voice?: { name: string; link: string };
+      broll: Array<{ id: string; name: string | null; link: string | null; tags: string[] }>;
+    }>(`/productions/${id}/archive`, { method: 'POST' }),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {

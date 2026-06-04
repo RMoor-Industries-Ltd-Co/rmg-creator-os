@@ -21,6 +21,8 @@ export function FinalCut({ p }: { p: Production }) {
   const [portrait, setPortrait] = useState(true);
   const [final, setFinal] = useState<VideoRow | null>(null);
   const [busy, setBusy] = useState(false);
+  const [gathering, setGathering] = useState(false);
+  const [gathered, setGathered] = useState<Awaited<ReturnType<typeof productions.archive>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<number | null>(null);
   const poll = useRef<number | null>(null);
@@ -70,6 +72,18 @@ export function FinalCut({ p }: { p: Production }) {
     });
   }
   const remove = (id: string) => setOrder((cur) => cur.filter((s) => s.id !== id));
+
+  async function gather() {
+    setGathering(true);
+    setError(null);
+    try {
+      setGathered(await productions.archive(p.id));
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setGathering(false);
+    }
+  }
 
   async function assemble() {
     if (order.length === 0) return;
@@ -138,6 +152,32 @@ export function FinalCut({ p }: { p: Production }) {
       </div>
 
       {error && <p className="err">{error}</p>}
+
+      {/* Gather all assets into Drive (named + foldered) for CapCut. */}
+      <div className="gen-row" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <button className="btn ghost" onClick={gather} disabled={gathering}>
+          {gathering ? 'Gathering…' : '📁 Gather for CapCut'}
+        </button>
+        <span className="muted">Names + archives A-Roll · Final · Voice into a titled folder; saves b-roll to the library.</span>
+      </div>
+      {gathered && (
+        <div className="gather-out">
+          <a className="drive-link" href={gathered.folder} target="_blank" rel="noreferrer">📂 Open production folder ↗</a>
+          <ul className="gather-list">
+            {gathered.aroll?.link && <li><span className="badge live">A-ROLL</span> <a className="drive-link" href={gathered.aroll.link} target="_blank" rel="noreferrer">{gathered.aroll.name}</a></li>}
+            {gathered.final?.link && <li><span className="badge">FINAL</span> <a className="drive-link" href={gathered.final.link} target="_blank" rel="noreferrer">{gathered.final.name}</a></li>}
+            {gathered.voice?.link && <li><span className="badge">VOICE</span> <a className="drive-link" href={gathered.voice.link} target="_blank" rel="noreferrer">{gathered.voice.name}</a></li>}
+            {gathered.broll.map((b) => (
+              <li key={b.id}>
+                <span className="badge">B-ROLL</span>{' '}
+                {b.link ? <a className="drive-link" href={b.link} target="_blank" rel="noreferrer">{b.name ?? 'clip'}</a> : <span className="muted">{b.name ?? 'clip'} (not saved)</span>}
+                {b.tags.length > 0 && <span className="muted"> · {b.tags.join(', ')}</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="muted">Everything's in Drive — pull the folder + b-roll into CapCut.</p>
+        </div>
+      )}
 
       {final && (
         <div className="final-out">

@@ -34,6 +34,11 @@ export interface DriveClient {
   deleteFile(fileId: string): Promise<void>;
   listFolder(folderId: string): Promise<Array<{ id: string; name: string; mimeType: string }>>;
   readText(fileId: string, mimeType: string): Promise<string>;
+  createFolder(name: string, parentId: string): Promise<string>;
+  updateFile(
+    fileId: string,
+    opts: { name?: string; description?: string; addParents?: string; removeParents?: string }
+  ): Promise<{ fileId: string; webViewLink?: string }>;
 }
 
 export function createDriveClient(cfg: DriveConfig): DriveClient {
@@ -151,6 +156,35 @@ export function createDriveClient(cfg: DriveConfig): DriveClient {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
       if (!res.ok) throw new Error(`Drive read failed (${res.status})`);
       return (await res.text()).replace(/^﻿/, '').trim();
+    },
+
+    async createFolder(name, parentId) {
+      const token = await getToken();
+      const res = await fetch('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, mimeType: 'application/vnd.google-apps.folder', parents: [parentId] })
+      });
+      if (!res.ok) throw new Error(`Drive folder create failed (${res.status})`);
+      return ((await res.json()) as { id: string }).id;
+    },
+
+    async updateFile(fileId, opts) {
+      const token = await getToken();
+      const params = new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,webViewLink' });
+      if (opts.addParents) params.set('addParents', opts.addParents);
+      if (opts.removeParents) params.set('removeParents', opts.removeParents);
+      const body: Record<string, string> = {};
+      if (opts.name) body.name = opts.name;
+      if (opts.description !== undefined) body.description = opts.description;
+      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?${params}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      if (!res.ok) throw new Error(`Drive update failed (${res.status})`);
+      const r = (await res.json()) as { id: string; webViewLink?: string };
+      return { fileId: r.id, webViewLink: r.webViewLink };
     }
   };
 }
