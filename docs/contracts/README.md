@@ -24,6 +24,7 @@ Start new contracts from [`_template.md`](_template.md).
 | 10 | [ElevenLabs Integration](10-elevenlabs-integration.md) | `elevenlabs` | Planned (key set) |
 | 11 | [Asset Storage & Lifecycle](11-asset-lifecycle.md) | `asset-lifecycle` | Planned (Drive folders live) |
 | 12 | [Brand & Capability Model](12-brand-model.md) | `brand-model` | **Canonical** |
+| 13 | [Production Wizard & Record](13-production-wizard.md) | `production-wizard` | Planned (spec) |
 
 **Integrations note:** HeyGen (avatar video) is already built and live in
 `packages/integrations`; Higgsfield and ElevenLabs join it per the contracts above.
