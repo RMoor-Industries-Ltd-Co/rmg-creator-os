@@ -269,12 +269,16 @@ footer a { color: var(--accent); text-decoration: none; }
 .bin-item video, .bin-item img { width: 100%; aspect-ratio: 9/16; object-fit: cover; background: #000; display: block; max-height: 260px; }
 .bin-item figcaption { display: flex; gap: 6px; padding: 6px 8px; }
 
-/* Final-cut sequencer */
-.seq-grid { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 10px; }
-.seq-item {
-  position: relative; width: 120px; border: 1px solid var(--border); border-radius: 10px;
-  overflow: hidden; background: #0a0e12; cursor: grab;
+/* Final-cut sequencer — horizontal scrollable carousel */
+.seq-grid {
+  list-style: none; margin: 8px 0 0; padding: 0 0 10px; display: flex; flex-wrap: nowrap; gap: 10px;
+  overflow-x: auto; scroll-snap-type: x proximity;
 }
+.seq-item {
+  position: relative; width: 120px; flex: 0 0 auto; scroll-snap-align: start;
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: #0a0e12; cursor: grab;
+}
+.seq-item.aroll { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
 .seq-item:active { cursor: grabbing; }
 .seq-item video, .seq-item img { width: 100%; aspect-ratio: 9/16; object-fit: cover; display: block; background: #000; }
 .seq-num {

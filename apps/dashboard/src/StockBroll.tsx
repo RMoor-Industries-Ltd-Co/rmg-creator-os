@@ -33,6 +33,16 @@ export function StockBroll({ p }: { p: Production }) {
     }
   }
 
+  async function remove(id: string) {
+    setError(null);
+    try {
+      await productions.discardVideo(id);
+      setClips((cur) => cur.filter((c) => c.id !== id));
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
   return (
     <div className="stage-card">
       <div className="video-head">
@@ -69,9 +79,7 @@ export function StockBroll({ p }: { p: Production }) {
               )}
               <div className="gen-video-meta">
                 <span className="badge">{(v.config as { source?: string })?.source ?? 'stock'}</span>
-                {v.driveLink && (
-                  <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>
-                )}
+                <button className="attach sm danger" onClick={() => remove(v.id)} title="Delete clip">✕</button>
               </div>
             </div>
           ))}

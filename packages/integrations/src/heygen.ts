@@ -30,6 +30,9 @@ export interface GenerateVideoOptions {
   audioUrl?: string;
   avatarStyle?: string;
   background?: { type: 'color'; value: string };
+  // Avatar IV: newer photo→video engine + a free-text motion/expression prompt.
+  useAvatarIv?: boolean;
+  customMotionPrompt?: string;
   dimension?: { width: number; height: number };
   title?: string;
 }
@@ -137,13 +140,16 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       if (!opts.audioUrl && (!opts.voiceId || !opts.inputText)) {
         throw new HeyGenError('generateVideo: provide audioUrl, or voiceId + inputText');
       }
-      // Character: the operator's Talking Photo, or an avatar.
-      const character = opts.talkingPhotoId
+      // Character: the operator's Talking Photo, or an avatar. Avatar IV adds a
+      // newer motion engine + an optional custom motion/expression prompt.
+      const character: Record<string, unknown> = opts.talkingPhotoId
         ? { type: 'talking_photo', talking_photo_id: opts.talkingPhotoId }
         : { type: 'avatar', avatar_id: opts.avatarId, avatar_style: opts.avatarStyle ?? 'normal' };
       if (!opts.talkingPhotoId && !opts.avatarId) {
         throw new HeyGenError('generateVideo: provide talkingPhotoId or avatarId');
       }
+      if (opts.useAvatarIv) character.use_avatar_iv_model = true;
+      if (opts.customMotionPrompt) character.custom_motion_prompt = opts.customMotionPrompt;
       const body = {
         video_inputs: [
           {

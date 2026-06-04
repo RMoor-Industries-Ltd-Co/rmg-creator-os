@@ -2,7 +2,6 @@ import { type Production } from './api';
 import { ARoll } from './ARoll';
 import { HiggsfieldPanel } from './HiggsfieldPanel';
 import { StockBroll } from './StockBroll';
-import { AssetBin } from './AssetBin';
 import { FinalCut } from './FinalCut';
 
 /**
@@ -21,16 +20,15 @@ export function Generate({ p }: { p: Production }) {
         <span className="badge">{directed ? 'voice: emotion-directed' : 'voice: brand default'}</span>
       </div>
       <p className="muted">
-        Build the A-Roll first (your face, your voice — it stands alone), then multiply it with extra
-        scenes and stock b-roll. Everything collects in your asset bin at the bottom.
+        ① Clean your photo into a still, ② animate it into the A-Roll (your face + voice — it stands
+        alone), ③ pull stock b-roll. Then line everything up in the final cut.
       </p>
 
-      <ARoll p={p} />
       <div className="stage-card">
         <HiggsfieldPanel p={p} />
       </div>
+      <ARoll p={p} />
       <StockBroll p={p} />
-      <AssetBin p={p} />
       <FinalCut p={p} />
     </div>
   );

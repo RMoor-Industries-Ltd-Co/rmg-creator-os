@@ -2,39 +2,48 @@ import { useEffect, useRef, useState } from 'react';
 import { api, assets, productions, type Asset, type Production, type VideoRow } from './api';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
+type Src = { kind: 'video' | 'asset'; id: string; url: string };
 
 /**
- * A-Roll — the standalone hero. Lip-syncs YOUR photo (HeyGen Talking Photo) to
- * YOUR voice (ElevenLabs brand voice or an uploaded voiceover). Approve / regenerate.
+ * ② A-Roll — lip-sync your APPROVED cleaned still (or an uploaded photo) into a
+ * talking head (HeyGen Avatar IV) in your voice, guided by a motion prompt.
  */
 export function ARoll({ p }: { p: Production }) {
-  const [imgs, setImgs] = useState<Asset[]>([]);
+  const [stills, setStills] = useState<Src[]>([]); // cleaned stills + uploaded photos
   const [audioAssets, setAudioAssets] = useState<Asset[]>([]);
-  const [imageAssetId, setImageAssetId] = useState('');
+  const [src, setSrc] = useState<Src | null>(null);
   const [voice, setVoice] = useState<'elevenlabs' | string>('elevenlabs');
   const [portrait, setPortrait] = useState(true);
+  const [prompts, setPrompts] = useState<Array<{ name: string; text: string }>>([]);
+  const [promptName, setPromptName] = useState('');
+  const [motion, setMotion] = useState('');
   const [takes, setTakes] = useState<VideoRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const voiceFileRef = useRef<HTMLInputElement>(null);
   const polls = useRef<Record<string, number>>({});
 
-  function loadAssets() {
-    assets.list(p.id).then((a) => {
-      const images = a.filter((x) => x.kind === 'image');
-      setImgs(images);
-      setAudioAssets(a.filter((x) => x.kind === 'audio'));
-      setImageAssetId((cur) => cur || images[0]?.id || '');
-    });
-  }
-
-  useEffect(() => {
-    loadAssets();
-    productions.videos(p.id).then((vs) => {
+  function load() {
+    assets.list(p.id).then((a) => setAudioAssets(a.filter((x) => x.kind === 'audio')));
+    Promise.all([assets.list(p.id), productions.videos(p.id)]).then(([a, vs]) => {
+      // Cleaned stills = Higgsfield image outputs; plus raw uploaded photos.
+      const cleaned: Src[] = vs
+        .filter((v) => v.source === 'higgsfield' && v.status === 'completed' && /\.(png|jpe?g|webp)(\?|$)/i.test(v.videoUrl ?? ''))
+        .sort((x, y) => (y.approved ? 1 : 0) - (x.approved ? 1 : 0))
+        .map((v) => ({ kind: 'video' as const, id: v.id, url: v.videoUrl! }));
+      const uploaded: Src[] = a.filter((x) => x.kind === 'image').map((x) => ({ kind: 'asset' as const, id: x.id, url: assets.rawUrl(x.id) }));
+      const all = [...cleaned, ...uploaded];
+      setStills(all);
+      setSrc((cur) => cur ?? all[0] ?? null);
       const ar = vs.filter((v) => v.source === 'heygen' && (v.config as { aroll?: boolean })?.aroll);
       setTakes(ar);
       ar.filter((v) => PROCESSING.has(v.status)).forEach((v) => watch(v.id));
     });
+  }
+
+  useEffect(() => {
+    load();
+    productions.arollPrompts().then(setPrompts).catch(() => setPrompts([]));
     const map = polls.current;
     return () => Object.values(map).forEach((t) => window.clearInterval(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -56,13 +65,17 @@ export function ARoll({ p }: { p: Production }) {
     }, 5000);
   }
 
+  function pickPrompt(name: string) {
+    setPromptName(name);
+    setMotion(prompts.find((p) => p.name === name)?.text ?? '');
+  }
+
   async function uploadVoiceover(files: FileList | null) {
     if (!files || files.length === 0) return;
     setBusy('upload');
-    setError(null);
     try {
       const [a] = await assets.upload(p.id, [files[0]]);
-      loadAssets();
+      load();
       if (a) setVoice(a.id);
     } catch (e: unknown) {
       setError(String(e));
@@ -72,14 +85,16 @@ export function ARoll({ p }: { p: Production }) {
   }
 
   async function generate() {
-    if (!imageAssetId) return;
+    if (!src) return;
     setBusy('gen');
     setError(null);
     try {
       const v = await productions.aroll(p.id, {
-        imageAssetId,
+        imageAssetId: src.kind === 'asset' ? src.id : undefined,
+        sourceVideoId: src.kind === 'video' ? src.id : undefined,
         audioAssetId: voice === 'elevenlabs' ? undefined : voice,
-        orientation: portrait ? 'portrait' : 'landscape'
+        orientation: portrait ? 'portrait' : 'landscape',
+        motionPrompt: motion.trim() || undefined
       });
       setTakes((rows) => [v, ...rows]);
       watch(v.id);
@@ -116,41 +131,38 @@ export function ARoll({ p }: { p: Production }) {
   return (
     <div className="stage-card">
       <div className="video-head">
-        <strong>① A-Roll — lip-synced you</strong>
-        <span className="badge live">HeyGen</span>
+        <strong>② A-Roll — lip-synced you</strong>
+        <span className="badge live">HeyGen Avatar IV</span>
       </div>
-      <p className="muted">
-        Your photo, animated to speak in your voice. This is the standalone hero video.
-      </p>
+      <p className="muted">Pick an approved clean still, choose a motion prompt + voice, and render your standalone talking head.</p>
 
-      <label className="vd-label">Your photo / source image</label>
-      {imgs.length === 0 ? (
-        <p className="notice">No images yet — upload a photo of yourself in the Assets step.</p>
+      <label className="vd-label">Source still (cleaned images first)</label>
+      {stills.length === 0 ? (
+        <p className="notice">No stills yet — make a clean image in ① above, or upload a photo in Assets.</p>
       ) : (
         <div className="hf-sources">
-          {imgs.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              className={`hf-src ${imageAssetId === a.id ? 'on' : ''}`}
-              onClick={() => setImageAssetId(a.id)}
-              title={a.fileName}
-            >
-              <img src={assets.rawUrl(a.id)} alt={a.fileName} loading="lazy" />
+          {stills.map((s) => (
+            <button key={`${s.kind}:${s.id}`} type="button" className={`hf-src ${src?.id === s.id ? 'on' : ''}`} onClick={() => setSrc(s)}>
+              <img src={s.url} alt="" loading="lazy" />
             </button>
           ))}
         </div>
       )}
 
+      <label className="vd-label">Motion prompt</label>
+      <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
+        <button type="button" className={promptName === '' ? 'on' : ''} onClick={() => { setPromptName(''); setMotion(''); }}>None</button>
+        {prompts.map((pr) => (
+          <button key={pr.name} type="button" className={promptName === pr.name ? 'on' : ''} onClick={() => pickPrompt(pr.name)}>{pr.name}</button>
+        ))}
+      </div>
+      <textarea className="intake-box" rows={2} placeholder="Motion / expression cues (editable)…" value={motion} onChange={(e) => setMotion(e.target.value)} />
+
       <label className="vd-label">Voice</label>
       <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
-        <button type="button" className={voice === 'elevenlabs' ? 'on' : ''} onClick={() => setVoice('elevenlabs')}>
-          Brand voice (ElevenLabs)
-        </button>
+        <button type="button" className={voice === 'elevenlabs' ? 'on' : ''} onClick={() => setVoice('elevenlabs')}>Brand voice (ElevenLabs)</button>
         {audioAssets.map((a) => (
-          <button key={a.id} type="button" className={voice === a.id ? 'on' : ''} onClick={() => setVoice(a.id)} title={a.fileName}>
-            🎙 {a.fileName.slice(0, 16)}
-          </button>
+          <button key={a.id} type="button" className={voice === a.id ? 'on' : ''} onClick={() => setVoice(a.id)} title={a.fileName}>🎙 {a.fileName.slice(0, 16)}</button>
         ))}
         <button type="button" className="attach sm" onClick={() => voiceFileRef.current?.click()} disabled={busy === 'upload'}>
           {busy === 'upload' ? 'Uploading…' : '＋ Upload voiceover'}
@@ -160,19 +172,15 @@ export function ARoll({ p }: { p: Production }) {
 
       <label className="vd-label">Orientation</label>
       <div className="vd-segment" style={{ maxWidth: 280 }}>
-        <button type="button" className={portrait ? 'on' : ''} onClick={() => setPortrait(true)}>
-          Portrait 9:16
-        </button>
-        <button type="button" className={!portrait ? 'on' : ''} onClick={() => setPortrait(false)}>
-          Landscape 16:9
-        </button>
+        <button type="button" className={portrait ? 'on' : ''} onClick={() => setPortrait(true)}>Portrait 9:16</button>
+        <button type="button" className={!portrait ? 'on' : ''} onClick={() => setPortrait(false)}>Landscape 16:9</button>
       </div>
 
       <div className="gen-row">
-        <button className="btn" onClick={generate} disabled={busy === 'gen' || !imageAssetId}>
+        <button className="btn" onClick={generate} disabled={busy === 'gen' || !src}>
           {busy === 'gen' ? 'Sending…' : '🎬 Generate A-Roll'}
         </button>
-        <span className="muted">Lip-sync via HeyGen · spends credits · ~2 min</span>
+        <span className="muted">Avatar IV lip-sync · spends credits · ~2 min</span>
       </div>
 
       {error && <p className="err">{error}</p>}
@@ -192,20 +200,12 @@ export function ARoll({ p }: { p: Production }) {
                 )}
                 <div className="gen-video-meta">
                   <span className={`badge ${v.approved ? 'live' : ''}`}>{v.approved ? 'approved ✓ (A-Roll)' : v.status}</span>
-                  {v.driveLink && (
-                    <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>
-                  )}
+                  {v.driveLink && <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>}
                 </div>
                 <div className="take-actions">
-                  {done && !v.approved && (
-                    <button className="btn ghost sm" onClick={() => approve(v.id)} disabled={busy === v.id}>✓ Approve</button>
-                  )}
-                  {done && (
-                    <button className="attach sm" onClick={generate} disabled={busy === 'gen'}>↻ Regenerate</button>
-                  )}
-                  {!v.approved && (
-                    <button className="attach sm danger" onClick={() => discard(v.id)} disabled={busy === v.id}>✕ Discard</button>
-                  )}
+                  {done && !v.approved && <button className="btn ghost sm" onClick={() => approve(v.id)} disabled={busy === v.id}>✓ Approve</button>}
+                  {done && <button className="attach sm" onClick={generate} disabled={busy === 'gen'}>↻ Regenerate</button>}
+                  {!v.approved && <button className="attach sm danger" onClick={() => discard(v.id)} disabled={busy === v.id}>✕ Discard</button>}
                 </div>
               </div>
             );

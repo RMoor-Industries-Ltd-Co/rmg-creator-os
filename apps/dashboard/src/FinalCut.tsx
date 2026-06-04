@@ -104,7 +104,7 @@ export function FinalCut({ p }: { p: Production }) {
           {order.map((s, i) => (
             <li
               key={s.id}
-              className="seq-item"
+              className={`seq-item ${s.source === 'heygen' ? 'aroll' : ''}`}
               draggable
               onDragStart={() => (drag.current = i)}
               onDragOver={(e) => e.preventDefault()}
@@ -120,7 +120,7 @@ export function FinalCut({ p }: { p: Production }) {
               ) : (
                 <img src={s.videoUrl ?? undefined} alt="" loading="lazy" />
               )}
-              <span className="seq-tag">{LABEL[s.source] ?? s.source}{s.approved ? ' ✓' : ''}</span>
+              <span className="seq-tag">{s.source === 'heygen' ? '★ A-ROLL' : LABEL[s.source] ?? s.source}{s.approved ? ' ✓' : ''}</span>
               <button className="seq-x" onClick={() => remove(s.id)} title="Remove from cut">✕</button>
             </li>
           ))}

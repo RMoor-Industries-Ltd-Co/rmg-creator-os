@@ -32,6 +32,8 @@ export interface DriveClient {
   }): Promise<DriveUploadResult>;
   download(fileId: string): Promise<DriveDownload>;
   deleteFile(fileId: string): Promise<void>;
+  listFolder(folderId: string): Promise<Array<{ id: string; name: string; mimeType: string }>>;
+  readText(fileId: string, mimeType: string): Promise<string>;
 }
 
 export function createDriveClient(cfg: DriveConfig): DriveClient {
@@ -125,6 +127,30 @@ export function createDriveClient(cfg: DriveConfig): DriveClient {
       if (!res.ok && res.status !== 404) {
         throw new Error(`Drive delete failed (${res.status})`);
       }
+    },
+
+    async listFolder(folderId) {
+      const token = await getToken();
+      const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok) throw new Error(`Drive list failed (${res.status})`);
+      const j = (await res.json()) as { files?: Array<{ id: string; name: string; mimeType: string }> };
+      return j.files ?? [];
+    },
+
+    async readText(fileId, mimeType) {
+      const token = await getToken();
+      // Google Docs must be exported; plain files download directly.
+      const url =
+        mimeType === 'application/vnd.google-apps.document'
+          ? `https://www.googleapis.com/drive/v3/files/${fileId}/export?mimeType=text/plain&supportsAllDrives=true`
+          : `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (!res.ok) throw new Error(`Drive read failed (${res.status})`);
+      return (await res.text()).replace(/^﻿/, '').trim();
     }
   };
 }

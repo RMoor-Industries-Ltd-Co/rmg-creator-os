@@ -147,8 +147,16 @@ export const productions = {
   brollStatus: () => req<{ enabled: boolean }>('/broll/status'),
   aroll: (
     id: string,
-    body: { imageAssetId: string; audioAssetId?: string; orientation?: 'portrait' | 'landscape'; stabilityMode?: string }
+    body: {
+      imageAssetId?: string;
+      sourceVideoId?: string;
+      audioAssetId?: string;
+      orientation?: 'portrait' | 'landscape';
+      stabilityMode?: string;
+      motionPrompt?: string;
+    }
   ) => req<VideoRow>(`/productions/${id}/aroll`, { method: 'POST', body: JSON.stringify(body) }),
+  arollPrompts: () => req<Array<{ name: string; text: string }>>('/aroll/prompts'),
   stockBroll: (id: string, body: { query?: string; orientation?: 'portrait' | 'landscape' }) =>
     req<{ query: string; clips: VideoRow[] }>(`/productions/${id}/broll`, {
       method: 'POST',

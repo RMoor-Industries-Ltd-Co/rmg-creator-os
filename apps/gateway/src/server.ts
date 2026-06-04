@@ -35,6 +35,7 @@ const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
 const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
 const GDRIVE_IMAGE_FOLDER_ID = process.env.GDRIVE_IMAGE_FOLDER_ID ?? '';
 const GDRIVE_AUDIO_FOLDER_ID = process.env.GDRIVE_AUDIO_FOLDER_ID ?? '';
+const GDRIVE_PROMPTS_FOLDER_ID = process.env.GDRIVE_PROMPTS_FOLDER_ID ?? '';
 // Public base the gateway is reachable at, so HeyGen can fetch hosted audio.
 const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 
@@ -1150,34 +1151,83 @@ app.post<{
   return reply.code(201).send(video);
 });
 
-// A-ROLL: lip-sync the operator's OWN photo (HeyGen Talking Photo) to their voice.
-// This is the standalone hero video.
+// Pre-made A-Roll motion prompts (Drive folder of text files / Docs).
+app.get('/aroll/prompts', async (_request, reply) => {
+  if (!drive || !GDRIVE_PROMPTS_FOLDER_ID) return [];
+  try {
+    const files = await drive.listFolder(GDRIVE_PROMPTS_FOLDER_ID);
+    const textish = files.filter(
+      (f) => f.mimeType.startsWith('text/') || f.mimeType === 'application/vnd.google-apps.document'
+    );
+    const out = await Promise.all(
+      textish.map(async (f) => ({
+        name: f.name.replace(/\.(txt|md|rtf)$/i, ''),
+        text: await drive!.readText(f.id, f.mimeType).catch(() => '')
+      }))
+    );
+    return out.filter((p) => p.text).sort((a, b) => a.name.localeCompare(b.name));
+  } catch (err) {
+    return reply.code(502).send({ error: `prompts: ${(err as Error).message}` });
+  }
+});
+
+// A-ROLL: lip-sync the operator's OWN photo (HeyGen Talking Photo / Avatar IV) to
+// their voice, guided by an optional motion prompt. This is the standalone hero.
 app.post<{
   Params: { id: string };
-  Body: { imageAssetId?: string; audioAssetId?: string; orientation?: 'portrait' | 'landscape'; stabilityMode?: string };
+  Body: {
+    imageAssetId?: string;
+    sourceVideoId?: string;
+    audioAssetId?: string;
+    orientation?: 'portrait' | 'landscape';
+    stabilityMode?: string;
+    motionPrompt?: string;
+  };
 }>('/productions/:id/aroll', async (request, reply) => {
   const client = withHeyGen(reply);
   if (!client) return reply;
   if (!drive || !GDRIVE_AUDIO_FOLDER_ID || !PUBLIC_API_BASE) {
     return reply.code(503).send({ error: 'Audio hosting not configured (Drive + GDRIVE_AUDIO_FOLDER_ID + PUBLIC_API_BASE)' });
   }
-  const { imageAssetId, audioAssetId, orientation, stabilityMode } = request.body ?? {};
-  if (!imageAssetId) return reply.code(400).send({ error: 'imageAssetId (your photo) is required' });
+  const { imageAssetId, sourceVideoId, audioAssetId, orientation, stabilityMode, motionPrompt } = request.body ?? {};
+  if (!imageAssetId && !sourceVideoId) {
+    return reply.code(400).send({ error: 'imageAssetId or sourceVideoId (your cleaned still) is required' });
+  }
 
   const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
-  const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, imageAssetId));
-  if (!img?.driveFileId) return reply.code(404).send({ error: 'image asset not found' });
+
+  // Source still: an uploaded image asset, or an approved cleaned still (Higgsfield video row).
+  let imgBytes: Buffer | null = null;
+  let imgMime = 'image/jpeg';
+  if (imageAssetId) {
+    const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, imageAssetId));
+    if (!img?.driveFileId) return reply.code(404).send({ error: 'image asset not found' });
+    imgBytes = (await drive.download(img.driveFileId)).bytes;
+    imgMime = img.mimeType || 'image/jpeg';
+  } else if (sourceVideoId) {
+    const [v] = await db.select().from(tables.videos).where(eq(tables.videos.id, sourceVideoId));
+    if (!v) return reply.code(404).send({ error: 'source still not found' });
+    imgBytes = await bytesForVideo(v);
+    imgMime = /\.png(\?|$)/i.test(v.videoUrl ?? '') ? 'image/png' : 'image/jpeg';
+  }
+  if (!imgBytes) return reply.code(400).send({ error: 'could not load the source still' });
 
   try {
     const audioUrl = await hostVoiceTrack(row, audioAssetId, stabilityMode);
-    const { bytes } = await drive.download(img.driveFileId);
-    const talkingPhotoId = await client.uploadTalkingPhoto(bytes, img.mimeType || 'image/jpeg');
+    const talkingPhotoId = await client.uploadTalkingPhoto(imgBytes, imgMime);
     const portrait = (orientation ?? 'portrait') === 'portrait';
     const dim = portrait ? { width: 720, height: 1280 } : { width: 1280, height: 720 };
 
     return await heygenHandler(reply, async () => {
-      const { videoId } = await client.generateVideo({ talkingPhotoId, audioUrl, dimension: dim, title: row.title ?? undefined });
+      const { videoId } = await client.generateVideo({
+        talkingPhotoId,
+        audioUrl,
+        useAvatarIv: true,
+        customMotionPrompt: motionPrompt?.trim() || undefined,
+        dimension: dim,
+        title: row.title ?? undefined
+      });
       const now = new Date();
       const [video] = await db
         .insert(tables.videos)
@@ -1191,7 +1241,7 @@ app.post<{
           inputText: (row.title || row.topic).slice(0, 200),
           title: row.title ?? null,
           brand: row.brand,
-          config: { aroll: true, imageAssetId, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
+          config: { aroll: true, imageAssetId: imageAssetId ?? sourceVideoId, motionPrompt: motionPrompt ?? null, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
           createdAt: now,
           updatedAt: now
         })

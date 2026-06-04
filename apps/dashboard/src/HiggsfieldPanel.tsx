@@ -119,10 +119,10 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   return (
     <div className="higgs-panel">
       <div className="video-head">
-        <strong>② Scenes — Higgsfield</strong>
-        <span className="badge live">connected · no lip-sync</span>
+        <strong>① Clean Image — Higgsfield</strong>
+        <span className="badge live">connected</span>
       </div>
-      <p className="muted">Extra cinematic scenes/animation about the subject. Generate, then approve · regenerate · discard. Optional source image from Assets.</p>
+      <p className="muted">Run your photo through Higgsfield for a clean still (or extra scenes). Pick a source image from Assets, then approve · regenerate (new version) · delete. Approved stills feed the A-Roll below.</p>
 
       <label className="vd-label">Model</label>
       <select className="hf-select" value={model} onChange={(e) => setModel(e.target.value)}>
