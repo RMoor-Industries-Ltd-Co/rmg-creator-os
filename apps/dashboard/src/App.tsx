@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
+import { ProductionWizard } from './ProductionWizard';
+import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
@@ -20,7 +22,11 @@ function Dot({ ok }: { ok: boolean }) {
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<'overview' | 'produce' | 'studio'>('overview');
+  const path = usePath();
+  const wizard = path.match(/^\/produce\/([^/]+)\/([^/]+)/);
+  const isProduce = path === '/produce';
+  const isStudio = path === '/studio';
+  const isOverview = !wizard && !isProduce && !isStudio;
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -37,21 +43,22 @@ export function App() {
       </header>
 
       <nav className="tabs">
-        <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>
+        <button className={isOverview ? 'active' : ''} onClick={() => navigate('/')}>
           Overview
         </button>
-        <button className={view === 'produce' ? 'active' : ''} onClick={() => setView('produce')}>
+        <button className={path.startsWith('/produce') ? 'active' : ''} onClick={() => navigate('/produce')}>
           Produce
         </button>
-        <button className={view === 'studio' ? 'active' : ''} onClick={() => setView('studio')}>
+        <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
         </button>
       </nav>
 
-      {view === 'produce' && <Produce />}
-      {view === 'studio' && <Studio />}
+      {wizard && <ProductionWizard id={wizard[1]} step={wizard[2]} />}
+      {isProduce && <Produce />}
+      {isStudio && <Studio />}
 
-      {view === 'overview' && (
+      {isOverview && (
       <>
       <section className="panel">
         <h2>Control plane</h2>

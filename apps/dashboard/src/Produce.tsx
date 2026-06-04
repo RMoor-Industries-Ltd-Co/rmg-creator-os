@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
-import { productions, type Production } from './api';
+import { productions } from './api';
+import { navigate } from './router';
 
 const BRAND_OPTIONS = BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }));
 
@@ -12,10 +13,6 @@ export function Produce() {
   const [fileName, setFileName] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [production, setProduction] = useState<Production | null>(null);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [speaking, setSpeaking] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -25,7 +22,7 @@ export function Produce() {
     if (f.type.startsWith('text/') || /\.(txt|md|csv|json)$/i.test(f.name)) {
       setContext(await f.text());
     } else {
-      setContext(`[Attached reference: ${f.name} — non-text; describe its relevance in the request above.]`);
+      setContext(`[Attached reference: ${f.name} — non-text; describe its relevance above.]`);
     }
   }
 
@@ -36,8 +33,6 @@ export function Produce() {
       return;
     }
     setSubmitting(true);
-    setProduction(null);
-    setAudioUrl(null);
     try {
       const p = await productions.create({
         brand,
@@ -45,24 +40,10 @@ export function Produce() {
         persona: persona.trim() || undefined,
         context: context.trim() || undefined
       });
-      setProduction(p);
+      navigate(`/produce/${p.id}/script`);
     } catch (e: unknown) {
       setError(String(e));
-    } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function hear() {
-    if (!production) return;
-    setSpeaking(true);
-    setError(null);
-    try {
-      setAudioUrl(await productions.speak(production.id));
-    } catch (e: unknown) {
-      setError(String(e));
-    } finally {
-      setSpeaking(false);
     }
   }
 
@@ -77,7 +58,9 @@ export function Produce() {
             Brand
             <select value={brand} onChange={(e) => setBrand(e.target.value)}>
               {BRAND_OPTIONS.map((b) => (
-                <option key={b.value} value={b.value}>{b.label}</option>
+                <option key={b.value} value={b.value}>
+                  {b.label}
+                </option>
               ))}
             </select>
           </label>
@@ -106,28 +89,6 @@ export function Produce() {
         </div>
         {error && <p className="err">{error}</p>}
       </section>
-
-      {production && (
-        <section className="panel">
-          <div className="video-head">
-            <strong>{production.title}</strong>
-            <span className="badge">{production.brand} · {production.scriptStatus}</span>
-          </div>
-          <textarea className="script-view" rows={14} readOnly value={production.scriptText ?? ''} />
-          <div className="intake-actions">
-            <button className="btn" onClick={hear} disabled={speaking}>
-              {speaking ? 'Synthesizing…' : '▶ Hear it'}
-            </button>
-            {production.scriptDocUrl && (
-              <a className="drive-link" href={production.scriptDocUrl} target="_blank" rel="noreferrer">
-                Open Drive draft ↗
-              </a>
-            )}
-            <span className="muted">model: {production.model}</span>
-          </div>
-          {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginTop: 10 }} />}
-        </section>
-      )}
     </div>
   );
 }

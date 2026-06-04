@@ -78,6 +78,8 @@ export interface Production {
 }
 
 export const productions = {
+  get: (id: string) => req<Production>(`/productions/${id}`),
+  list: () => req<Production[]>('/productions'),
   create: (input: {
     brand: string;
     topic: string;
