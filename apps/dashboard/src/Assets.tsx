@@ -52,8 +52,9 @@ export function Assets({ p }: { p: Production }) {
         <span className="badge">{rows ? `${rows.length} file${rows.length === 1 ? '' : 's'}` : '…'}</span>
       </div>
       <p className="muted">
-        Upload images or video for <strong>{p.title || p.topic}</strong>. Stored in Drive
-        (IMAGE_PRODUCTION). These feed the next stage — Higgsfield (image → video) &amp; My Poster.
+        Upload images, video, or your own <strong>voiceover</strong> (wav/mp3/aac) for{' '}
+        <strong>{p.title || p.topic}</strong>. Stored in Drive. Images + voice feed the custom
+        video in Generate; images also feed Higgsfield.
       </p>
 
       <div
@@ -76,7 +77,7 @@ export function Assets({ p }: { p: Production }) {
           type="file"
           hidden
           multiple
-          accept="image/*,video/*"
+          accept="image/*,video/*,audio/*"
           onChange={(e) => e.target.files && upload(e.target.files)}
         />
         {uploading ? (
@@ -98,6 +99,11 @@ export function Assets({ p }: { p: Production }) {
                 <img src={assets.rawUrl(a.id)} alt={a.fileName} loading="lazy" />
               ) : a.kind === 'video' ? (
                 <video src={assets.rawUrl(a.id)} controls preload="metadata" />
+              ) : a.kind === 'audio' ? (
+                <div className="asset-file">
+                  🎙
+                  <audio src={assets.rawUrl(a.id)} controls preload="none" />
+                </div>
               ) : (
                 <div className="asset-file">📄</div>
               )}

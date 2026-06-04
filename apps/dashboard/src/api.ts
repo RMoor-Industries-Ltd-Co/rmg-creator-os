@@ -133,6 +133,10 @@ export const productions = {
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
   higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetId?: string }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
+  compose: (
+    id: string,
+    body: { voice?: 'elevenlabs'; audioAssetId?: string; imageAssetIds?: string[]; orientation?: 'portrait' | 'landscape' }
+  ) => req<VideoRow>(`/productions/${id}/compose`, { method: 'POST', body: JSON.stringify(body) }),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {
@@ -170,7 +174,7 @@ export const productions = {
 export interface Asset {
   id: string;
   productionId: string;
-  kind: 'image' | 'video' | 'reference';
+  kind: 'image' | 'video' | 'audio' | 'reference';
   role: string;
   fileName: string;
   mimeType: string;

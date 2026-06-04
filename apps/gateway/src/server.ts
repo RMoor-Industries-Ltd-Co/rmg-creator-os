@@ -19,9 +19,10 @@ import {
 } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import { randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { composeSlideshow } from './compose.js';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 
@@ -250,6 +251,9 @@ app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply)
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'video not found' });
 
+  // Custom renders are updated in-place by the background ffmpeg job.
+  if (row.source === 'custom') return row;
+
   // Higgsfield renders poll a different backend (the CLI).
   if (row.source === 'higgsfield') {
     if (row.status === 'completed' || row.status === 'failed' || !higgs) {
@@ -451,9 +455,10 @@ app.post<{
 // Uploaded images/video attached to a production, stored privately in Drive
 // (IMAGE_PRODUCTION). The dashboard displays them via the /raw proxy below.
 
-function kindFor(mime: string): 'image' | 'video' | 'reference' {
+function kindFor(mime: string): 'image' | 'video' | 'audio' | 'reference' {
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
   return 'reference';
 }
 
@@ -750,6 +755,160 @@ app.post<{
     return reply.code(201).send(video);
   } catch (err) {
     return reply.code(502).send({ error: `Higgsfield generate failed: ${(err as Error).message}` });
+  }
+});
+
+// --- Custom video (operator's own images + own voice, no avatar) -------------
+// Background-renders a slideshow with ffmpeg, then marks the row completed.
+async function renderCustomVideo(
+  videoId: string,
+  opts: { imageAssetIds: string[]; audioBytes: Buffer; audioExt: string; width: number; height: number }
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'compose-'));
+  try {
+    const audioPath = join(dir, `voice.${opts.audioExt}`);
+    await writeFile(audioPath, opts.audioBytes);
+    const imagePaths: string[] = [];
+    for (const aid of opts.imageAssetIds) {
+      const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, aid));
+      if (!a?.driveFileId || !drive) continue;
+      const { bytes } = await drive.download(a.driveFileId);
+      const ext = (a.mimeType.split('/')[1] || 'jpg').replace(/[^\w]/g, '');
+      const p = join(dir, `${a.id}.${ext}`);
+      await writeFile(p, bytes);
+      imagePaths.push(p);
+    }
+    if (imagePaths.length === 0) throw new Error('no usable images');
+    const outPath = join(dir, 'out.mp4');
+    await composeSlideshow({ imagePaths, audioPath, outPath, width: opts.width, height: opts.height });
+
+    const { readFile } = await import('node:fs/promises');
+    const mp4 = await readFile(outPath);
+    let driveFileId: string | null = null;
+    let driveLink: string | null = null;
+    if (drive && GDRIVE_VIDEO_FOLDER_ID) {
+      const up = await drive.uploadBuffer({
+        bytes: mp4,
+        name: `custom_${videoId.slice(0, 8)}.mp4`,
+        folderId: GDRIVE_VIDEO_FOLDER_ID,
+        mimeType: 'video/mp4'
+      });
+      driveFileId = up.fileId;
+      driveLink = up.webViewLink ?? null;
+    }
+    await db
+      .update(tables.videos)
+      .set({
+        status: 'completed',
+        driveFileId,
+        driveLink,
+        videoUrl: `${PUBLIC_API_BASE}/videos/${videoId}/raw`,
+        updatedAt: new Date()
+      })
+      .where(eq(tables.videos.id, videoId));
+    app.log.info({ id: videoId }, 'custom video rendered');
+  } catch (err) {
+    app.log.error({ err, id: videoId }, 'custom render failed');
+    await db
+      .update(tables.videos)
+      .set({ status: 'failed', updatedAt: new Date() })
+      .where(eq(tables.videos.id, videoId));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+app.post<{
+  Params: { id: string };
+  Body: { voice?: 'elevenlabs' | string; audioAssetId?: string; imageAssetIds?: string[]; orientation?: 'portrait' | 'landscape' };
+}>('/productions/:id/compose', async (request, reply) => {
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  if (!PUBLIC_API_BASE) return reply.code(503).send({ error: 'PUBLIC_API_BASE not set' });
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+
+  const body = request.body ?? {};
+  // Images: explicit list, else all the production's image assets (upload order).
+  let imageAssetIds = body.imageAssetIds ?? [];
+  if (imageAssetIds.length === 0) {
+    const imgs = await db
+      .select()
+      .from(tables.assets)
+      .where(and(eq(tables.assets.productionId, row.id), eq(tables.assets.kind, 'image')))
+      .orderBy(tables.assets.createdAt);
+    imageAssetIds = imgs.map((a) => a.id);
+  }
+  if (imageAssetIds.length === 0) {
+    return reply.code(400).send({ error: 'no images — upload some in the Assets step first' });
+  }
+
+  // Audio: an uploaded voiceover asset, or render the brand voice via ALLEN.
+  let audioBytes: Buffer;
+  let audioExt = 'mp3';
+  try {
+    if (body.audioAssetId) {
+      const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, body.audioAssetId));
+      if (!a?.driveFileId) return reply.code(404).send({ error: 'audio asset not found' });
+      const dl = await drive.download(a.driveFileId);
+      audioBytes = dl.bytes;
+      audioExt = (a.mimeType.split('/')[1] || 'mp3').replace(/[^\w]/g, '');
+    } else {
+      const directed = Boolean(row.taggedScript);
+      const text = directed ? row.taggedScript! : row.scriptText;
+      if (!text) return reply.code(400).send({ error: 'no voiceover and no script to synthesize' });
+      audioBytes = await allenSpeak(text, {
+        voiceId: row.voiceId ?? undefined,
+        modelId: directed ? 'eleven_v3' : undefined,
+        stability: directed ? row.stability ?? 0.5 : undefined
+      });
+    }
+  } catch (err) {
+    return reply.code(502).send({ error: `audio prep failed: ${(err as Error).message}` });
+  }
+
+  const portrait = (body.orientation ?? 'portrait') === 'portrait';
+  const width = portrait ? 720 : 1280;
+  const height = portrait ? 1280 : 720;
+
+  const now = new Date();
+  const [video] = await db
+    .insert(tables.videos)
+    .values({
+      id: crypto.randomUUID(),
+      productionId: row.id,
+      heygenVideoId: `custom-${randomUUID()}`,
+      status: 'processing',
+      source: 'custom',
+      avatarId: '',
+      inputText: (row.title || row.topic).slice(0, 200),
+      title: row.title ?? null,
+      brand: row.brand,
+      config: { voice: body.audioAssetId ? 'upload' : 'elevenlabs', images: imageAssetIds.length, orientation: portrait ? 'portrait' : 'landscape' },
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning();
+
+  // Render in the background; the dashboard polls the row for completion.
+  void renderCustomVideo(video.id, { imageAssetIds, audioBytes, audioExt, width, height });
+  return reply.code(201).send(video);
+});
+
+// Stream a stored video's bytes from Drive (custom renders live only in Drive).
+app.get<{ Params: { id: string } }>('/videos/:id/raw', async (request, reply) => {
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row || !row.driveFileId) return reply.code(404).send({ error: 'video not found' });
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  try {
+    const { bytes, mimeType } = await drive.download(row.driveFileId);
+    reply.header('Content-Type', mimeType || 'video/mp4');
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return reply.send(bytes);
+  } catch (err) {
+    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
   }
 });
 

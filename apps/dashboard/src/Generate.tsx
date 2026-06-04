@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, productions, type GenerateConfig, type HeyGenAvatar, type Production, type VideoRow } from './api';
 import { HiggsfieldPanel } from './HiggsfieldPanel';
+import { CustomVideo } from './CustomVideo';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
 const STYLES = [
@@ -22,6 +23,7 @@ const BG_PRESETS = ['', '#000000', '#ffffff', '#0b0d10', '#1a2230', '#f5f0e6'];
  * settings below before each render; nothing locks until you approve.
  */
 export function Generate({ p }: { p: Production }) {
+  const [mode, setMode] = useState<'custom' | 'avatar'>('custom');
   const [avatars, setAvatars] = useState<HeyGenAvatar[] | null>(null);
   const [avatarId, setAvatarId] = useState('');
   const [avatarStyle, setAvatarStyle] = useState('normal');
@@ -130,6 +132,23 @@ export function Generate({ p }: { p: Production }) {
         <span className="badge">{directed ? 'voice: emotion-directed' : 'voice: brand default'}</span>
         {approved && <span className="badge live">approved ✓</span>}
       </div>
+
+      {/* ---- mode: your assets vs generic avatar ---- */}
+      <div className="vd-segment" style={{ maxWidth: 420 }}>
+        <button type="button" className={mode === 'custom' ? 'on' : ''} onClick={() => setMode('custom')}>
+          <strong>My assets</strong>
+          <small>your images + voice</small>
+        </button>
+        <button type="button" className={mode === 'avatar' ? 'on' : ''} onClick={() => setMode('avatar')}>
+          <strong>Avatar (HeyGen)</strong>
+          <small>generic talking head</small>
+        </button>
+      </div>
+
+      {mode === 'custom' && <CustomVideo p={p} />}
+
+      {mode === 'avatar' && (
+        <>
       <p className="muted">
         Tweak the settings, render a take, then <strong>approve</strong> it or{' '}
         <strong>regenerate</strong>. Nothing locks until you approve.
@@ -264,6 +283,8 @@ export function Generate({ p }: { p: Production }) {
               );
             })}
           </div>
+        </>
+      )}
         </>
       )}
 
