@@ -13,6 +13,8 @@ export function CustomVideo({ p }: { p: Production }) {
   const [voice, setVoice] = useState<'elevenlabs' | string>('elevenlabs'); // 'elevenlabs' or an audio asset id
   const [portrait, setPortrait] = useState(true);
   const [broll, setBroll] = useState(false);
+  const [brollEnabled, setBrollEnabled] = useState(false);
+  const [brollQuery, setBrollQuery] = useState('');
   const [takes, setTakes] = useState<VideoRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +30,7 @@ export function CustomVideo({ p }: { p: Production }) {
 
   useEffect(() => {
     loadAssets();
+    productions.brollStatus().then((s) => setBrollEnabled(s.enabled)).catch(() => setBrollEnabled(false));
     productions.videos(p.id).then((vs) => {
       const cs = vs.filter((v) => v.source === 'custom');
       setTakes(cs);
@@ -76,7 +79,9 @@ export function CustomVideo({ p }: { p: Production }) {
       const v = await productions.compose(p.id, {
         voice: voice === 'elevenlabs' ? 'elevenlabs' : undefined,
         audioAssetId: voice === 'elevenlabs' ? undefined : voice,
-        orientation: portrait ? 'portrait' : 'landscape'
+        orientation: portrait ? 'portrait' : 'landscape',
+        broll: broll && brollEnabled,
+        brollQuery: broll ? brollQuery.trim() || undefined : undefined
       });
       setTakes((rows) => [v, ...rows]);
       watch(v.id);
@@ -160,9 +165,21 @@ export function CustomVideo({ p }: { p: Production }) {
 
       <label className="vd-label">Stock B-roll</label>
       <label className="toggle">
-        <input type="checkbox" checked={broll} disabled onChange={(e) => setBroll(e.target.checked)} />
-        <span>Mix in free stock b-roll <em className="muted">(needs a stock provider key — coming next)</em></span>
+        <input type="checkbox" checked={broll} disabled={!brollEnabled} onChange={(e) => setBroll(e.target.checked)} />
+        <span>
+          Mix in free stock b-roll (Pexels + Pixabay){' '}
+          {!brollEnabled && <em className="muted">— add provider keys to enable</em>}
+        </span>
       </label>
+      {broll && brollEnabled && (
+        <input
+          className="hf-select"
+          type="text"
+          placeholder="B-roll keywords (defaults to the topic)"
+          value={brollQuery}
+          onChange={(e) => setBrollQuery(e.target.value)}
+        />
+      )}
 
       <div className="gen-row">
         <button className="btn" onClick={render} disabled={busy === 'render' || imgs.length === 0}>

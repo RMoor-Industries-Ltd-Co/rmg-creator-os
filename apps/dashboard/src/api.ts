@@ -135,8 +135,16 @@ export const productions = {
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   compose: (
     id: string,
-    body: { voice?: 'elevenlabs'; audioAssetId?: string; imageAssetIds?: string[]; orientation?: 'portrait' | 'landscape' }
+    body: {
+      voice?: 'elevenlabs';
+      audioAssetId?: string;
+      imageAssetIds?: string[];
+      orientation?: 'portrait' | 'landscape';
+      broll?: boolean;
+      brollQuery?: string;
+    }
   ) => req<VideoRow>(`/productions/${id}/compose`, { method: 'POST', body: JSON.stringify(body) }),
+  brollStatus: () => req<{ enabled: boolean }>('/broll/status'),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {

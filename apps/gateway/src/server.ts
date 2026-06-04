@@ -15,14 +15,15 @@ import {
   createDriveClient,
   createHeyGenClient,
   createHiggsfieldClient,
+  createStockClient,
   HeyGenError
 } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { composeSlideshow } from './compose.js';
+import { composeSequence, type Segment } from './compose.js';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 
@@ -41,6 +42,10 @@ const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
 const heygen = HEYGEN_API_KEY ? createHeyGenClient(HEYGEN_API_KEY) : null;
 const higgs = process.env.HIGGSFIELD_ENABLED === 'true' ? createHiggsfieldClient() : null;
+const stock = createStockClient({
+  pexelsKey: process.env.PEXELS_API_KEY,
+  pixabayKey: process.env.PIXABAY_API_KEY
+});
 const drive =
   process.env.GDRIVE_CLIENT_ID && process.env.GDRIVE_CLIENT_SECRET && process.env.GDRIVE_REFRESH_TOKEN
     ? createDriveClient({
@@ -766,6 +771,9 @@ async function renderCustomVideo(
     productionId: string;
     imageAssetIds: string[];
     audioAssetId?: string;
+    broll?: boolean;
+    brollQuery?: string;
+    orientation: 'portrait' | 'landscape';
     width: number;
     height: number;
   }
@@ -805,10 +813,34 @@ async function renderCustomVideo(
       imagePaths.push(p);
     }
     if (imagePaths.length === 0) throw new Error('no usable images');
-    const outPath = join(dir, 'out.mp4');
-    await composeSlideshow({ imagePaths, audioPath, outPath, width: opts.width, height: opts.height });
 
-    const { readFile } = await import('node:fs/promises');
+    // Optionally fetch free stock b-roll and interleave it with the image slides.
+    const clipPaths: string[] = [];
+    if (opts.broll && stock.enabled() && opts.brollQuery) {
+      try {
+        const clips = await stock.search(opts.brollQuery, opts.orientation, 4);
+        for (const [i, c] of clips.entries()) {
+          const res = await fetch(c.url);
+          if (!res.ok) continue;
+          const p = join(dir, `clip_${i}.mp4`);
+          await writeFile(p, Buffer.from(await res.arrayBuffer()));
+          clipPaths.push(p);
+        }
+      } catch (err) {
+        app.log.warn({ err, id: videoId }, 'b-roll fetch failed (continuing with images)');
+      }
+    }
+
+    // Interleave images and clips: img, clip, img, clip, …
+    const segments: Segment[] = [];
+    const maxLen = Math.max(imagePaths.length, clipPaths.length);
+    for (let i = 0; i < maxLen; i++) {
+      if (imagePaths[i]) segments.push({ type: 'image', path: imagePaths[i] });
+      if (clipPaths[i]) segments.push({ type: 'video', path: clipPaths[i] });
+    }
+
+    const outPath = join(dir, 'out.mp4');
+    await composeSequence({ segments, audioPath, outPath, width: opts.width, height: opts.height });
     const mp4 = await readFile(outPath);
     let driveFileId: string | null = null;
     let driveLink: string | null = null;
@@ -844,9 +876,19 @@ async function renderCustomVideo(
   }
 }
 
+// Whether the free stock b-roll source is configured (keys present).
+app.get('/broll/status', async () => ({ enabled: stock.enabled() }));
+
 app.post<{
   Params: { id: string };
-  Body: { voice?: 'elevenlabs' | string; audioAssetId?: string; imageAssetIds?: string[]; orientation?: 'portrait' | 'landscape' };
+  Body: {
+    voice?: 'elevenlabs' | string;
+    audioAssetId?: string;
+    imageAssetIds?: string[];
+    orientation?: 'portrait' | 'landscape';
+    broll?: boolean;
+    brollQuery?: string;
+  };
 }>('/productions/:id/compose', async (request, reply) => {
   if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
   if (!PUBLIC_API_BASE) return reply.code(503).send({ error: 'PUBLIC_API_BASE not set' });
@@ -892,17 +934,26 @@ app.post<{
       inputText: (row.title || row.topic).slice(0, 200),
       title: row.title ?? null,
       brand: row.brand,
-      config: { voice: body.audioAssetId ? 'upload' : 'elevenlabs', images: imageAssetIds.length, orientation: portrait ? 'portrait' : 'landscape' },
+      config: {
+        voice: body.audioAssetId ? 'upload' : 'elevenlabs',
+        images: imageAssetIds.length,
+        orientation: portrait ? 'portrait' : 'landscape',
+        broll: Boolean(body.broll)
+      },
       createdAt: now,
       updatedAt: now
     })
     .returning();
 
   // Render in the background (audio synth + ffmpeg); the dashboard polls the row.
+  const brollQuery = (body.brollQuery || row.topic || row.title || '').slice(0, 80);
   void renderCustomVideo(video.id, {
     productionId: row.id,
     imageAssetIds,
     audioAssetId: body.audioAssetId,
+    broll: Boolean(body.broll),
+    brollQuery,
+    orientation: portrait ? 'portrait' : 'landscape',
     width,
     height
   });

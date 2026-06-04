@@ -21,41 +21,54 @@ export async function audioDuration(audioPath: string): Promise<number> {
   return Number.isFinite(d) && d > 0 ? d : 0;
 }
 
+export interface Segment {
+  type: 'image' | 'video';
+  path: string;
+}
+
 /**
- * Render a slideshow: each image scaled/cropped to WxH, shown for an equal slice
- * of the audio duration, muxed with the audio. Output is a web-ready mp4.
+ * Render a sequence of segments (image slides and/or video b-roll clips), each
+ * scaled/cropped to WxH for an equal slice of the audio duration, muxed with the
+ * voice track. Output is a web-ready mp4.
  */
-export async function composeSlideshow(opts: {
-  imagePaths: string[];
+export async function composeSequence(opts: {
+  segments: Segment[];
   audioPath: string;
   outPath: string;
   width: number;
   height: number;
 }): Promise<void> {
-  const { imagePaths, audioPath, outPath, width, height } = opts;
-  if (imagePaths.length === 0) throw new Error('compose: at least one image is required');
+  const { segments, audioPath, outPath, width, height } = opts;
+  if (segments.length === 0) throw new Error('compose: at least one segment is required');
 
-  const dur = (await audioDuration(audioPath)) || imagePaths.length * 4;
-  const per = Math.max(2, dur / imagePaths.length);
+  const dur = (await audioDuration(audioPath)) || segments.length * 4;
+  const per = Math.max(2, dur / segments.length);
 
   const inputs: string[] = [];
-  for (const p of imagePaths) inputs.push('-loop', '1', '-t', per.toFixed(3), '-i', p);
-  inputs.push('-i', audioPath);
-  const audioIndex = imagePaths.length;
-
-  // Per-image: cover-fit to WxH, square pixels, constant fps.
-  const vf = (i: number) =>
-    `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,` +
-    `crop=${width}:${height},setsar=1,fps=30,format=yuv420p[v${i}]`;
-  const chains = imagePaths.map((_, i) => vf(i));
-  let filter: string;
-  if (imagePaths.length === 1) {
-    filter = `${chains[0]}`;
-  } else {
-    const labels = imagePaths.map((_, i) => `[v${i}]`).join('');
-    filter = `${chains.join(';')};${labels}concat=n=${imagePaths.length}:v=1:a=0[v]`;
+  for (const s of segments) {
+    if (s.type === 'image') {
+      inputs.push('-loop', '1', '-t', per.toFixed(3), '-i', s.path);
+    } else {
+      // Loop short clips so each fills its slot; trim to the slot length.
+      inputs.push('-stream_loop', '-1', '-t', per.toFixed(3), '-i', s.path);
+    }
   }
-  const vlabel = imagePaths.length === 1 ? '[v0]' : '[v]';
+  inputs.push('-i', audioPath);
+  const audioIndex = segments.length;
+
+  // Per-segment: cover-fit to WxH, square pixels, constant fps, normalized PTS.
+  const chain = (i: number) =>
+    `[${i}:v]scale=${width}:${height}:force_original_aspect_ratio=increase,` +
+    `crop=${width}:${height},setsar=1,fps=30,format=yuv420p,setpts=PTS-STARTPTS[v${i}]`;
+  const chains = segments.map((_, i) => chain(i));
+  let filter: string;
+  if (segments.length === 1) {
+    filter = chains[0];
+  } else {
+    const labels = segments.map((_, i) => `[v${i}]`).join('');
+    filter = `${chains.join(';')};${labels}concat=n=${segments.length}:v=1:a=0[v]`;
+  }
+  const vlabel = segments.length === 1 ? '[v0]' : '[v]';
 
   const args = [
     '-y',
@@ -82,4 +95,21 @@ export async function composeSlideshow(opts: {
     outPath
   ];
   await pexec('ffmpeg', args, { maxBuffer: 16 * 1024 * 1024, timeout: 300_000 });
+}
+
+/** Convenience: all-image slideshow. */
+export async function composeSlideshow(opts: {
+  imagePaths: string[];
+  audioPath: string;
+  outPath: string;
+  width: number;
+  height: number;
+}): Promise<void> {
+  await composeSequence({
+    segments: opts.imagePaths.map((path) => ({ type: 'image', path })),
+    audioPath: opts.audioPath,
+    outPath: opts.outPath,
+    width: opts.width,
+    height: opts.height
+  });
 }
