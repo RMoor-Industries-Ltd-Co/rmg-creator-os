@@ -26,11 +26,20 @@ export interface HiggsfieldClient {
   getJob(jobId: string): Promise<HiggsJob>;
 }
 
+// `generate create --json` returns a bare array of job-id strings (e.g. ["uuid"]);
+// other commands nest under id/jobs/data. Handle all shapes.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function findId(o: any): string | undefined {
+  if (typeof o === 'string') return o || undefined;
   if (!o || typeof o !== 'object') return undefined;
   if (typeof o.id === 'string') return o.id;
-  if (Array.isArray(o)) return o.map(findId).find(Boolean);
+  if (Array.isArray(o)) {
+    for (const el of o) {
+      const f = findId(el);
+      if (f) return f;
+    }
+    return undefined;
+  }
   for (const k of ['jobs', 'data', 'job_set', 'job']) {
     if (o[k]) {
       const f = findId(o[k]);
