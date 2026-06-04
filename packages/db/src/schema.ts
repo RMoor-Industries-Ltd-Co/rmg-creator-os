@@ -82,6 +82,9 @@ export const videos = pgTable('videos', {
   thumbnailUrl: text('thumbnail_url'),
   driveFileId: text('drive_file_id'),
   driveLink: text('drive_link'),
+  source: text('source').notNull().default('heygen'), // heygen | higgsfield
+  approved: boolean('approved').notNull().default(false),
+  config: jsonb('config').$type<Record<string, unknown>>(), // tweak settings used for this render
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });

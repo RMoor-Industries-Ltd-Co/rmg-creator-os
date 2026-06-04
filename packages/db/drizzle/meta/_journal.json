@@ -50,6 +50,13 @@
       "when": 1780620200000,
       "tag": "0006_video_production_link",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1780620300000,
+      "tag": "0007_render_approval",
+      "breakpoints": true
     }
   ]
 }

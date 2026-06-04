@@ -27,8 +27,19 @@ export interface VideoRow {
   thumbnailUrl: string | null;
   driveFileId: string | null;
   driveLink: string | null;
+  source: string;
+  approved: boolean;
+  config: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GenerateConfig {
+  avatarId: string;
+  avatarStyle?: string;
+  background?: { type: 'color'; value: string };
+  dimension?: { width: number; height: number };
+  stabilityMode?: string;
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -109,9 +120,18 @@ export const productions = {
     req<{ profiles: EmotionProfile[]; stability_values: Record<string, number> }>(
       '/emotion/profiles'
     ),
-  generate: (id: string, body: { avatarId: string; dimension?: { width: number; height: number } }) =>
+  generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
+  approveVideo: (videoId: string) =>
+    req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
+  async discardVideo(videoId: string): Promise<void> {
+    const res = await fetch(`${API}/videos/${videoId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `discard failed (${res.status})`);
+    }
+  },
   direct: (
     id: string,
     body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean }

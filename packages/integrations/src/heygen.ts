@@ -26,6 +26,7 @@ export interface GenerateVideoOptions {
   inputText?: string;
   audioUrl?: string;
   avatarStyle?: string;
+  background?: { type: 'color'; value: string };
   dimension?: { width: number; height: number };
   title?: string;
 }
@@ -119,7 +120,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
               avatar_id: opts.avatarId,
               avatar_style: opts.avatarStyle ?? 'normal'
             },
-            voice
+            voice,
+            ...(opts.background ? { background: opts.background } : {})
           }
         ],
         dimension: opts.dimension ?? { width: 1280, height: 720 },

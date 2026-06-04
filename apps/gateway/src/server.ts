@@ -10,7 +10,7 @@ import {
   allenEmotionProfiles,
   allenSpeak
 } from './allen.js';
-import { createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
+import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import { createDriveClient, createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
 import Fastify from 'fastify';
@@ -497,9 +497,17 @@ app.delete<{ Params: { assetId: string } }>('/assets/:assetId', async (request, 
 // --- Generate (the wizard's Generate stage) -------------------------------
 // Render ALLEN's emotion-directed audio, host it, and lip-sync a HeyGen avatar
 // to it. The result links back to the production.
+const STABILITY: Record<string, number> = { creative: 0.0, natural: 0.5, robust: 1.0 };
+
 app.post<{
   Params: { id: string };
-  Body: { avatarId?: string; dimension?: { width: number; height: number } };
+  Body: {
+    avatarId?: string;
+    avatarStyle?: string;
+    background?: { type: 'color'; value: string };
+    dimension?: { width: number; height: number };
+    stabilityMode?: string;
+  };
 }>('/productions/:id/generate', async (request, reply) => {
   const client = withHeyGen(reply);
   if (!client) return reply;
@@ -509,7 +517,7 @@ app.post<{
   if (!PUBLIC_API_BASE) {
     return reply.code(503).send({ error: 'PUBLIC_API_BASE not set (HeyGen needs a public audio URL)' });
   }
-  const { avatarId, dimension } = request.body ?? {};
+  const { avatarId, avatarStyle, background, dimension, stabilityMode } = request.body ?? {};
   if (!avatarId) return reply.code(400).send({ error: 'avatarId is required' });
 
   const [row] = await db
@@ -522,13 +530,16 @@ app.post<{
   const directed = Boolean(row.taggedScript);
   const text = directed ? row.taggedScript! : row.scriptText;
   if (!text) return reply.code(400).send({ error: 'no script to generate from' });
+  const stability = directed
+    ? (stabilityMode && STABILITY[stabilityMode] != null ? STABILITY[stabilityMode] : row.stability ?? 0.5)
+    : undefined;
 
   try {
     // 1) Render the brand voice (directed → eleven_v3 + stability).
     const audio = await allenSpeak(text, {
       voiceId: row.voiceId ?? undefined,
       modelId: directed ? 'eleven_v3' : undefined,
-      stability: directed ? row.stability ?? 0.5 : undefined
+      stability
     });
     // 2) Host it (Drive AUDIO_PRODUCTION) as an asset the gateway can serve.
     const base = (row.title || row.topic).slice(0, 40).replace(/[^\w.-]+/g, '_');
@@ -557,11 +568,14 @@ app.post<{
     const audioUrl = `${PUBLIC_API_BASE}/assets/${audioAsset.id}/raw`;
 
     // 3) Lip-sync the avatar to that audio.
+    const dim = dimension ?? { width: 720, height: 1280 };
     return await heygenHandler(reply, async () => {
       const { videoId } = await client.generateVideo({
         avatarId,
+        avatarStyle,
+        background,
         audioUrl,
-        dimension: dimension ?? { width: 720, height: 1280 },
+        dimension: dim,
         title: row.title ?? undefined
       });
       const now = new Date();
@@ -572,10 +586,12 @@ app.post<{
           productionId: row.id,
           heygenVideoId: videoId,
           status: 'processing',
+          source: 'heygen',
           avatarId,
           inputText: text.slice(0, 2000),
           title: row.title ?? null,
           brand: row.brand,
+          config: { avatarId, avatarStyle, background, dimension: dim, stabilityMode },
           createdAt: now,
           updatedAt: now
         })
@@ -600,6 +616,50 @@ app.get<{ Params: { id: string } }>('/productions/:id/videos', async (request) =
     .where(eq(tables.videos.productionId, request.params.id))
     .orderBy(desc(tables.videos.createdAt))
 );
+
+// Approve a render — locks it in (one approved per production+source) and advances.
+app.post<{ Params: { id: string } }>('/videos/:id/approve', async (request, reply) => {
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  if (row.status !== 'completed') {
+    return reply.code(400).send({ error: `cannot approve a ${row.status} render` });
+  }
+  // Clear any prior approval for this production + source, then approve this one.
+  if (row.productionId) {
+    await db
+      .update(tables.videos)
+      .set({ approved: false, updatedAt: new Date() })
+      .where(and(eq(tables.videos.productionId, row.productionId), eq(tables.videos.source, row.source)));
+  }
+  const [updated] = await db
+    .update(tables.videos)
+    .set({ approved: true, updatedAt: new Date() })
+    .where(eq(tables.videos.id, row.id))
+    .returning();
+  // HeyGen render approved → ready to schedule.
+  if (row.productionId && row.source === 'heygen') {
+    await db
+      .update(tables.productions)
+      .set({ stage: 'schedule', updatedAt: new Date() })
+      .where(eq(tables.productions.id, row.productionId));
+  }
+  return updated;
+});
+
+// Discard a render (rejected take) — removes the record + its Drive copy.
+app.delete<{ Params: { id: string } }>('/videos/:id', async (request, reply) => {
+  const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  if (drive && row.driveFileId) {
+    try {
+      await drive.deleteFile(row.driveFileId);
+    } catch (err) {
+      app.log.warn({ err, id: row.id }, 'Drive delete failed (removing record anyway)');
+    }
+  }
+  await db.delete(tables.videos).where(eq(tables.videos.id, row.id));
+  return { ok: true };
+});
 
 try {
   await app.listen({ port: PORT, host: HOST });
