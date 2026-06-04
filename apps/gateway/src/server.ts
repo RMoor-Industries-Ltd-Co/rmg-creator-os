@@ -256,8 +256,8 @@ app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply)
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'video not found' });
 
-  // Custom renders update in-place (ffmpeg job); stock clips are already final.
-  if (row.source === 'custom' || row.source === 'stock') return row;
+  // Custom/final renders update in-place (ffmpeg job); stock clips are already final.
+  if (row.source === 'custom' || row.source === 'final' || row.source === 'stock') return row;
 
   // Higgsfield renders poll a different backend (the CLI).
   if (row.source === 'higgsfield') {
@@ -1024,6 +1024,127 @@ async function hostVoiceTrack(
     .returning();
   return `${PUBLIC_API_BASE}/assets/${asset.id}/raw`;
 }
+
+// Bytes for a stored video row — prefer the Drive copy, else fetch the source URL.
+async function bytesForVideo(row: VideoRecord): Promise<Buffer | null> {
+  if (row.driveFileId && drive) {
+    try {
+      return (await drive.download(row.driveFileId)).bytes;
+    } catch {
+      /* fall through to URL */
+    }
+  }
+  if (row.videoUrl && /^https?:/.test(row.videoUrl)) {
+    const res = await fetch(row.videoUrl);
+    if (res.ok) return Buffer.from(await res.arrayBuffer());
+  }
+  return null;
+}
+
+// FINAL CUT: assemble shots in the given order over the narration. Background render.
+async function renderAssembly(
+  videoId: string,
+  opts: { productionId: string; items: Array<{ type: 'video' | 'image'; id: string }>; width: number; height: number }
+): Promise<void> {
+  const dir = await mkdtemp(join(tmpdir(), 'assemble-'));
+  try {
+    const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, opts.productionId));
+    const directed = Boolean(prod?.taggedScript);
+    const text = directed ? prod!.taggedScript! : prod?.scriptText;
+    if (!text) throw new Error('no script to narrate the assembly');
+    const audio = await allenSpeak(text, {
+      voiceId: prod?.voiceId ?? undefined,
+      modelId: directed ? 'eleven_v3' : undefined,
+      stability: directed ? prod?.stability ?? 0.5 : undefined
+    });
+    const audioPath = join(dir, 'narration.mp3');
+    await writeFile(audioPath, audio);
+
+    const segments: Segment[] = [];
+    for (const [i, it] of opts.items.entries()) {
+      if (it.type === 'image') {
+        const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, it.id));
+        if (!a?.driveFileId || !drive) continue;
+        const bytes = (await drive.download(a.driveFileId)).bytes;
+        const ext = (a.mimeType.split('/')[1] || 'jpg').replace(/[^\w]/g, '');
+        const p = join(dir, `seg_${i}.${ext}`);
+        await writeFile(p, bytes);
+        segments.push({ type: 'image', path: p });
+      } else {
+        const [v] = await db.select().from(tables.videos).where(eq(tables.videos.id, it.id));
+        if (!v) continue;
+        const bytes = await bytesForVideo(v);
+        if (!bytes) continue;
+        const p = join(dir, `seg_${i}.mp4`);
+        await writeFile(p, bytes);
+        segments.push({ type: 'video', path: p });
+      }
+    }
+    if (segments.length === 0) throw new Error('no usable shots in the order');
+
+    const outPath = join(dir, 'final.mp4');
+    await composeSequence({ segments, audioPath, outPath, width: opts.width, height: opts.height });
+    const mp4 = await readFile(outPath);
+    let driveFileId: string | null = null;
+    let driveLink: string | null = null;
+    if (drive && GDRIVE_VIDEO_FOLDER_ID) {
+      const up = await drive.uploadBuffer({
+        bytes: mp4,
+        name: `final_${videoId.slice(0, 8)}.mp4`,
+        folderId: GDRIVE_VIDEO_FOLDER_ID,
+        mimeType: 'video/mp4'
+      });
+      driveFileId = up.fileId;
+      driveLink = up.webViewLink ?? null;
+    }
+    await db
+      .update(tables.videos)
+      .set({ status: 'completed', driveFileId, driveLink, videoUrl: `${PUBLIC_API_BASE}/videos/${videoId}/raw`, updatedAt: new Date() })
+      .where(eq(tables.videos.id, videoId));
+  } catch (err) {
+    app.log.error({ err, id: videoId }, 'assembly failed');
+    await db.update(tables.videos).set({ status: 'failed', updatedAt: new Date() }).where(eq(tables.videos.id, videoId));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+app.post<{
+  Params: { id: string };
+  Body: { items?: Array<{ type: 'video' | 'image'; id: string }>; orientation?: 'portrait' | 'landscape' };
+}>('/productions/:id/assemble', async (request, reply) => {
+  if (!drive || !PUBLIC_API_BASE) return reply.code(503).send({ error: 'Drive + PUBLIC_API_BASE required' });
+  const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  const items = (request.body?.items ?? []).filter((i) => i && i.id && (i.type === 'video' || i.type === 'image'));
+  if (items.length === 0) return reply.code(400).send({ error: 'order is empty — line up at least one shot' });
+  if (!row.scriptText && !row.taggedScript) return reply.code(400).send({ error: 'no script to narrate' });
+
+  const portrait = (request.body?.orientation ?? 'portrait') === 'portrait';
+  const width = portrait ? 720 : 1280;
+  const height = portrait ? 1280 : 720;
+
+  const now = new Date();
+  const [video] = await db
+    .insert(tables.videos)
+    .values({
+      id: crypto.randomUUID(),
+      productionId: row.id,
+      heygenVideoId: `final-${randomUUID()}`,
+      status: 'processing',
+      source: 'final',
+      avatarId: '',
+      inputText: (row.title || row.topic).slice(0, 200),
+      title: row.title ?? null,
+      brand: row.brand,
+      config: { shots: items.length, orientation: portrait ? 'portrait' : 'landscape' },
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning();
+  void renderAssembly(video.id, { productionId: row.id, items, width, height });
+  return reply.code(201).send(video);
+});
 
 // A-ROLL: lip-sync the operator's OWN photo (HeyGen Talking Photo) to their voice.
 // This is the standalone hero video.

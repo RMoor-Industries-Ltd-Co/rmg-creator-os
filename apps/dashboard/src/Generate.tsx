@@ -3,6 +3,7 @@ import { ARoll } from './ARoll';
 import { HiggsfieldPanel } from './HiggsfieldPanel';
 import { StockBroll } from './StockBroll';
 import { AssetBin } from './AssetBin';
+import { FinalCut } from './FinalCut';
 
 /**
  * Generate — the production assembly line, in order:
@@ -30,6 +31,7 @@ export function Generate({ p }: { p: Production }) {
       </div>
       <StockBroll p={p} />
       <AssetBin p={p} />
+      <FinalCut p={p} />
     </div>
   );
 }

@@ -154,6 +154,10 @@ export const productions = {
       method: 'POST',
       body: JSON.stringify(body)
     }),
+  assemble: (
+    id: string,
+    body: { items: Array<{ type: 'video' | 'image'; id: string }>; orientation?: 'portrait' | 'landscape' }
+  ) => req<VideoRow>(`/productions/${id}/assemble`, { method: 'POST', body: JSON.stringify(body) }),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {
