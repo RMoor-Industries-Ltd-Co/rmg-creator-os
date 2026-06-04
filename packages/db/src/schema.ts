@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, jsonb, pgEnum } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, jsonb, pgEnum, real, boolean } from 'drizzle-orm/pg-core';
 import type { InputKind, JobInput, OutputKind, RecipeStep } from '@rmg-creator-os/types';
 
 export const jobStatusEnum = pgEnum('job_status', [
@@ -35,6 +35,15 @@ export const productions = pgTable('productions', {
   scriptDocUrl: text('script_doc_url'),
   scriptStatus: text('script_status').notNull().default('draft'),
   model: text('model'),
+  // Voice Direction (Emotion Director) — set on the wizard's Voice step.
+  voiceBrand: text('voice_brand'), // brand whose inflection/energy was applied
+  taggedScript: text('tagged_script'), // script annotated with eleven_v3 audio tags
+  stabilityMode: text('stability_mode'), // creative | natural | robust
+  stability: real('stability'), // 0.0 / 0.5 / 1.0
+  audioTagPalette: text('audio_tag_palette'),
+  intensity: text('intensity'),
+  voiceId: text('voice_id'), // resolved ElevenLabs voice for the speaker
+  emotionLocked: boolean('emotion_locked').notNull().default(false),
   stage: text('stage').notNull().default('script'),
   status: text('status').notNull().default('active'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

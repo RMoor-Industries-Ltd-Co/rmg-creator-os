@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
 import { productions, type Production } from './api';
 import { navigate } from './router';
+import { VoiceDirection } from './VoiceDirection';
 
 export const STEPS = [
   { key: 'script', label: 'Script' },
+  { key: 'voice', label: 'Voice' },
   { key: 'assets', label: 'Assets' },
   { key: 'generate', label: 'Generate' },
   { key: 'schedule', label: 'Schedule' },
@@ -78,6 +80,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
               </div>
               {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginTop: 10 }} />}
             </>
+          ) : step === 'voice' ? (
+            <VoiceDirection p={p} onUpdate={setP} onLocked={() => go(idx + 1)} />
           ) : (
             <div className="stage-ph">
               <h2>{STEPS[idx].label}</h2>

@@ -144,8 +144,56 @@ footer a { color: var(--accent); text-decoration: none; }
 .stage-ph { text-align: center; padding: 36px 16px; }
 .stage-ph h2 { margin: 0 0 8px; }
 
+/* --- Voice Direction step ------------------------------------------------ */
+.voice { display: flex; flex-direction: column; gap: 8px; }
+.vd-label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--muted); margin: 10px 0 2px;
+}
+.script-view.tagged { color: var(--accent); }
+
+.vd-brands { gap: 6px; }
+.vd-check {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: #0f1419; color: var(--text); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 12px; cursor: pointer; font-size: 13px;
+}
+.vd-check:hover { border-color: var(--accent); }
+.vd-check.on { border-color: var(--accent); background: #11161c; }
+.vd-box {
+  flex: none; width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: center; color: var(--accent); font-size: 12px;
+}
+.vd-check.on .vd-box { border-color: var(--accent); }
+.vd-check .badge { margin-left: auto; }
+
+.vd-rules {
+  background: #0f1419; border: 1px solid var(--border); border-radius: 8px; padding: 4px 12px;
+}
+.vd-rules-toggle {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 12px;
+  padding: 8px 0; text-align: left; width: 100%;
+}
+.vd-rules dl { margin: 0 0 8px; display: grid; grid-template-columns: 120px 1fr; gap: 4px 12px; }
+.vd-rules dt { color: var(--muted); font-size: 12px; }
+.vd-rules dd { margin: 0; font-size: 12px; color: var(--text); }
+
+.vd-segment { display: flex; gap: 8px; flex-wrap: wrap; }
+.vd-segment button {
+  flex: 1; min-width: 90px; background: #0f1419; color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px; align-items: center; font-size: 13px;
+}
+.vd-segment button:hover { border-color: var(--accent); }
+.vd-segment button.on { border-color: var(--accent); background: #11161c; }
+.vd-segment.three button small { color: var(--muted); font-size: 11px; }
+
+.btn.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+
 @media (max-width: 640px) {
   .wrap { padding: 24px 14px 60px; }
   .intake-meta { flex-direction: column; }
   .tabs, .stepper { flex-wrap: wrap; }
+  .vd-rules dl { grid-template-columns: 1fr; }
+  .vd-segment button { min-width: 0; }
 }

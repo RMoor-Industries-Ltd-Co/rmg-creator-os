@@ -37,11 +37,66 @@ export async function allenDraft(body: {
   return json;
 }
 
-export async function allenSpeak(text: string, voiceId?: string): Promise<Buffer> {
+export interface AllenDirect {
+  tagged_script: string;
+  stability_mode: string;
+  stability: number;
+  audio_tag_palette: string;
+}
+
+// Emotion Director: annotate an approved script with eleven_v3 audio tags + emphasis.
+export async function allenDirect(body: {
+  script: string;
+  brand: string;
+  persona?: string;
+  intensity?: string;
+  stability_mode?: string;
+}): Promise<AllenDirect> {
+  const res = await fetch(`${ALLEN_URL}/direct`, {
+    method: 'POST',
+    headers: allenHeaders(),
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as AllenDirect & { detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN direct failed (${res.status})`);
+  return json;
+}
+
+export interface AllenEmotionProfile {
+  brand: string;
+  label: string;
+  tags: string;
+  emphasis: string;
+  pacing: string;
+  stability_mode: string;
+  stability: number;
+}
+
+export async function allenEmotionProfiles(): Promise<{
+  profiles: AllenEmotionProfile[];
+  stability_values: Record<string, number>;
+}> {
+  const res = await fetch(`${ALLEN_URL}/emotion/profiles`, { headers: allenHeaders() });
+  if (!res.ok) throw new Error(`ALLEN profiles failed (${res.status})`);
+  return res.json() as Promise<{
+    profiles: AllenEmotionProfile[];
+    stability_values: Record<string, number>;
+  }>;
+}
+
+export async function allenSpeak(
+  text: string,
+  opts: { voiceId?: string; modelId?: string; stability?: number } = {}
+): Promise<Buffer> {
   const res = await fetch(`${ALLEN_URL}/speak`, {
     method: 'POST',
     headers: allenHeaders(),
-    body: JSON.stringify({ text, voice_id: voiceId })
+    body: JSON.stringify({
+      text,
+      voice_id: opts.voiceId,
+      model_id: opts.modelId,
+      stability: opts.stability
+    })
   });
   if (!res.ok) throw new Error(`ALLEN speak failed (${res.status}): ${await res.text()}`);
   return Buffer.from(await res.arrayBuffer());

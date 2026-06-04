@@ -71,10 +71,28 @@ export interface Production {
   scriptDocUrl: string | null;
   scriptStatus: string;
   model: string | null;
+  voiceBrand: string | null;
+  taggedScript: string | null;
+  stabilityMode: string | null;
+  stability: number | null;
+  audioTagPalette: string | null;
+  intensity: string | null;
+  voiceId: string | null;
+  emotionLocked: boolean;
   stage: string;
   status: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface EmotionProfile {
+  brand: string;
+  label: string;
+  tags: string;
+  emphasis: string;
+  pacing: string;
+  stability_mode: string;
+  stability: number;
 }
 
 export const productions = {
@@ -87,8 +105,27 @@ export const productions = {
     outputKind?: string;
     context?: string;
   }) => req<Production>('/productions', { method: 'POST', body: JSON.stringify(input) }),
-  async speak(id: string): Promise<string> {
-    const res = await fetch(`${API}/productions/${id}/speak`, { method: 'POST' });
+  emotionProfiles: () =>
+    req<{ profiles: EmotionProfile[]; stability_values: Record<string, number> }>(
+      '/emotion/profiles'
+    ),
+  direct: (
+    id: string,
+    body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean }
+  ) =>
+    req<Production>(`/productions/${id}/direct`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  async speak(
+    id: string,
+    opts: { directed?: boolean; stabilityMode?: string } = {}
+  ): Promise<string> {
+    const res = await fetch(`${API}/productions/${id}/speak`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts)
+    });
     if (!res.ok) {
       const b = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(b.error ?? `speak failed (${res.status})`);

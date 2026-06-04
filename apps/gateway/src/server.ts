@@ -2,7 +2,13 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
-import { allenConfigured, allenDraft, allenSpeak } from './allen.js';
+import {
+  allenConfigured,
+  allenDirect,
+  allenDraft,
+  allenEmotionProfiles,
+  allenSpeak
+} from './allen.js';
 import { createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import { createDriveClient, createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
@@ -284,16 +290,92 @@ app.get<{ Params: { id: string } }>('/productions/:id', async (request, reply) =
   return row;
 });
 
-// Hear the script in the brand voice (proxies ALLEN /speak → audio).
-app.post<{ Params: { id: string } }>('/productions/:id/speak', async (request, reply) => {
+// Emotion profiles + tag rules for the Voice Direction step (proxies ALLEN).
+app.get('/emotion/profiles', async (_request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured (set ALLEN_URL)' });
+  try {
+    return await allenEmotionProfiles();
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
+});
+
+// Voice Direction: apply a brand's emotional register to the approved script.
+// Persists the tagged script + stability so the render can use eleven_v3.
+// Pass { lock: true } to lock the settings in and advance the stage.
+app.post<{
+  Params: { id: string };
+  Body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean };
+}>('/productions/:id/direct', async (request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured (set ALLEN_URL)' });
   const [row] = await db
     .select()
     .from(tables.productions)
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
-  if (!row.scriptText) return reply.code(400).send({ error: 'no script to speak' });
+  if (!row.scriptText) return reply.code(400).send({ error: 'no script to direct' });
+
+  const { voiceBrand, intensity, stabilityMode, lock } = request.body ?? {};
+  const brand = voiceBrand || row.brand;
+  let result;
   try {
-    const audio = await allenSpeak(row.scriptText);
+    result = await allenDirect({
+      script: row.scriptText,
+      brand,
+      persona: row.persona ?? undefined,
+      intensity: intensity ?? undefined,
+      stability_mode: stabilityMode ?? undefined
+    });
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
+
+  const [updated] = await db
+    .update(tables.productions)
+    .set({
+      voiceBrand: brand,
+      taggedScript: result.tagged_script,
+      stabilityMode: result.stability_mode,
+      stability: result.stability,
+      audioTagPalette: result.audio_tag_palette,
+      intensity: intensity ?? row.intensity,
+      emotionLocked: lock ? true : row.emotionLocked,
+      stage: lock ? 'assets' : row.stage,
+      updatedAt: new Date()
+    })
+    .where(eq(tables.productions.id, row.id))
+    .returning();
+  return updated;
+});
+
+// Hear the script in the brand voice (proxies ALLEN /speak → audio).
+// { directed: true } renders the emotion-tagged script with eleven_v3 + stability.
+app.post<{
+  Params: { id: string };
+  Body: { directed?: boolean; stabilityMode?: string };
+}>('/productions/:id/speak', async (request, reply) => {
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  const { directed, stabilityMode } = request.body ?? {};
+
+  const useDirected = directed && row.taggedScript;
+  const text = useDirected ? row.taggedScript! : row.scriptText;
+  if (!text) return reply.code(400).send({ error: 'no script to speak' });
+
+  const STABILITY: Record<string, number> = { creative: 0.0, natural: 0.5, robust: 1.0 };
+  const stability = useDirected
+    ? (stabilityMode ? STABILITY[stabilityMode] : undefined) ?? row.stability ?? 0.5
+    : undefined;
+
+  try {
+    const audio = await allenSpeak(text, {
+      voiceId: row.voiceId ?? undefined,
+      modelId: useDirected ? 'eleven_v3' : undefined,
+      stability
+    });
     reply.header('Content-Type', 'audio/mpeg');
     return reply.send(audio);
   } catch (err) {
