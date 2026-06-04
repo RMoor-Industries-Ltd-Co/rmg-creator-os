@@ -144,6 +144,25 @@ footer a { color: var(--accent); text-decoration: none; }
 .stage-ph { text-align: center; padding: 36px 16px; }
 .stage-ph h2 { margin: 0 0 8px; }
 
+/* --- Productions history list --------------------------------------------- */
+.prod-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.prod-row {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  background: #0f1419; color: var(--text); border: 1px solid var(--border);
+  border-radius: 10px; padding: 12px 14px; cursor: pointer; text-align: left;
+}
+.prod-row:hover { border-color: var(--accent); }
+.prod-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.prod-title { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prod-sub { font-size: 12px; }
+.prod-meta { display: flex; align-items: center; gap: 8px; flex: none; }
+.prod-go { color: var(--accent); font-size: 13px; }
+.hint { font-size: 12px; margin: 8px 0 0; }
+.notice {
+  margin: 8px 0 0; font-size: 13px; color: var(--text);
+  background: #1a2230; border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px;
+}
+
 /* --- Voice Direction step ------------------------------------------------ */
 .voice { display: flex; flex-direction: column; gap: 8px; }
 .vd-label {

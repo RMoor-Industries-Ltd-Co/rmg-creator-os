@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
 import { productions } from './api';
+import { ProductionList } from './ProductionList';
 import { navigate } from './router';
 
 const BRAND_OPTIONS = BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }));
@@ -11,6 +12,7 @@ export function Produce() {
   const [topic, setTopic] = useState('');
   const [context, setContext] = useState('');
   const [fileName, setFileName] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -18,11 +20,19 @@ export function Produce() {
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (!f) return;
-    setFileName(f.name);
-    if (f.type.startsWith('text/') || /\.(txt|md|csv|json)$/i.test(f.name)) {
+    setNotice(null);
+    const isText = f.type.startsWith('text/') || /\.(txt|md|csv|json|rtf)$/i.test(f.name);
+    if (isText) {
+      setFileName(f.name);
       setContext(await f.text());
     } else {
-      setContext(`[Attached reference: ${f.name} — non-text; describe its relevance above.]`);
+      // Images/video don't write the script — they're visual inputs for Assets.
+      setFileName('');
+      e.target.value = '';
+      setNotice(
+        `“${f.name}” looks like an image/video. ALLEN writes the script from text only — ` +
+          `add visuals later in the Assets step (they route to Higgsfield / My Poster).`
+      );
     }
   }
 
@@ -80,15 +90,28 @@ export function Produce() {
 
         <div className="intake-actions">
           <button className="attach" onClick={() => fileRef.current?.click()} type="button">
-            📎 {fileName || 'Add reference file'}
+            📎 {fileName || 'Add reference notes (text)'}
           </button>
-          <input ref={fileRef} type="file" hidden onChange={onFile} />
+          <input
+            ref={fileRef}
+            type="file"
+            hidden
+            accept=".txt,.md,.csv,.json,.rtf,text/*"
+            onChange={onFile}
+          />
           <button className="btn" onClick={submit} disabled={submitting}>
             {submitting ? 'ALLEN is writing…' : 'Submit'}
           </button>
         </div>
+        <p className="muted hint">
+          Reference notes are briefs/transcripts that inform the script. Images &amp; video are
+          added later in the Assets step.
+        </p>
+        {notice && <p className="notice">{notice}</p>}
         {error && <p className="err">{error}</p>}
       </section>
+
+      <ProductionList />
     </div>
   );
 }
