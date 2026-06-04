@@ -70,11 +70,12 @@ export const assets = pgTable('assets', {
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),
+  productionId: text('production_id'), // links a render back to its production (nullable for ad-hoc Studio renders)
   heygenVideoId: text('heygen_video_id').notNull(),
   status: text('status').notNull().default('processing'),
   avatarId: text('avatar_id').notNull(),
-  voiceId: text('voice_id').notNull(),
-  inputText: text('input_text').notNull(),
+  voiceId: text('voice_id').notNull().default(''),
+  inputText: text('input_text').notNull().default(''),
   title: text('title'),
   brand: text('brand'),
   videoUrl: text('video_url'),

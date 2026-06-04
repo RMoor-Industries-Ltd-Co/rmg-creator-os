@@ -109,6 +109,9 @@ export const productions = {
     req<{ profiles: EmotionProfile[]; stability_values: Record<string, number> }>(
       '/emotion/profiles'
     ),
+  generate: (id: string, body: { avatarId: string; dimension?: { width: number; height: number } }) =>
+    req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
+  videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
   direct: (
     id: string,
     body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean }

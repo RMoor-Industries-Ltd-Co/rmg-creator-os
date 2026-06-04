@@ -23,6 +23,9 @@ const REDIS_URL = process.env.REDIS_URL ?? '';
 const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
 const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
 const GDRIVE_IMAGE_FOLDER_ID = process.env.GDRIVE_IMAGE_FOLDER_ID ?? '';
+const GDRIVE_AUDIO_FOLDER_ID = process.env.GDRIVE_AUDIO_FOLDER_ID ?? '';
+// Public base the gateway is reachable at, so HeyGen can fetch hosted audio.
+const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 
 const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
@@ -490,6 +493,113 @@ app.delete<{ Params: { assetId: string } }>('/assets/:assetId', async (request, 
   await db.delete(tables.assets).where(eq(tables.assets.id, row.id));
   return { ok: true };
 });
+
+// --- Generate (the wizard's Generate stage) -------------------------------
+// Render ALLEN's emotion-directed audio, host it, and lip-sync a HeyGen avatar
+// to it. The result links back to the production.
+app.post<{
+  Params: { id: string };
+  Body: { avatarId?: string; dimension?: { width: number; height: number } };
+}>('/productions/:id/generate', async (request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  if (!drive || !GDRIVE_AUDIO_FOLDER_ID) {
+    return reply.code(503).send({ error: 'Audio storage not configured (set GDRIVE_AUDIO_FOLDER_ID)' });
+  }
+  if (!PUBLIC_API_BASE) {
+    return reply.code(503).send({ error: 'PUBLIC_API_BASE not set (HeyGen needs a public audio URL)' });
+  }
+  const { avatarId, dimension } = request.body ?? {};
+  if (!avatarId) return reply.code(400).send({ error: 'avatarId is required' });
+
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+
+  // Prefer the emotion-directed script (v3 audio tags); fall back to plain script.
+  const directed = Boolean(row.taggedScript);
+  const text = directed ? row.taggedScript! : row.scriptText;
+  if (!text) return reply.code(400).send({ error: 'no script to generate from' });
+
+  try {
+    // 1) Render the brand voice (directed → eleven_v3 + stability).
+    const audio = await allenSpeak(text, {
+      voiceId: row.voiceId ?? undefined,
+      modelId: directed ? 'eleven_v3' : undefined,
+      stability: directed ? row.stability ?? 0.5 : undefined
+    });
+    // 2) Host it (Drive AUDIO_PRODUCTION) as an asset the gateway can serve.
+    const base = (row.title || row.topic).slice(0, 40).replace(/[^\w.-]+/g, '_');
+    const { fileId, webViewLink } = await drive.uploadBuffer({
+      bytes: audio,
+      name: `${row.id.slice(0, 8)}_${base}.mp3`,
+      folderId: GDRIVE_AUDIO_FOLDER_ID,
+      mimeType: 'audio/mpeg'
+    });
+    const [audioAsset] = await db
+      .insert(tables.assets)
+      .values({
+        id: crypto.randomUUID(),
+        productionId: row.id,
+        kind: 'audio',
+        role: 'generated',
+        fileName: `${base}.mp3`,
+        mimeType: 'audio/mpeg',
+        sizeBytes: String(audio.length),
+        driveFileId: fileId,
+        driveLink: webViewLink ?? null,
+        status: 'stored',
+        createdAt: new Date()
+      })
+      .returning();
+    const audioUrl = `${PUBLIC_API_BASE}/assets/${audioAsset.id}/raw`;
+
+    // 3) Lip-sync the avatar to that audio.
+    return await heygenHandler(reply, async () => {
+      const { videoId } = await client.generateVideo({
+        avatarId,
+        audioUrl,
+        dimension: dimension ?? { width: 720, height: 1280 },
+        title: row.title ?? undefined
+      });
+      const now = new Date();
+      const [video] = await db
+        .insert(tables.videos)
+        .values({
+          id: crypto.randomUUID(),
+          productionId: row.id,
+          heygenVideoId: videoId,
+          status: 'processing',
+          avatarId,
+          inputText: text.slice(0, 2000),
+          title: row.title ?? null,
+          brand: row.brand,
+          createdAt: now,
+          updatedAt: now
+        })
+        .returning();
+      await db
+        .update(tables.productions)
+        .set({ stage: 'generate', updatedAt: now })
+        .where(eq(tables.productions.id, row.id));
+      reply.code(201);
+      return video;
+    });
+  } catch (err) {
+    return reply.code(502).send({ error: `generate failed: ${(err as Error).message}` });
+  }
+});
+
+// Videos rendered for a production, newest first.
+app.get<{ Params: { id: string } }>('/productions/:id/videos', async (request) =>
+  db
+    .select()
+    .from(tables.videos)
+    .where(eq(tables.videos.productionId, request.params.id))
+    .orderBy(desc(tables.videos.createdAt))
+);
 
 try {
   await app.listen({ port: PORT, host: HOST });

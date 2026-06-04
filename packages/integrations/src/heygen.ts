@@ -20,8 +20,11 @@ export interface HeyGenVoice {
 
 export interface GenerateVideoOptions {
   avatarId: string;
-  voiceId: string;
-  inputText: string;
+  // Voice: either HeyGen TTS (voiceId + inputText) OR lip-sync to a hosted audio
+  // track (audioUrl) — e.g. ALLEN's emotion-directed ElevenLabs render.
+  voiceId?: string;
+  inputText?: string;
+  audioUrl?: string;
   avatarStyle?: string;
   dimension?: { width: number; height: number };
   title?: string;
@@ -101,6 +104,13 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
     },
 
     async generateVideo(opts) {
+      // Lip-sync to a hosted audio track when given, else HeyGen TTS from text.
+      const voice = opts.audioUrl
+        ? { type: 'audio', audio_url: opts.audioUrl }
+        : { type: 'text', input_text: opts.inputText ?? '', voice_id: opts.voiceId };
+      if (!opts.audioUrl && (!opts.voiceId || !opts.inputText)) {
+        throw new HeyGenError('generateVideo: provide audioUrl, or voiceId + inputText');
+      }
       const body = {
         video_inputs: [
           {
@@ -109,11 +119,7 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
               avatar_id: opts.avatarId,
               avatar_style: opts.avatarStyle ?? 'normal'
             },
-            voice: {
-              type: 'text',
-              input_text: opts.inputText,
-              voice_id: opts.voiceId
-            }
+            voice
           }
         ],
         dimension: opts.dimension ?? { width: 1280, height: 720 },
