@@ -157,6 +157,7 @@ export const productions = {
     }
   ) => req<VideoRow>(`/productions/${id}/aroll`, { method: 'POST', body: JSON.stringify(body) }),
   arollPrompts: () => req<Array<{ name: string; text: string }>>('/aroll/prompts'),
+  prompts: (kind: 'motion' | 'scene') => req<Array<{ name: string; text: string }>>(`/prompts?kind=${kind}`),
   stockBroll: (id: string, body: { query?: string; orientation?: 'portrait' | 'landscape' }) =>
     req<{ query: string; clips: VideoRow[] }>(`/productions/${id}/broll`, {
       method: 'POST',

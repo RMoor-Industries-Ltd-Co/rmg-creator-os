@@ -36,6 +36,7 @@ const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
 const GDRIVE_IMAGE_FOLDER_ID = process.env.GDRIVE_IMAGE_FOLDER_ID ?? '';
 const GDRIVE_AUDIO_FOLDER_ID = process.env.GDRIVE_AUDIO_FOLDER_ID ?? '';
 const GDRIVE_PROMPTS_FOLDER_ID = process.env.GDRIVE_PROMPTS_FOLDER_ID ?? '';
+const GDRIVE_PERSONA_PROMPTS_FOLDER_ID = process.env.GDRIVE_PERSONA_PROMPTS_FOLDER_ID ?? '';
 // Public base the gateway is reachable at, so HeyGen can fetch hosted audio.
 const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 
@@ -1151,21 +1152,40 @@ app.post<{
   return reply.code(201).send(video);
 });
 
-// Pre-made A-Roll motion prompts (Drive folder of text files / Docs).
-app.get('/aroll/prompts', async (_request, reply) => {
-  if (!drive || !GDRIVE_PROMPTS_FOLDER_ID) return [];
+// Read a Drive folder of prompt files (text or Docs) into [{name, text}].
+async function readPromptFolder(folderId: string): Promise<Array<{ name: string; text: string }>> {
+  if (!drive || !folderId) return [];
+  const files = await drive.listFolder(folderId);
+  const textish = files.filter(
+    (f) => f.mimeType.startsWith('text/') || f.mimeType === 'application/vnd.google-apps.document'
+  );
+  const out = await Promise.all(
+    textish.map(async (f) => ({
+      name: f.name.replace(/\.(txt|md|rtf)$/i, ''),
+      text: await drive!.readText(f.id, f.mimeType).catch(() => '')
+    }))
+  );
+  return out.filter((p) => p.text).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Prompt libraries by kind: 'motion' (A-Roll/HeyGen) | 'scene' (Higgsfield personas).
+const PROMPT_FOLDERS: Record<string, string> = {
+  motion: GDRIVE_PROMPTS_FOLDER_ID,
+  scene: GDRIVE_PERSONA_PROMPTS_FOLDER_ID
+};
+app.get<{ Querystring: { kind?: string } }>('/prompts', async (request, reply) => {
+  const folder = PROMPT_FOLDERS[request.query.kind ?? 'motion'];
   try {
-    const files = await drive.listFolder(GDRIVE_PROMPTS_FOLDER_ID);
-    const textish = files.filter(
-      (f) => f.mimeType.startsWith('text/') || f.mimeType === 'application/vnd.google-apps.document'
-    );
-    const out = await Promise.all(
-      textish.map(async (f) => ({
-        name: f.name.replace(/\.(txt|md|rtf)$/i, ''),
-        text: await drive!.readText(f.id, f.mimeType).catch(() => '')
-      }))
-    );
-    return out.filter((p) => p.text).sort((a, b) => a.name.localeCompare(b.name));
+    return await readPromptFolder(folder);
+  } catch (err) {
+    return reply.code(502).send({ error: `prompts: ${(err as Error).message}` });
+  }
+});
+
+// Back-compat: A-Roll motion prompts.
+app.get('/aroll/prompts', async (_request, reply) => {
+  try {
+    return await readPromptFolder(GDRIVE_PROMPTS_FOLDER_ID);
   } catch (err) {
     return reply.code(502).send({ error: `prompts: ${(err as Error).message}` });
   }

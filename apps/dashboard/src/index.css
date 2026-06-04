@@ -249,6 +249,11 @@ footer a { color: var(--accent); text-decoration: none; }
   background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
   padding: 8px 10px; font-size: 13px; max-width: 360px;
 }
+.director-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.director-row select {
+  background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 6px 8px; font-size: 12px;
+}
 .hf-sources { display: flex; gap: 8px; flex-wrap: wrap; }
 .hf-src {
   width: 56px; height: 56px; border-radius: 8px; overflow: hidden; padding: 0; cursor: pointer;

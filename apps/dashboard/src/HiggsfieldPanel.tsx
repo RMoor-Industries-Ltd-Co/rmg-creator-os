@@ -4,6 +4,16 @@ import { api, assets, productions, type Asset, type HiggsModel, type Production,
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown', 'queued', 'in_progress']);
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
 
+// Director language (from the Master Report §6) — dropdowns to compose prompts.
+const DIRECTOR: Record<string, string[]> = {
+  Shot: ['Extreme close-up', 'Close-up', 'Medium close-up', 'Waist-up', 'Wide', 'Establishing', 'Over-the-shoulder', 'Profile', 'Three-quarter', 'Hero', 'Product macro', 'Walking'],
+  Lens: ['24mm wide', '35mm documentary', '50mm portrait', '85mm cinematic compression'],
+  Angle: ['Eye-level', 'Slight low angle', 'Slight high angle', 'Three-quarter', 'Side profile', 'Centered symmetrical'],
+  Movement: ['Locked-off tripod', 'Slow push-in', 'Slow pull-back', 'Smooth lateral slide', 'Subtle handheld', 'Gentle orbit', 'Slow pan', 'Gimbal walking'],
+  Lighting: ['Soft key light', 'Camera-left key', 'Practical lamp glow', 'Warm office', 'Cool monitor glow', 'Candlelit', 'Atlanta golden hour', 'Low-key studio', 'High-contrast cinematic', 'Soft luxury lounge'],
+  Timing: ['Hook 2-3s', 'A-roll 8-20s', 'B-roll 2-6s', 'Product 2-4s', 'Travel establishing 3-5s', 'Closing 2s']
+};
+
 /**
  * Higgsfield imagery — generate image/video from a prompt (+ optional source image
  * from Assets), then approve / regenerate / discard. Same loop as the avatar render.
@@ -12,6 +22,8 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [models, setModels] = useState<HiggsModel[]>([]);
   const [model, setModel] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [scenePrompts, setScenePrompts] = useState<Array<{ name: string; text: string }>>([]);
+  const [director, setDirector] = useState<Record<string, string>>({});
   const [imgAssets, setImgAssets] = useState<Asset[]>([]);
   const [sourceAssetId, setSourceAssetId] = useState('');
   const [takes, setTakes] = useState<VideoRow[]>([]);
@@ -28,6 +40,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         setModel((cur) => cur || m[0]?.job_set_type || '');
       })
       .catch(() => setEnabled(false));
+    productions.prompts('scene').then(setScenePrompts).catch(() => setScenePrompts([]));
     assets
       .list(p.id)
       .then((a) => setImgAssets(a.filter((x) => x.kind === 'image')))
@@ -133,10 +146,49 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         ))}
       </select>
 
+      {scenePrompts.length > 0 && (
+        <>
+          <label className="vd-label">Brand / scene prompt</label>
+          <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
+            {scenePrompts.map((sp) => (
+              <button key={sp.name} type="button" onClick={() => setPrompt(sp.text)} title={sp.name}>
+                {sp.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      <label className="vd-label">Director notes (compose)</label>
+      <div className="director-row">
+        {Object.entries(DIRECTOR).map(([field, opts]) => (
+          <select
+            key={field}
+            value={director[field] ?? ''}
+            onChange={(e) => setDirector((d) => ({ ...d, [field]: e.target.value }))}
+          >
+            <option value="">{field}…</option>
+            {opts.map((o) => (
+              <option key={o} value={o}>{o}</option>
+            ))}
+          </select>
+        ))}
+        <button
+          type="button"
+          className="attach sm"
+          onClick={() => {
+            const notes = Object.entries(director).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`).join('. ');
+            if (notes) setPrompt((cur) => `${cur.trim()}${cur.trim() ? '\n' : ''}${notes}.`);
+          }}
+        >
+          ＋ Insert
+        </button>
+      </div>
+
       <label className="vd-label">Prompt</label>
       <textarea
         className="intake-box"
-        rows={4}
+        rows={5}
         placeholder="Describe the image/scene to generate…"
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
