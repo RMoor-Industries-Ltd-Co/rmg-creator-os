@@ -22,6 +22,13 @@
       "when": 1780452523679,
       "tag": "0002_organic_riptide",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1780534724172,
+      "tag": "0003_clever_justin_hammer",
+      "breakpoints": true
     }
   ]
 }

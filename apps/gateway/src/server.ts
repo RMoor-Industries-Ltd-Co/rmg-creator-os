@@ -2,6 +2,7 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
+import { allenConfigured, allenDraft, allenSpeak } from './allen.js';
 import { createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import { createDriveClient, createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
@@ -219,6 +220,85 @@ app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply)
       .returning();
     return saveVideoToDrive(updated);
   });
+});
+
+// --- Productions (the wizard's unit; Script stage = intake → ALLEN draft) -----
+
+// Intake: a topic (+ optional context) → ALLEN writes a brand-voice script + Doc draft.
+app.post<{
+  Body: { brand?: string; topic?: string; persona?: string; outputKind?: string; context?: string };
+}>('/productions', async (request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured (set ALLEN_URL)' });
+  const { brand, topic, persona, outputKind, context } = request.body ?? {};
+  if (!brand || !topic) return reply.code(400).send({ error: 'brand and topic are required' });
+
+  let draft;
+  try {
+    draft = await allenDraft({
+      brand,
+      topic,
+      persona,
+      output_kind: outputKind ?? 'post',
+      allie_context: context,
+      write_doc: true
+    });
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
+
+  const now = new Date();
+  const [row] = await db
+    .insert(tables.productions)
+    .values({
+      id: crypto.randomUUID(),
+      brand,
+      persona: persona ?? null,
+      outputKind: outputKind ?? 'post',
+      topic,
+      context: context ?? null,
+      title: draft.title,
+      scriptText: draft.script,
+      scriptDocId: draft.doc_id ?? null,
+      scriptDocUrl: draft.doc_url ?? null,
+      scriptStatus: 'draft',
+      model: draft.model,
+      stage: 'script',
+      status: 'active',
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning();
+  return reply.code(201).send(row);
+});
+
+app.get('/productions', async () =>
+  db.select().from(tables.productions).orderBy(desc(tables.productions.createdAt))
+);
+
+app.get<{ Params: { id: string } }>('/productions/:id', async (request, reply) => {
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  return row;
+});
+
+// Hear the script in the brand voice (proxies ALLEN /speak → audio).
+app.post<{ Params: { id: string } }>('/productions/:id/speak', async (request, reply) => {
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  if (!row.scriptText) return reply.code(400).send({ error: 'no script to speak' });
+  try {
+    const audio = await allenSpeak(row.scriptText);
+    reply.header('Content-Type', 'audio/mpeg');
+    return reply.send(audio);
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
 });
 
 try {

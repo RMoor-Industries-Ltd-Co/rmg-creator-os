@@ -21,6 +21,26 @@ export const recipes = pgTable('recipes', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** A content production — the wizard operates on one of these (starts at the Script stage). */
+export const productions = pgTable('productions', {
+  id: text('id').primaryKey(),
+  brand: text('brand').notNull(),
+  persona: text('persona'),
+  outputKind: text('output_kind').notNull().default('post'),
+  topic: text('topic').notNull(),
+  context: text('context'),
+  title: text('title'),
+  scriptText: text('script_text'),
+  scriptDocId: text('script_doc_id'),
+  scriptDocUrl: text('script_doc_url'),
+  scriptStatus: text('script_status').notNull().default('draft'),
+  model: text('model'),
+  stage: text('stage').notNull().default('script'),
+  status: text('status').notNull().default('active'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),

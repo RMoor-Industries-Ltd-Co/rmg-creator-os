@@ -69,11 +69,27 @@ services:
       GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
       GDRIVE_REFRESH_TOKEN: ${GDRIVE_REFRESH_TOKEN:-}
       GDRIVE_VIDEO_FOLDER_ID: ${GDRIVE_VIDEO_FOLDER_ID:-}
+      ALLEN_URL: http://allen:8090
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # ALLEN — isolated AI scriptwriting service (PIAAR/rmg-ai). Gateway calls it at allen:8090.
+  allen:
+    image: ghcr.io/piaar/rmg-ai/allen:latest
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ALLEN_VOICE_ID: ${ALLEN_VOICE_ID:-}
+      GDRIVE_CLIENT_ID: ${GDRIVE_CLIENT_ID:-}
+      GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
+      GDRIVE_REFRESH_TOKEN: ${GDRIVE_REFRESH_TOKEN:-}
+      GDRIVE_SCRIPTS_FOLDER_ID: ${GDRIVE_SCRIPTS_FOLDER_ID:-}
+      PORT: 8090
 
   dashboard:
     image: ${GHCR_IMAGE_PREFIX}/dashboard:${IMAGE_TAG}
@@ -81,10 +97,8 @@ services:
     depends_on:
       - gateway
 
-  # --- Future services (added as built) ------------------------------------
-  # story-director / social-manager / allen / allie / my-poster:
-  #   image: ${GHCR_IMAGE_PREFIX}/<service>:${IMAGE_TAG}
-  #   DATABASE_URL + REDIS_URL, depends_on db+redis (same pattern as gateway).
+  # --- Future services ---
+  # story-director / social-manager / allie / my-poster.
   # life-os (Python): its own image; dashboard links to its Fillout form.
 
 volumes:

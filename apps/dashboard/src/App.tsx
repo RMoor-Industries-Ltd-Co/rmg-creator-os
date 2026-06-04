@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
+import { Produce } from './Produce';
 import { Studio } from './Studio';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
@@ -19,7 +20,7 @@ function Dot({ ok }: { ok: boolean }) {
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<'overview' | 'studio'>('overview');
+  const [view, setView] = useState<'overview' | 'produce' | 'studio'>('overview');
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -39,11 +40,15 @@ export function App() {
         <button className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>
           Overview
         </button>
+        <button className={view === 'produce' ? 'active' : ''} onClick={() => setView('produce')}>
+          Produce
+        </button>
         <button className={view === 'studio' ? 'active' : ''} onClick={() => setView('studio')}>
           Studio
         </button>
       </nav>
 
+      {view === 'produce' && <Produce />}
       {view === 'studio' && <Studio />}
 
       {view === 'overview' && (

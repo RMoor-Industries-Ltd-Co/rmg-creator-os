@@ -58,4 +58,41 @@ export const api = {
   }) => req<VideoRow>('/heygen/videos', { method: 'POST', body: JSON.stringify(input) })
 };
 
+export interface Production {
+  id: string;
+  brand: string;
+  persona: string | null;
+  outputKind: string;
+  topic: string;
+  context: string | null;
+  title: string | null;
+  scriptText: string | null;
+  scriptDocId: string | null;
+  scriptDocUrl: string | null;
+  scriptStatus: string;
+  model: string | null;
+  stage: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const productions = {
+  create: (input: {
+    brand: string;
+    topic: string;
+    persona?: string;
+    outputKind?: string;
+    context?: string;
+  }) => req<Production>('/productions', { method: 'POST', body: JSON.stringify(input) }),
+  async speak(id: string): Promise<string> {
+    const res = await fetch(`${API}/productions/${id}/speak`, { method: 'POST' });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `speak failed (${res.status})`);
+    }
+    return URL.createObjectURL(await res.blob());
+  }
+};
+
 export const TERMINAL = new Set(['completed', 'failed']);
