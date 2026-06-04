@@ -11,8 +11,17 @@ import {
   allenSpeak
 } from './allen.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
-import { createDriveClient, createHeyGenClient, HeyGenError } from '@rmg-creator-os/integrations';
+import {
+  createDriveClient,
+  createHeyGenClient,
+  createHiggsfieldClient,
+  HeyGenError
+} from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
+import { randomUUID } from 'node:crypto';
+import { writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 
@@ -30,6 +39,7 @@ const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
 const heygen = HEYGEN_API_KEY ? createHeyGenClient(HEYGEN_API_KEY) : null;
+const higgs = process.env.HIGGSFIELD_ENABLED === 'true' ? createHiggsfieldClient() : null;
 const drive =
   process.env.GDRIVE_CLIENT_ID && process.env.GDRIVE_CLIENT_SECRET && process.env.GDRIVE_REFRESH_TOKEN
     ? createDriveClient({
@@ -208,11 +218,59 @@ async function saveVideoToDrive(row: VideoRecord): Promise<VideoRecord> {
   }
 }
 
-// Fetch one recorded video; refresh its status from HeyGen if still in progress,
-// then ensure it's archived to Drive.
+// Save a finished Higgsfield asset (image or video) into the right Drive folder.
+async function saveHiggsfieldToDrive(row: VideoRecord): Promise<VideoRecord> {
+  if (!drive || row.status !== 'completed' || !row.videoUrl || row.driveFileId) return row;
+  const isVideo = /\.(mp4|mov|webm)(\?|$)/i.test(row.videoUrl);
+  const folder = isVideo ? GDRIVE_VIDEO_FOLDER_ID : GDRIVE_IMAGE_FOLDER_ID;
+  if (!folder) return row;
+  try {
+    const base = (row.title || row.inputText).slice(0, 40).replace(/[^\w.-]+/g, '_') || 'higgsfield';
+    const { fileId, webViewLink } = await drive.uploadFromUrl({
+      url: row.videoUrl,
+      name: `${base}_${row.id.slice(0, 8)}.${isVideo ? 'mp4' : 'png'}`,
+      folderId: folder,
+      mimeType: isVideo ? 'video/mp4' : 'image/png'
+    });
+    const [u] = await db
+      .update(tables.videos)
+      .set({ driveFileId: fileId, driveLink: webViewLink ?? null, updatedAt: new Date() })
+      .where(eq(tables.videos.id, row.id))
+      .returning();
+    return u;
+  } catch (err) {
+    app.log.error({ err, id: row.id }, 'Higgsfield Drive save failed (will retry)');
+    return row;
+  }
+}
+
+// Fetch one recorded video; refresh its status (HeyGen or Higgsfield) if still in
+// progress, then ensure it's archived to Drive.
 app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply) => {
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'video not found' });
+
+  // Higgsfield renders poll a different backend (the CLI).
+  if (row.source === 'higgsfield') {
+    if (row.status === 'completed' || row.status === 'failed' || !higgs) {
+      return saveHiggsfieldToDrive(row);
+    }
+    try {
+      const j = await higgs.getJob(row.heygenVideoId);
+      const status =
+        j.status === 'completed' ? 'completed' : ['failed', 'nsfw', 'error'].includes(j.status) ? 'failed' : 'processing';
+      const [u] = await db
+        .update(tables.videos)
+        .set({ status, videoUrl: j.resultUrl ?? row.videoUrl, updatedAt: new Date() })
+        .where(eq(tables.videos.id, row.id))
+        .returning();
+      return saveHiggsfieldToDrive(u);
+    } catch (err) {
+      app.log.error({ err, id: row.id }, 'Higgsfield status poll failed');
+      return row;
+    }
+  }
+
   const client = heygen;
   if (row.status === 'completed' || row.status === 'failed' || !client) {
     return saveVideoToDrive(row);
@@ -616,6 +674,84 @@ app.get<{ Params: { id: string } }>('/productions/:id/videos', async (request) =
     .where(eq(tables.videos.productionId, request.params.id))
     .orderBy(desc(tables.videos.createdAt))
 );
+
+// --- Higgsfield (imagery: image/video generation via the authed CLI) ---------
+function withHiggs(reply: import('fastify').FastifyReply) {
+  if (!higgs) {
+    reply.code(503).send({ error: 'Higgsfield not enabled (set HIGGSFIELD_ENABLED + mount credentials)' });
+    return null;
+  }
+  return higgs;
+}
+
+// Available generation models (default: image).
+app.get<{ Querystring: { type?: 'image' | 'video' } }>('/higgsfield/models', async (request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.listModels(request.query.type ?? 'image');
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+// Generate imagery for a production (optionally from an uploaded source image).
+app.post<{
+  Params: { id: string };
+  Body: { prompt?: string; model?: string; sourceAssetId?: string };
+}>('/productions/:id/higgsfield', async (request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  const { prompt, model, sourceAssetId } = request.body ?? {};
+  if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
+
+  const [row] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+
+  // Pull the source image down to a temp file if one was chosen.
+  let imagePath: string | undefined;
+  if (sourceAssetId) {
+    const [asset] = await db.select().from(tables.assets).where(eq(tables.assets.id, sourceAssetId));
+    if (!asset || !asset.driveFileId) return reply.code(404).send({ error: 'source asset not found' });
+    if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+    try {
+      const { bytes } = await drive.download(asset.driveFileId);
+      const ext = (asset.mimeType.split('/')[1] || 'png').replace(/[^\w]/g, '');
+      imagePath = join(tmpdir(), `hf_${randomUUID()}.${ext}`);
+      await writeFile(imagePath, bytes);
+    } catch (err) {
+      return reply.code(502).send({ error: `source download failed: ${(err as Error).message}` });
+    }
+  }
+
+  try {
+    const { jobId } = await client.createJob({ model, prompt, imagePath });
+    const now = new Date();
+    const [video] = await db
+      .insert(tables.videos)
+      .values({
+        id: crypto.randomUUID(),
+        productionId: row.id,
+        heygenVideoId: jobId, // external job id (Higgsfield)
+        status: 'processing',
+        source: 'higgsfield',
+        avatarId: '',
+        inputText: prompt.slice(0, 2000),
+        title: row.title ?? null,
+        brand: row.brand,
+        config: { model, prompt, sourceAssetId: sourceAssetId ?? null },
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning();
+    return reply.code(201).send(video);
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield generate failed: ${(err as Error).message}` });
+  }
+});
 
 // Approve a render — locks it in (one approved per production+source) and advances.
 app.post<{ Params: { id: string } }>('/videos/:id/approve', async (request, reply) => {

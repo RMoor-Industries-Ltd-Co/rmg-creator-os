@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, productions, type GenerateConfig, type HeyGenAvatar, type Production, type VideoRow } from './api';
+import { HiggsfieldPanel } from './HiggsfieldPanel';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
 const STYLES = [
@@ -266,17 +267,9 @@ export function Generate({ p }: { p: Production }) {
         </>
       )}
 
-      {/* ---- Higgsfield b-roll (pending render-node connection) ---- */}
-      <div className="higgs-card">
-        <div className="video-head">
-          <strong>B-roll imagery — Higgsfield</strong>
-          <span className="badge">not connected</span>
-        </div>
-        <p className="muted">
-          Turn your uploaded Assets into motion b-roll. The same approve / regenerate loop applies.
-          Planned tweaks: <em>source image · Soul / motion preset · duration · aspect · motion strength</em>.
-          Needs the render node + Higgsfield credentials wired before it can run.
-        </p>
+      {/* ---- Higgsfield imagery (same approve/regenerate loop) ---- */}
+      <div className="higgs-wrap">
+        <HiggsfieldPanel p={p} />
       </div>
     </div>
   );

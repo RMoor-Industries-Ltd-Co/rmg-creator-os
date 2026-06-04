@@ -55,11 +55,19 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface HiggsModel {
+  job_set_type: string;
+  display_name: string;
+  type: string;
+}
+
 export const api = {
   avatars: () => req<HeyGenAvatar[]>('/heygen/avatars'),
   voices: () => req<HeyGenVoice[]>('/heygen/voices'),
   listVideos: () => req<VideoRow[]>('/heygen/videos'),
   getVideo: (id: string) => req<VideoRow>(`/heygen/videos/${id}`),
+  higgsfieldModels: (type: 'image' | 'video' = 'image') =>
+    req<HiggsModel[]>(`/higgsfield/models?type=${type}`),
   generate: (input: {
     avatarId: string;
     voiceId: string;
@@ -123,6 +131,8 @@ export const productions = {
   generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
+  higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetId?: string }) =>
+    req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {

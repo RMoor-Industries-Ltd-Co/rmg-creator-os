@@ -243,6 +243,20 @@ footer a { color: var(--accent); text-decoration: none; }
   padding: 12px 14px;
 }
 .higgs-card .muted { font-size: 13px; }
+.higgs-wrap { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
+.higgs-panel { display: flex; flex-direction: column; gap: 8px; }
+.hf-select {
+  background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 13px; max-width: 360px;
+}
+.hf-sources { display: flex; gap: 8px; flex-wrap: wrap; }
+.hf-src {
+  width: 56px; height: 56px; border-radius: 8px; overflow: hidden; padding: 0; cursor: pointer;
+  border: 1px solid var(--border); background: #0f1419; color: var(--muted); font-size: 11px;
+}
+.hf-src.on { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.hf-src img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gen-video img { width: 100%; background: #000; display: block; max-height: 380px; object-fit: contain; }
 
 /* --- Voice Direction step ------------------------------------------------ */
 .voice { display: flex; flex-direction: column; gap: 8px; }

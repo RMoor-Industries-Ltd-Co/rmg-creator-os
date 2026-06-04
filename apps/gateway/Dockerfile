@@ -16,6 +16,8 @@ RUN pnpm --filter @rmg-creator-os/gateway --prod --legacy deploy /app/out
 FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production
+# Higgsfield CLI (no public API) — invoked server-side for imagery generation.
+RUN npm i -g @higgsfield/cli
 COPY --from=builder /app/out ./
 EXPOSE 8080
 CMD ["node", "dist/server.js"]

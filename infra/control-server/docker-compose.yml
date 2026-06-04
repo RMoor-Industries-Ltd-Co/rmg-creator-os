@@ -72,8 +72,13 @@ services:
       GDRIVE_IMAGE_FOLDER_ID: ${GDRIVE_IMAGE_FOLDER_ID:-}
       GDRIVE_AUDIO_FOLDER_ID: ${GDRIVE_AUDIO_FOLDER_ID:-}
       PUBLIC_API_BASE: ${PUBLIC_API_BASE:-}
+      HIGGSFIELD_ENABLED: ${HIGGSFIELD_ENABLED:-}
       ALLEN_URL: http://allen:8090
       ALLEN_API_KEY: ${ALLEN_API_KEY:-}
+    volumes:
+      # Authenticated Higgsfield CLI credentials (device-flow token), read-write
+      # so the CLI can refresh its lock file.
+      - ../secrets/higgsfield:/root/.config/higgsfield
     depends_on:
       db:
         condition: service_healthy
