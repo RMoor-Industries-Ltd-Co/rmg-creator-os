@@ -19,7 +19,10 @@ export interface HeyGenVoice {
 }
 
 export interface GenerateVideoOptions {
-  avatarId: string;
+  // Character: a stock/custom avatar (avatarId) OR the operator's own photo
+  // animated as a Talking Photo (talkingPhotoId). Exactly one is required.
+  avatarId?: string;
+  talkingPhotoId?: string;
   // Voice: either HeyGen TTS (voiceId + inputText) OR lip-sync to a hosted audio
   // track (audioUrl) — e.g. ALLEN's emotion-directed ElevenLabs render.
   voiceId?: string;
@@ -61,6 +64,7 @@ export class HeyGenError extends Error {
 export interface HeyGenClient {
   listAvatars(): Promise<HeyGenAvatar[]>;
   listVoices(): Promise<HeyGenVoice[]>;
+  uploadTalkingPhoto(bytes: Buffer, mimeType: string): Promise<string>;
   generateVideo(opts: GenerateVideoOptions): Promise<{ videoId: string }>;
   getVideoStatus(videoId: string): Promise<HeyGenVideoStatusResult>;
 }
@@ -104,6 +108,27 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       return j.data?.voices ?? [];
     },
 
+    // Upload the operator's own photo → a Talking Photo id for lip-sync.
+    async uploadTalkingPhoto(bytes, mimeType) {
+      const res = await fetch('https://upload.heygen.com/v1/talking_photo', {
+        method: 'POST',
+        headers: { 'X-Api-Key': apiKey, 'Content-Type': mimeType },
+        body: new Uint8Array(bytes)
+      });
+      const text = await res.text();
+      let json: unknown;
+      try {
+        json = text ? JSON.parse(text) : {};
+      } catch {
+        json = { raw: text };
+      }
+      if (!res.ok) throw new HeyGenError(`talking_photo upload failed (${res.status})`, res.status, json);
+      const id = (json as { data?: { talking_photo_id?: string; id?: string } }).data?.talking_photo_id
+        ?? (json as { data?: { id?: string } }).data?.id;
+      if (!id) throw new HeyGenError('talking_photo upload: missing id', res.status, json);
+      return id;
+    },
+
     async generateVideo(opts) {
       // Lip-sync to a hosted audio track when given, else HeyGen TTS from text.
       const voice = opts.audioUrl
@@ -112,14 +137,17 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       if (!opts.audioUrl && (!opts.voiceId || !opts.inputText)) {
         throw new HeyGenError('generateVideo: provide audioUrl, or voiceId + inputText');
       }
+      // Character: the operator's Talking Photo, or an avatar.
+      const character = opts.talkingPhotoId
+        ? { type: 'talking_photo', talking_photo_id: opts.talkingPhotoId }
+        : { type: 'avatar', avatar_id: opts.avatarId, avatar_style: opts.avatarStyle ?? 'normal' };
+      if (!opts.talkingPhotoId && !opts.avatarId) {
+        throw new HeyGenError('generateVideo: provide talkingPhotoId or avatarId');
+      }
       const body = {
         video_inputs: [
           {
-            character: {
-              type: 'avatar',
-              avatar_id: opts.avatarId,
-              avatar_style: opts.avatarStyle ?? 'normal'
-            },
+            character,
             voice,
             ...(opts.background ? { background: opts.background } : {})
           }

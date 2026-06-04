@@ -256,8 +256,8 @@ app.get<{ Params: { id: string } }>('/heygen/videos/:id', async (request, reply)
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'video not found' });
 
-  // Custom renders are updated in-place by the background ffmpeg job.
-  if (row.source === 'custom') return row;
+  // Custom renders update in-place (ffmpeg job); stock clips are already final.
+  if (row.source === 'custom' || row.source === 'stock') return row;
 
   // Higgsfield renders poll a different backend (the CLI).
   if (row.source === 'higgsfield') {
@@ -974,6 +974,171 @@ app.get<{ Params: { id: string } }>('/videos/:id/raw', async (request, reply) =>
     return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
   }
 });
+
+// Render the brand voice (directed if available) or read an uploaded voiceover,
+// host it in Drive, and return a public URL HeyGen/etc. can fetch.
+async function hostVoiceTrack(
+  prod: typeof tables.productions.$inferSelect,
+  audioAssetId: string | undefined,
+  stabilityMode: string | undefined
+): Promise<string> {
+  let bytes: Buffer;
+  if (audioAssetId) {
+    const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, audioAssetId));
+    if (!a?.driveFileId || !drive) throw new Error('audio asset unavailable');
+    bytes = (await drive.download(a.driveFileId)).bytes;
+  } else {
+    const directed = Boolean(prod.taggedScript);
+    const text = directed ? prod.taggedScript! : prod.scriptText;
+    if (!text) throw new Error('no voiceover and no script to synthesize');
+    const stability = directed
+      ? (stabilityMode && STABILITY[stabilityMode] != null ? STABILITY[stabilityMode] : prod.stability ?? 0.5)
+      : undefined;
+    bytes = await allenSpeak(text, {
+      voiceId: prod.voiceId ?? undefined,
+      modelId: directed ? 'eleven_v3' : undefined,
+      stability
+    });
+  }
+  const up = await drive!.uploadBuffer({
+    bytes,
+    name: `${prod.id.slice(0, 8)}_voice.mp3`,
+    folderId: GDRIVE_AUDIO_FOLDER_ID,
+    mimeType: 'audio/mpeg'
+  });
+  const [asset] = await db
+    .insert(tables.assets)
+    .values({
+      id: crypto.randomUUID(),
+      productionId: prod.id,
+      kind: 'audio',
+      role: 'generated',
+      fileName: 'voice.mp3',
+      mimeType: 'audio/mpeg',
+      sizeBytes: String(bytes.length),
+      driveFileId: up.fileId,
+      driveLink: up.webViewLink ?? null,
+      status: 'stored',
+      createdAt: new Date()
+    })
+    .returning();
+  return `${PUBLIC_API_BASE}/assets/${asset.id}/raw`;
+}
+
+// A-ROLL: lip-sync the operator's OWN photo (HeyGen Talking Photo) to their voice.
+// This is the standalone hero video.
+app.post<{
+  Params: { id: string };
+  Body: { imageAssetId?: string; audioAssetId?: string; orientation?: 'portrait' | 'landscape'; stabilityMode?: string };
+}>('/productions/:id/aroll', async (request, reply) => {
+  const client = withHeyGen(reply);
+  if (!client) return reply;
+  if (!drive || !GDRIVE_AUDIO_FOLDER_ID || !PUBLIC_API_BASE) {
+    return reply.code(503).send({ error: 'Audio hosting not configured (Drive + GDRIVE_AUDIO_FOLDER_ID + PUBLIC_API_BASE)' });
+  }
+  const { imageAssetId, audioAssetId, orientation, stabilityMode } = request.body ?? {};
+  if (!imageAssetId) return reply.code(400).send({ error: 'imageAssetId (your photo) is required' });
+
+  const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, imageAssetId));
+  if (!img?.driveFileId) return reply.code(404).send({ error: 'image asset not found' });
+
+  try {
+    const audioUrl = await hostVoiceTrack(row, audioAssetId, stabilityMode);
+    const { bytes } = await drive.download(img.driveFileId);
+    const talkingPhotoId = await client.uploadTalkingPhoto(bytes, img.mimeType || 'image/jpeg');
+    const portrait = (orientation ?? 'portrait') === 'portrait';
+    const dim = portrait ? { width: 720, height: 1280 } : { width: 1280, height: 720 };
+
+    return await heygenHandler(reply, async () => {
+      const { videoId } = await client.generateVideo({ talkingPhotoId, audioUrl, dimension: dim, title: row.title ?? undefined });
+      const now = new Date();
+      const [video] = await db
+        .insert(tables.videos)
+        .values({
+          id: crypto.randomUUID(),
+          productionId: row.id,
+          heygenVideoId: videoId,
+          status: 'processing',
+          source: 'heygen',
+          avatarId: '',
+          inputText: (row.title || row.topic).slice(0, 200),
+          title: row.title ?? null,
+          brand: row.brand,
+          config: { aroll: true, imageAssetId, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
+          createdAt: now,
+          updatedAt: now
+        })
+        .returning();
+      await db.update(tables.productions).set({ stage: 'generate', updatedAt: now }).where(eq(tables.productions.id, row.id));
+      reply.code(201);
+      return video;
+    });
+  } catch (err) {
+    return reply.code(502).send({ error: `A-Roll failed: ${(err as Error).message}` });
+  }
+});
+
+// Naive keyword extraction from a transcript for stock b-roll search.
+const STOPWORDS = new Set(
+  ('the a an and or but to of in on for with is are was were it this that you your i we they he she as at by be will can do not have has what when how why their our my me your yours from into about over under out up down so if then than them his her its do does did just like get got make made take used using need want know see look come back over more most very much many few all any one two'.split(
+    ' '
+  ))
+);
+function keywordsFrom(text: string, max = 5): string {
+  const counts = new Map<string, number>();
+  for (const w of text.toLowerCase().match(/[a-z]{4,}/g) ?? []) {
+    if (!STOPWORDS.has(w)) counts.set(w, (counts.get(w) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, max).map((e) => e[0]).join(' ');
+}
+
+// STOCK B-ROLL: pull free clips (Pexels + Pixabay) by transcript keywords; each
+// becomes a b-roll asset in the production's bin.
+app.post<{ Params: { id: string }; Body: { query?: string; orientation?: 'portrait' | 'landscape' } }>(
+  '/productions/:id/broll',
+  async (request, reply) => {
+    if (!stock.enabled()) return reply.code(503).send({ error: 'Stock b-roll not configured (set PEXELS_API_KEY / PIXABAY_API_KEY)' });
+    const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    const q =
+      (request.body?.query || '').trim() ||
+      keywordsFrom(row.taggedScript || row.scriptText || '') ||
+      row.topic ||
+      row.brand;
+    const orientation = request.body?.orientation ?? 'portrait';
+    try {
+      const clips = await stock.search(q, orientation, 6);
+      const now = new Date();
+      const rows = [];
+      for (const c of clips) {
+        const [v] = await db
+          .insert(tables.videos)
+          .values({
+            id: crypto.randomUUID(),
+            productionId: row.id,
+            heygenVideoId: `stock-${randomUUID()}`,
+            status: 'completed',
+            source: 'stock',
+            avatarId: '',
+            inputText: q,
+            title: `${c.source} · ${q}`,
+            brand: row.brand,
+            videoUrl: c.url,
+            config: { source: c.source, query: q },
+            createdAt: now,
+            updatedAt: now
+          })
+          .returning();
+        rows.push(v);
+      }
+      return reply.code(201).send({ query: q, clips: rows });
+    } catch (err) {
+      return reply.code(502).send({ error: `stock b-roll failed: ${(err as Error).message}` });
+    }
+  }
+);
 
 // Approve a render — locks it in (one approved per production+source) and advances.
 app.post<{ Params: { id: string } }>('/videos/:id/approve', async (request, reply) => {

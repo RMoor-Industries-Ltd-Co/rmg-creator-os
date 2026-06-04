@@ -145,6 +145,15 @@ export const productions = {
     }
   ) => req<VideoRow>(`/productions/${id}/compose`, { method: 'POST', body: JSON.stringify(body) }),
   brollStatus: () => req<{ enabled: boolean }>('/broll/status'),
+  aroll: (
+    id: string,
+    body: { imageAssetId: string; audioAssetId?: string; orientation?: 'portrait' | 'landscape'; stabilityMode?: string }
+  ) => req<VideoRow>(`/productions/${id}/aroll`, { method: 'POST', body: JSON.stringify(body) }),
+  stockBroll: (id: string, body: { query?: string; orientation?: 'portrait' | 'landscape' }) =>
+    req<{ query: string; clips: VideoRow[] }>(`/productions/${id}/broll`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
   approveVideo: (videoId: string) =>
     req<VideoRow>(`/videos/${videoId}/approve`, { method: 'POST' }),
   async discardVideo(videoId: string): Promise<void> {

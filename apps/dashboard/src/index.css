@@ -258,6 +258,16 @@ footer a { color: var(--accent); text-decoration: none; }
 .hf-src img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .gen-video img { width: 100%; background: #000; display: block; max-height: 380px; object-fit: contain; }
 .custom { display: flex; flex-direction: column; gap: 8px; }
+.stage-card {
+  display: flex; flex-direction: column; gap: 8px; margin-top: 16px;
+  background: #0f1419; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+}
+.stage-card.bin { background: #0c1116; }
+.bin-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); margin-top: 4px; }
+.bin-item { margin: 0; background: #0a0e12; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.bin-item.approved { border-color: var(--ok); box-shadow: 0 0 0 1px var(--ok) inset; }
+.bin-item video, .bin-item img { width: 100%; aspect-ratio: 9/16; object-fit: cover; background: #000; display: block; max-height: 260px; }
+.bin-item figcaption { display: flex; gap: 6px; padding: 6px 8px; }
 .toggle { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
 .toggle input { width: 16px; height: 16px; }
 .asset-file audio { width: 92%; margin-top: 6px; height: 28px; }

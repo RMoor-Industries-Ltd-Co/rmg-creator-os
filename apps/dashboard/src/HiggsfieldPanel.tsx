@@ -119,10 +119,10 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   return (
     <div className="higgs-panel">
       <div className="video-head">
-        <strong>Imagery — Higgsfield</strong>
-        <span className="badge live">connected</span>
+        <strong>② Scenes — Higgsfield</strong>
+        <span className="badge live">connected · no lip-sync</span>
       </div>
-      <p className="muted">Generate image/video, then approve · regenerate · discard. Optional source image from Assets.</p>
+      <p className="muted">Extra cinematic scenes/animation about the subject. Generate, then approve · regenerate · discard. Optional source image from Assets.</p>
 
       <label className="vd-label">Model</label>
       <select className="hf-select" value={model} onChange={(e) => setModel(e.target.value)}>
