@@ -125,7 +125,10 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       } catch {
         json = { raw: text };
       }
-      if (!res.ok) throw new HeyGenError(`talking_photo upload failed (${res.status})`, res.status, json);
+      if (!res.ok) {
+        const msg = (json as { message?: string }).message ?? text.slice(0, 160);
+        throw new HeyGenError(`talking photo rejected (${res.status}): ${msg}`, res.status, json);
+      }
       const id = (json as { data?: { talking_photo_id?: string; id?: string } }).data?.talking_photo_id
         ?? (json as { data?: { id?: string } }).data?.id;
       if (!id) throw new HeyGenError('talking_photo upload: missing id', res.status, json);
