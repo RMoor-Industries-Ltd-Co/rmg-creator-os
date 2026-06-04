@@ -25,9 +25,15 @@ Start new contracts from [`_template.md`](_template.md).
 | 11 | [Asset Storage & Lifecycle](11-asset-lifecycle.md) | `asset-lifecycle` | Planned (Drive folders live) |
 | 12 | [Brand & Capability Model](12-brand-model.md) | `brand-model` | **Canonical** |
 | 13 | [Production Wizard & Record](13-production-wizard.md) | `production-wizard` | Planned (spec) |
+| 14 | [Integration Contract (Control Plane ⇄ Services)](14-integration-contract.md) | `integration` | In build |
+| 15 | [SuperCool Integration (Finishing & Publishing)](15-supercool-integration.md) | `supercool` | Connected (MCP) |
 
-**Integrations note:** HeyGen (avatar video) is already built and live in
-`packages/integrations`; Higgsfield and ElevenLabs join it per the contracts above.
+**Integrations note:** HeyGen (avatar video) is built and live in `packages/integrations`;
+Higgsfield (CLI) + ElevenLabs (REST) + Pexels/Pixabay (REST) are wired; SuperCool joins via
+MCP for finishing & publishing. **Contract 14** governs the seams (auth, payloads, statuses,
+retries, errors, cost) across all of them — it is the ASR §12 "Integration Contract."
+Contracts **12** (Brand & Capability Model) and **13** (Production Wizard), also recommended by
+ASR §12, are already present above.
 
 ## Conventions
 
