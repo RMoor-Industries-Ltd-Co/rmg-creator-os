@@ -163,6 +163,39 @@ footer a { color: var(--accent); text-decoration: none; }
   background: #1a2230; border: 1px solid var(--accent); border-radius: 8px; padding: 8px 12px;
 }
 
+/* --- Assets step ---------------------------------------------------------- */
+.assets { display: flex; flex-direction: column; gap: 8px; }
+.dropzone {
+  margin-top: 6px; border: 1px dashed var(--border); border-radius: 10px;
+  background: #0f1419; color: var(--muted); padding: 28px 16px; text-align: center;
+  cursor: pointer; transition: border-color 0.15s, color 0.15s;
+}
+.dropzone:hover, .dropzone.drag { border-color: var(--accent); color: var(--text); }
+.asset-grid {
+  margin-top: 12px; display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+.asset-card {
+  margin: 0; background: #0f1419; border: 1px solid var(--border); border-radius: 10px;
+  overflow: hidden; display: flex; flex-direction: column;
+}
+.asset-card img, .asset-card video {
+  width: 100%; aspect-ratio: 1 / 1; object-fit: cover; background: #000; display: block;
+}
+.asset-file {
+  width: 100%; aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center;
+  font-size: 36px; background: #0a0e12;
+}
+.asset-card figcaption {
+  display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 11px;
+}
+.asset-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.asset-del {
+  flex: none; background: transparent; border: none; color: var(--muted); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
+}
+.asset-del:hover { color: var(--fail); }
+
 /* --- Voice Direction step ------------------------------------------------ */
 .voice { display: flex; flex-direction: column; gap: 8px; }
 .vd-label {

@@ -12,6 +12,11 @@ export interface DriveUploadResult {
   webViewLink?: string;
 }
 
+export interface DriveDownload {
+  bytes: Buffer;
+  mimeType: string;
+}
+
 export interface DriveClient {
   uploadFromUrl(opts: {
     url: string;
@@ -19,6 +24,14 @@ export interface DriveClient {
     folderId: string;
     mimeType?: string;
   }): Promise<DriveUploadResult>;
+  uploadBuffer(opts: {
+    bytes: Buffer;
+    name: string;
+    folderId: string;
+    mimeType?: string;
+  }): Promise<DriveUploadResult>;
+  download(fileId: string): Promise<DriveDownload>;
+  deleteFile(fileId: string): Promise<void>;
 }
 
 export function createDriveClient(cfg: DriveConfig): DriveClient {
@@ -44,40 +57,74 @@ export function createDriveClient(cfg: DriveConfig): DriveClient {
     return accessToken;
   }
 
+  async function uploadBytes(
+    bytes: Buffer,
+    name: string,
+    folderId: string,
+    contentType: string
+  ): Promise<DriveUploadResult> {
+    const token = await getToken();
+    const boundary = `rmgdrive${bytes.length.toString(36)}xyz`;
+    const metadata = JSON.stringify({ name, parents: [folderId] });
+    const body = Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
+          `--${boundary}\r\nContent-Type: ${contentType}\r\n\r\n`
+      ),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--`)
+    ]);
+    const up = await fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`
+        },
+        body
+      }
+    );
+    if (!up.ok) throw new Error(`Drive upload failed (${up.status}): ${await up.text()}`);
+    const r = (await up.json()) as { id: string; webViewLink?: string };
+    return { fileId: r.id, webViewLink: r.webViewLink };
+  }
+
   return {
     async uploadFromUrl({ url, name, folderId, mimeType }) {
-      const token = await getToken();
-
       const dl = await fetch(url);
       if (!dl.ok) throw new Error(`source download failed (${dl.status})`);
       const bytes = Buffer.from(await dl.arrayBuffer());
       const contentType = mimeType ?? dl.headers.get('content-type') ?? 'application/octet-stream';
+      return uploadBytes(bytes, name, folderId, contentType);
+    },
 
-      const boundary = `rmgdrive${bytes.length.toString(36)}xyz`;
-      const metadata = JSON.stringify({ name, parents: [folderId] });
-      const body = Buffer.concat([
-        Buffer.from(
-          `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n` +
-            `--${boundary}\r\nContent-Type: ${contentType}\r\n\r\n`
-        ),
-        bytes,
-        Buffer.from(`\r\n--${boundary}--`)
-      ]);
+    async uploadBuffer({ bytes, name, folderId, mimeType }) {
+      return uploadBytes(bytes, name, folderId, mimeType ?? 'application/octet-stream');
+    },
 
-      const up = await fetch(
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,webViewLink&supportsAllDrives=true',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': `multipart/related; boundary=${boundary}`
-          },
-          body
-        }
+    async download(fileId) {
+      const token = await getToken();
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true`,
+        { headers: { Authorization: `Bearer ${token}` } }
       );
-      if (!up.ok) throw new Error(`Drive upload failed (${up.status}): ${await up.text()}`);
-      const r = (await up.json()) as { id: string; webViewLink?: string };
-      return { fileId: r.id, webViewLink: r.webViewLink };
+      if (!res.ok) throw new Error(`Drive download failed (${res.status})`);
+      return {
+        bytes: Buffer.from(await res.arrayBuffer()),
+        mimeType: res.headers.get('content-type') ?? 'application/octet-stream'
+      };
+    },
+
+    async deleteFile(fileId) {
+      const token = await getToken();
+      const res = await fetch(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+        { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }
+      );
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`Drive delete failed (${res.status})`);
+      }
     }
   };
 }

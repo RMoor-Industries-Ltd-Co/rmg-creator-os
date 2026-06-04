@@ -50,6 +50,23 @@ export const productions = pgTable('productions', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** Uploaded inputs (images/video/reference) attached to a production — the Assets stage. */
+export const assets = pgTable('assets', {
+  id: text('id').primaryKey(),
+  productionId: text('production_id')
+    .notNull()
+    .references(() => productions.id, { onDelete: 'cascade' }),
+  kind: text('kind').notNull().default('image'), // image | video | reference
+  role: text('role').notNull().default('source'), // source | brand | generated
+  fileName: text('file_name').notNull(),
+  mimeType: text('mime_type').notNull(),
+  sizeBytes: text('size_bytes'),
+  driveFileId: text('drive_file_id'),
+  driveLink: text('drive_link'),
+  status: text('status').notNull().default('stored'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),

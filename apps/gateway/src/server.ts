@@ -2,6 +2,7 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import {
   allenConfigured,
   allenDirect,
@@ -21,6 +22,7 @@ const DATABASE_URL = process.env.DATABASE_URL ?? '';
 const REDIS_URL = process.env.REDIS_URL ?? '';
 const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY ?? '';
 const GDRIVE_VIDEO_FOLDER_ID = process.env.GDRIVE_VIDEO_FOLDER_ID ?? '';
+const GDRIVE_IMAGE_FOLDER_ID = process.env.GDRIVE_IMAGE_FOLDER_ID ?? '';
 
 const { db, pool } = createDb(DATABASE_URL);
 const redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
@@ -36,6 +38,7 @@ const drive =
 
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
+await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB/file
 
 // Apply pending DB migrations on startup (idempotent). Disable with RUN_MIGRATIONS=false.
 if (process.env.RUN_MIGRATIONS !== 'false') {
@@ -381,6 +384,111 @@ app.post<{
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
   }
+});
+
+// --- Assets (the wizard's Assets stage) -----------------------------------
+// Uploaded images/video attached to a production, stored privately in Drive
+// (IMAGE_PRODUCTION). The dashboard displays them via the /raw proxy below.
+
+function kindFor(mime: string): 'image' | 'video' | 'reference' {
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  return 'reference';
+}
+
+// Upload one or more files to a production.
+app.post<{ Params: { id: string } }>('/productions/:id/assets', async (request, reply) => {
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured (set GDRIVE_*)' });
+  if (!GDRIVE_IMAGE_FOLDER_ID) {
+    return reply.code(503).send({ error: 'Asset storage not configured (set GDRIVE_IMAGE_FOLDER_ID)' });
+  }
+  const [prod] = await db
+    .select()
+    .from(tables.productions)
+    .where(eq(tables.productions.id, request.params.id));
+  if (!prod) return reply.code(404).send({ error: 'production not found' });
+
+  const saved: (typeof tables.assets.$inferSelect)[] = [];
+  try {
+    for await (const part of request.files()) {
+      const bytes = await part.toBuffer();
+      const mime = part.mimetype || 'application/octet-stream';
+      const safe = (part.filename || 'upload').replace(/[^\w.-]+/g, '_').slice(0, 60);
+      const { fileId, webViewLink } = await drive.uploadBuffer({
+        bytes,
+        name: `${prod.id.slice(0, 8)}_${safe}`,
+        folderId: GDRIVE_IMAGE_FOLDER_ID,
+        mimeType: mime
+      });
+      const [row] = await db
+        .insert(tables.assets)
+        .values({
+          id: crypto.randomUUID(),
+          productionId: prod.id,
+          kind: kindFor(mime),
+          role: 'source',
+          fileName: part.filename || safe,
+          mimeType: mime,
+          sizeBytes: String(bytes.length),
+          driveFileId: fileId,
+          driveLink: webViewLink ?? null,
+          status: 'stored',
+          createdAt: new Date()
+        })
+        .returning();
+      saved.push(row);
+    }
+  } catch (err) {
+    return reply.code(502).send({ error: `upload failed: ${(err as Error).message}` });
+  }
+  if (saved.length === 0) return reply.code(400).send({ error: 'no files in request' });
+  // Advance the stage once the production has assets.
+  if (prod.stage === 'script' || prod.stage === 'voice' || prod.stage === 'assets') {
+    await db
+      .update(tables.productions)
+      .set({ stage: 'assets', updatedAt: new Date() })
+      .where(eq(tables.productions.id, prod.id));
+  }
+  return reply.code(201).send(saved);
+});
+
+// List a production's assets, newest first.
+app.get<{ Params: { id: string } }>('/productions/:id/assets', async (request) =>
+  db
+    .select()
+    .from(tables.assets)
+    .where(eq(tables.assets.productionId, request.params.id))
+    .orderBy(desc(tables.assets.createdAt))
+);
+
+// Stream an asset's bytes (so the dashboard can show private Drive images inline).
+app.get<{ Params: { assetId: string } }>('/assets/:assetId/raw', async (request, reply) => {
+  const [row] = await db.select().from(tables.assets).where(eq(tables.assets.id, request.params.assetId));
+  if (!row || !row.driveFileId) return reply.code(404).send({ error: 'asset not found' });
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  try {
+    const { bytes, mimeType } = await drive.download(row.driveFileId);
+    reply.header('Content-Type', row.mimeType || mimeType);
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return reply.send(bytes);
+  } catch (err) {
+    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
+  }
+});
+
+// Remove an asset (deletes the Drive file too).
+app.delete<{ Params: { assetId: string } }>('/assets/:assetId', async (request, reply) => {
+  const [row] = await db.select().from(tables.assets).where(eq(tables.assets.id, request.params.assetId));
+  if (!row) return reply.code(404).send({ error: 'asset not found' });
+  if (drive && row.driveFileId) {
+    try {
+      await drive.deleteFile(row.driveFileId);
+    } catch (err) {
+      app.log.warn({ err, id: row.id }, 'Drive delete failed (removing record anyway)');
+    }
+  }
+  await db.delete(tables.assets).where(eq(tables.assets.id, row.id));
+  return { ok: true };
 });
 
 try {

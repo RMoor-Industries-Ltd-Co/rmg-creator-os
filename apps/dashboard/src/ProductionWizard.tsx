@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { productions, type Production } from './api';
 import { navigate } from './router';
 import { VoiceDirection } from './VoiceDirection';
+import { Assets } from './Assets';
 
 export const STEPS = [
   { key: 'script', label: 'Script' },
@@ -82,6 +83,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
             </>
           ) : step === 'voice' ? (
             <VoiceDirection p={p} onUpdate={setP} onLocked={() => go(idx + 1)} />
+          ) : step === 'assets' ? (
+            <Assets p={p} />
           ) : (
             <div className="stage-ph">
               <h2>{STEPS[idx].label}</h2>

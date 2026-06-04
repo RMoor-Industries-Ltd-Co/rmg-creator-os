@@ -134,4 +134,43 @@ export const productions = {
   }
 };
 
+export interface Asset {
+  id: string;
+  productionId: string;
+  kind: 'image' | 'video' | 'reference';
+  role: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: string | null;
+  driveFileId: string | null;
+  driveLink: string | null;
+  status: string;
+  createdAt: string;
+}
+
+export const assets = {
+  list: (productionId: string) => req<Asset[]>(`/productions/${productionId}/assets`),
+  rawUrl: (assetId: string) => `${API}/assets/${assetId}/raw`,
+  async upload(productionId: string, files: FileList | File[]): Promise<Asset[]> {
+    const form = new FormData();
+    for (const f of Array.from(files)) form.append('file', f, f.name);
+    const res = await fetch(`${API}/productions/${productionId}/assets`, {
+      method: 'POST',
+      body: form
+    });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `upload failed (${res.status})`);
+    }
+    return (await res.json()) as Asset[];
+  },
+  async remove(assetId: string): Promise<void> {
+    const res = await fetch(`${API}/assets/${assetId}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `delete failed (${res.status})`);
+    }
+  }
+};
+
 export const TERMINAL = new Set(['completed', 'failed']);
