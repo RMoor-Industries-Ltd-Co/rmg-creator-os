@@ -1,14 +1,30 @@
 # Contract — A.L.L.E.N
 
 - **Service id:** `allen`
-- **Status:** Planned
+- **Status:** Live (Agent) — scriptwriting deployed; grounded in the brand-prompt system
 - **Phase:** Intelligence
 - **Owner:** Rahm Moore
 
-## Mission
-The speech-enabled interface to the company LLM — the "brain" of the suite. Over time,
-ALLEN owns **scriptwriting and brand-voice generation**, producing copy that matches
-each brand's tone from topics, briefs, or conversation.
+## ⚠️ Two ALLENs — Agent vs Persona (do not conflate)
+"ALLEN" names two distinct things:
+- **ALLEN — the Agent** (THIS contract): the ecosystem's AI service (PIAAR/`rmg-ai`)
+  that **writes scripts**, will orchestrate, and runs as infrastructure. It *consumes*
+  the whole prompt system (System → Brand → Persona presets) to produce content.
+- **ALLEN — the Persona**: a **content character** — the bot Coach Rahm uses in the COM
+  segment **"QTNA — Questions That Need Answers,"** who interrogates Coach Rahm on the
+  human, soul-holding, complex nature. It's a *speaker* (like Coach Rahm / Master Rahm),
+  defined by the **"ALLEN — Persona Default"** preset, and is a **Character** with its own
+  ElevenLabs voice + HeyGen avatar (see contract 08). *The same applies to ALLIE.*
+
+**Elegant recursion:** the ALLEN Agent writes — and can voice — the ALLEN Persona in
+QTNA. The ecosystem's real AI plays the AI character on the show.
+
+## Mission (the Agent)
+The speech-enabled interface to the company LLM — the "brain" of the suite. ALLEN owns
+**scriptwriting and brand-voice generation**, producing copy that matches each brand's
+tone from topics, briefs, or conversation. **Grounding:** the Agent composes prompts from
+the layered system (`allen/presets.json`, generated from the Notion Brand Prompts DB →
+Drive `06_CONTENT_ENGINE/BRAND_TEMPLATES/BRAND_PROMPTS`): System → Brand → Persona.
 
 ## Inputs
 - Voice or text prompts from the operator (speech-enabled).

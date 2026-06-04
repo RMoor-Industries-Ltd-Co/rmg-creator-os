@@ -5,7 +5,15 @@
 - **Phase:** Intelligence
 - **Owner:** Rahm Moore
 
-## Mission
+## ⚠️ Two ALLIEs — Agent vs Persona (do not conflate)
+Like ALLEN, "ALLIE" names two things:
+- **ALLIE — the Agent** (THIS contract): the investigator/research AI service.
+- **ALLIE — the Persona**: a **content character** (defined by the "ALLIE — Persona
+  Default" preset) — a speaker in produced content, and a **Character** with its own
+  ElevenLabs voice + HeyGen avatar (see contract 08).
+The Agent writes/voices the Persona, same recursion as ALLEN (see contract 04).
+
+## Mission (the Agent)
 The investigator agent. ALLIE makes ALLEN knowledgeable — continuously gathering,
 vetting, and structuring context from RSS feeds, internet deep-dives, and the personal
 online library, so ALLEN's scripts are current, accurate, and grounded.
