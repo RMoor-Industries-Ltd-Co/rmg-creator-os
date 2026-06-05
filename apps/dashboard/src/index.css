@@ -301,6 +301,12 @@ footer a { color: var(--accent); text-decoration: none; }
   width: 100%; box-sizing: border-box; margin-top: 2px; background: #0a0e12; color: var(--text);
   border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 5px 8px; font-size: 11px;
 }
+.tag-suggest { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 6px 6px; }
+.tag-chip {
+  background: #11161c; color: var(--accent); border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 8px; font-size: 10px; cursor: pointer;
+}
+.tag-chip:hover { border-color: var(--accent); }
 .gather-out { margin-top: 10px; background: #0c1116; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .gather-list { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 6px; }
 .gather-list li { display: flex; align-items: center; gap: 8px; font-size: 13px; flex-wrap: wrap; }

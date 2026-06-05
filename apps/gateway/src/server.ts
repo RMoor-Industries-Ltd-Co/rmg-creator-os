@@ -1054,6 +1054,10 @@ const slug = (s: string) =>
     .replace(/-+/g, '-')
     .slice(0, 60) || 'untitled';
 const dateStamp = () => new Date().toISOString().slice(0, 10);
+// Derive suggested tags from a keyword/query string (individual significant words).
+const TAG_STOP = new Set(['the', 'and', 'for', 'with', 'into', 'over', 'from', 'your', 'this', 'that']);
+const tagsFromQuery = (q: string): string[] =>
+  [...new Set((q.toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !TAG_STOP.has(w)))].slice(0, 6);
 const prodBase = (p: typeof tables.productions.$inferSelect) =>
   `${(p.brand || 'RMG').toUpperCase()}__${slug(p.title || p.topic)}`;
 
@@ -1062,7 +1066,8 @@ async function saveBrollToLibrary(v: VideoRecord): Promise<VideoRecord> {
   if (!drive || !GDRIVE_BROLL_FOLDER_ID) return v;
   const cfg = (v.config ?? {}) as Record<string, unknown>;
   if (cfg.library) return v; // already in the library
-  const tags = (cfg.tags as string[] | undefined) ?? [];
+  // Never save empty — derive tags from the clip's keywords if untagged.
+  const tags = ((cfg.tags as string[] | undefined)?.length ? (cfg.tags as string[]) : tagsFromQuery(v.inputText || (cfg.query as string) || ''));
   const tagSlug = slug(tags.join('-') || v.inputText || 'clip');
   const name = `B-ROLL__${tagSlug}__${v.source}__${v.id.slice(0, 6)}.mp4`;
   const bytes = await bytesForVideo(v);
@@ -1431,7 +1436,7 @@ app.post<{ Params: { id: string }; Body: { query?: string; orientation?: 'portra
             title: `${c.source} · ${q}`,
             brand: row.brand,
             videoUrl: c.url,
-            config: { source: c.source, query: q },
+            config: { source: c.source, query: q, tags: tagsFromQuery(q) },
             createdAt: now,
             updatedAt: now
           })

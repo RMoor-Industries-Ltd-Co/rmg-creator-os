@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react';
 import { productions, type Production, type VideoRow } from './api';
 
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
+const TAG_STOP = new Set(['the', 'and', 'for', 'with', 'into', 'over', 'from', 'your', 'this', 'that']);
+const suggestFrom = (q: string): string[] =>
+  [...new Set((q.toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !TAG_STOP.has(w)))].slice(0, 6);
 
 /**
  * Stock B-Roll — free clips from Pexels + Pixabay, found via transcript keywords.
@@ -43,10 +46,9 @@ export function StockBroll({ p }: { p: Production }) {
     }
   }
 
-  async function saveTags(id: string, tagStr: string) {
-    const tags = tagStr.split(',').map((t) => t.trim()).filter(Boolean);
+  async function saveTags(id: string, tags: string[]) {
     try {
-      const v = await productions.tagVideo(id, tags);
+      const v = await productions.tagVideo(id, [...new Set(tags.map((t) => t.trim()).filter(Boolean))]);
       setClips((cur) => cur.map((c) => (c.id === id ? v : c)));
     } catch (e: unknown) {
       setError(String(e));
@@ -111,8 +113,22 @@ export function StockBroll({ p }: { p: Production }) {
                 type="text"
                 placeholder="tags (comma-separated)…"
                 defaultValue={((v.config as { tags?: string[] })?.tags ?? []).join(', ')}
-                onBlur={(e) => saveTags(v.id, e.target.value)}
+                onBlur={(e) => saveTags(v.id, e.target.value.split(','))}
               />
+              {(() => {
+                const cfg = (v.config ?? {}) as { tags?: string[]; query?: string };
+                const cur = cfg.tags ?? [];
+                const sugg = suggestFrom(cfg.query ?? v.inputText ?? '').filter((s) => !cur.includes(s));
+                return sugg.length > 0 ? (
+                  <div className="tag-suggest">
+                    {sugg.map((s) => (
+                      <button key={s} type="button" className="tag-chip" onClick={() => saveTags(v.id, [...cur, s])}>
+                        + {s}
+                      </button>
+                    ))}
+                  </div>
+                ) : null;
+              })()}
             </div>
           ))}
         </div>
