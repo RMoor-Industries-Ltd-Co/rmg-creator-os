@@ -14,29 +14,37 @@ Like ALLEN, "ALLIE" names two things:
 The Agent writes/voices the Persona, same recursion as ALLEN (see contract 04).
 
 ## Mission (the Agent)
-The investigator agent. ALLIE makes ALLEN knowledgeable — continuously gathering,
-vetting, and structuring context from RSS feeds, internet deep-dives, and the personal
-online library, so ALLEN's scripts are current, accurate, and grounded.
+The investigator agent — and the **always-on distribution brain**. ALLIE makes ALLEN
+knowledgeable *and* makes **My Poster** effective: continuously gathering, vetting, and
+structuring context from RSS, agentic searches, and deep dives, so (a) ALLEN's scripts are
+current and grounded, and (b) every post ships with **research-backed SEO metadata**. She is
+always working, and always **suggesting the next topic for each brand**.
 
 ## Inputs
 - RSS feeds (trending articles per brand/topic).
-- Research targets / queries (from gateway or ALLEN).
+- Research targets / queries (from gateway, ALLEN, or My Poster).
 - The personal online library (documents, references).
+- A production's brand + topic + final transcript (to tailor post metadata).
 
 ## Outputs
 - Structured, cited knowledge context for ALLEN.
-- Trend signals (what's hot per brand) that can seed topics → Recipes.
+- **Post metadata suggestions for My Poster:** popular **hashtags**, platform-tuned
+  **descriptions/captions**, **first comments**, and **suggested target audiences**.
+- Trend signals + a **next-topic suggestion per brand** (the always-on queue).
 - A maintained knowledge base / index for retrieval.
 
 ## Responsibilities (in scope)
 - RSS ingestion + dedup + relevance ranking per brand.
 - Deep-research runs (multi-source fetch, verify, synthesize, cite).
+- **SEO/metadata research:** trending + high-reach hashtags, audience targeting, and
+  description/first-comment drafts per platform, fed to My Poster.
+- Always-on **topic generation** per brand (a standing suggestion queue).
 - Ingest + index the personal library for retrieval.
-- Hand ALLEN grounded, sourced context on demand.
 
 ## Out of scope (for now)
-- Writing brand copy (that is ALLEN's job).
-- Publishing decisions (Social Manager).
+- Writing the brand *script* copy (that is ALLEN's job) and the final caption *voice*
+  (ALLEN may polish); ALLIE supplies the researched raw metadata.
+- The actual scheduling/publishing (My Poster cockpit + Social Manager engine).
 - Final retrieval/model stack (deferred).
 
 ## Dependencies

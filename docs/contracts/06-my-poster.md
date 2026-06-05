@@ -1,51 +1,63 @@
-# Contract — My Poster
+# Contract — My Poster (Publishing Cockpit & Poster Studio)
 
 - **Service id:** `my-poster`
-- **Status:** Planned
-- **Phase:** Creative (graphics)
+- **Status:** Planned — role expanded to **the scheduler cockpit**
+- **Phase:** Distribution (creative + scheduling)
 - **Owner:** Rahm Moore
 
 ## Mission
-The static/graphic creative engine. Enhances images, creates and manages product
-placement photos for the stores, and manages product descriptions, tags, and prices.
+**My Poster is the scheduler you interact with.** It is the brand-facing cockpit where a
+finished video becomes a fully-specified, multi-platform post: the **cover/poster**, the
+**per-platform metadata**, the **checks & switches**, and the **schedule**. It is **powered by
+ALLIE** (research → suggested metadata) and **executes through Social Manager** (Postiz). It
+literally makes the *poster* and *posts* it.
 
 ## Inputs
-- Raw images / product photos.
-- Brand + store context; product data.
-- (From gateway) a job requesting a graphic, ad, or product listing update.
+- A practically-ready creative (final video w/ captions + optional music) from the wizard.
+- Brand context + the brand's saved **post form** (defaults).
+- **ALLIE suggestions:** hashtags, descriptions, first comments, target audiences, next-topic.
 
 ## Outputs
-- Enhanced images and graphic creatives (posters, thumbnails, image ads).
-- Product placement photos for stores.
-- Generated/updated product descriptions, tags, and prices.
+- A **cover/thumbnail** (poster) per post (image generation; can use SuperCool `image_generate`).
+- A **post package** per platform (caption, title, hashtags, first comment, switches, schedule,
+  target accounts) handed to Social Manager.
+- (Secondary) Shopify product creative + copy for the stores (HVN, R+R, BU$Y_MF).
 
 ## Responsibilities (in scope)
-- Image enhancement + brand-styled graphic generation.
-- Product placement composition for HVN, R+R, BU$Y_MF.
-- Manage Shopify product copy: descriptions, tags, pricing.
+- **Per-brand form** at the post stage: default platforms, voice/hashtag style, cadence,
+  target audience, link/first-comment templates.
+- **Per-platform metadata editor** (overrides the brand defaults): caption (length-aware),
+  title (YouTube), hashtags, first comment, cover, and the platform **checks/switches**
+  (e.g. TikTok privacy/duet/stitch/comment/music; YouTube visibility/category/made-for-kids/
+  playlist; IG Reel-vs-feed/share-to-FB/collaborator; LinkedIn visibility; Pinterest board/link).
+- **Cover/poster generation** + brand styling.
+- Schedule selection; preview; submit the post package to Social Manager.
 
 ## Out of scope (for now)
-- Video (Story Director).
-- Publishing/scheduling (Social Manager).
-- Copy *voice* generation may defer to ALLEN; My Poster handles product-data fields.
+- The actual publish/queue + URL capture (Social Manager / Postiz).
+- The research itself (ALLIE) — My Poster *consumes* ALLIE's suggestions.
+- Final video editing (CapCut, operator-side).
 
 ## Dependencies
-- **Services:** gateway (jobs), Social Manager (hands off graphics/ads), ALLEN (optional copy voice).
-- **Integrations / external:** Shopify Admin API (HVN, R+R, BU$Y_MF); image models.
-- **Models / AI:** image enhancement/generation; product-copy model (TBD).
-- **Data:** Postgres (product/creative records); Drive (image assets).
+- **Services:** ALLIE (metadata brain), Social Manager (publish engine), gateway, ALLEN
+  (optional caption voice).
+- **Integrations / external:** image model (SuperCool `image_generate`) for covers; Shopify
+  Admin API (stores).
+- **Data:** Postgres (`posts`, `brand_post_defaults`); Drive (covers + assets).
 
 ## Interface (high-level)
-- **Exposes:** `POST /enhance`, `POST /product-creative`, product listing endpoints.
-- **Consumes:** graphic/ad jobs; product-update jobs.
+- **Exposes:** the Post wizard step UI; `GET/PUT /brands/:brand/post-defaults`,
+  `POST /productions/:id/post-package`.
+- **Consumes:** ALLIE suggestion payloads; final-cut assets.
 
 ## Brands / stores touched
-HVN · R+R · BU$Y_MF (stores) + brand styling for all brands.
+All social brands (per-brand forms) + stores HVN · R+R · BU$Y_MF for product creative.
 
 ## Success criteria
-Submit a raw product photo → get an enhanced, brand-styled placement image plus a
-ready-to-publish Shopify listing (description, tags, price).
+From a ready video, the operator fills/confirms a per-brand form, sees ALLIE-suggested
+metadata, picks platforms + schedule, and submits — producing a cover + a per-platform post
+package that Social Manager publishes on time.
 
 ## Open questions
-- Image model(s) for enhancement vs. generation.
-- Pricing logic source of truth (manual, rules, or assisted).
+- Cover generation engine default (SuperCool vs Higgsfield vs uploaded).
+- How much the operator confirms vs. trusts ALLIE auto-fill (approval gate per brand).
