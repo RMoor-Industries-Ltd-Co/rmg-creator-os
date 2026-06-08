@@ -4,6 +4,7 @@ import { Produce } from './Produce';
 import { ProductionWizard } from './ProductionWizard';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
+import { Login } from './Login';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
@@ -22,7 +23,21 @@ function Dot({ ok }: { ok: boolean }) {
 export function App() {
   const [health, setHealth] = useState<HealthResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [auth, setAuth] = useState<'loading' | 'ok' | 'login'>('loading');
+  const [clientId, setClientId] = useState('');
   const path = usePath();
+
+  // Gate the app behind Google sign-in when the gateway has auth enabled.
+  useEffect(() => {
+    fetch(`${API}/auth/config`)
+      .then((r) => r.json() as Promise<{ enabled: boolean; clientId: string }>)
+      .then((cfg) => {
+        if (!cfg.enabled) return setAuth('ok');
+        setClientId(cfg.clientId);
+        return fetch(`${API}/auth/me`).then((r) => setAuth(r.ok ? 'ok' : 'login'));
+      })
+      .catch(() => setAuth('ok')); // never lock the UI if the gateway is unreachable
+  }, []);
   const wizard = path.match(/^\/produce\/([^/]+)\/([^/]+)/);
   const isProduce = path === '/produce';
   const isStudio = path === '/studio';
@@ -34,6 +49,9 @@ export function App() {
       .then(setHealth)
       .catch((e: unknown) => setError(String(e)));
   }, []);
+
+  if (auth === 'loading') return <main className="wrap"><p className="muted">Loading…</p></main>;
+  if (auth === 'login') return <Login clientId={clientId} />;
 
   return (
     <main className="wrap">
@@ -96,7 +114,24 @@ export function App() {
       )}
 
       <footer className="muted">
-        <a href="/extra">Extra / Personal</a> · proprietary in-house ecosystem
+        <a href="/extra">Extra / Personal</a> ·{' '}
+        <a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a> ·{' '}
+        proprietary in-house ecosystem
+        {clientId && (
+          <>
+            {' '}·{' '}
+            <a
+              href="#"
+              onClick={async (e) => {
+                e.preventDefault();
+                await fetch(`${API}/auth/logout`, { method: 'POST' });
+                window.location.reload();
+              }}
+            >
+              Sign out
+            </a>
+          </>
+        )}
       </footer>
     </main>
   );

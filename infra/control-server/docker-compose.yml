@@ -80,6 +80,10 @@ services:
       PIXABAY_API_KEY: ${PIXABAY_API_KEY:-}
       ALLEN_URL: http://allen:8090
       ALLEN_API_KEY: ${ALLEN_API_KEY:-}
+      AUTH_ENABLED: ${AUTH_ENABLED:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      AUTH_ALLOWED_EMAIL: ${AUTH_ALLOWED_EMAIL:-}
+      COOKIE_SECRET: ${COOKIE_SECRET:-}
     volumes:
       # Authenticated Higgsfield CLI credentials (device-flow token), read-write
       # so the CLI can refresh its lock file.

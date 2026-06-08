@@ -2,6 +2,7 @@
 // The RMG Creator OS control plane: orchestrator API the dashboard talks to.
 
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import {
   allenConfigured,
@@ -59,8 +60,80 @@ const drive =
     : null;
 
 const app = Fastify({ logger: true });
-await app.register(cors, { origin: true });
+await app.register(cors, { origin: true, credentials: true });
 await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB/file
+
+// --- Auth (single-user Google sign-in; env-gated, off until configured) ------
+const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? '';
+const AUTH_ALLOWED_EMAIL = (process.env.AUTH_ALLOWED_EMAIL ?? '').toLowerCase();
+const COOKIE_SECRET = process.env.COOKIE_SECRET ?? 'rmg-dev-secret-change-me';
+const SESSION_COOKIE = 'rmg_sess';
+await app.register(cookie, { secret: COOKIE_SECRET });
+
+// Routes that must stay public even when auth is on: health, the auth flow itself,
+// and the media proxies that HeyGen/SuperCool fetch by unguessable UUID.
+function isPublicRoute(method: string, url: string): boolean {
+  const path = url.split('?')[0];
+  if (method === 'OPTIONS') return true;
+  if (path === '/health' || path.startsWith('/auth/')) return true;
+  if (/^\/(assets|videos)\/[^/]+\/raw$/.test(path)) return true;
+  return false;
+}
+
+if (AUTH_ENABLED) {
+  app.addHook('onRequest', async (request, reply) => {
+    if (isPublicRoute(request.method, request.url)) return;
+    const raw = request.cookies?.[SESSION_COOKIE];
+    const un = raw ? request.unsignCookie(raw) : null;
+    if (!un?.valid || un.value.toLowerCase() !== AUTH_ALLOWED_EMAIL) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+  });
+}
+
+// What the dashboard needs to render the right login state.
+app.get('/auth/config', async () => ({
+  enabled: AUTH_ENABLED && Boolean(GOOGLE_CLIENT_ID),
+  clientId: GOOGLE_CLIENT_ID
+}));
+
+// Verify a Google ID token (One Tap / button), check the allow-list, set a session.
+app.post<{ Body: { credential?: string } }>('/auth/google', async (request, reply) => {
+  const credential = request.body?.credential;
+  if (!credential) return reply.code(400).send({ error: 'missing credential' });
+  try {
+    const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
+    const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string };
+    if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
+    if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
+    if (t.email.toLowerCase() !== AUTH_ALLOWED_EMAIL) return reply.code(403).send({ error: 'not authorized' });
+    reply.setCookie(SESSION_COOKIE, t.email.toLowerCase(), {
+      signed: true,
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 30
+    });
+    return { email: t.email };
+  } catch (err) {
+    return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+  }
+});
+
+app.get('/auth/me', async (request, reply) => {
+  const raw = request.cookies?.[SESSION_COOKIE];
+  const un = raw ? request.unsignCookie(raw) : null;
+  if (!un?.valid) return reply.code(401).send({ error: 'unauthorized' });
+  return { email: un.value };
+});
+
+app.post('/auth/logout', async (_request, reply) => {
+  reply.clearCookie(SESSION_COOKIE, { path: '/' });
+  return { ok: true };
+});
 
 // Apply pending DB migrations on startup (idempotent). Disable with RUN_MIGRATIONS=false.
 if (process.env.RUN_MIGRATIONS !== 'false') {
