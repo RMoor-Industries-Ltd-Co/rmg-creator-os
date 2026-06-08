@@ -67,6 +67,39 @@ export const assets = pgTable('assets', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** Per-brand defaults for the My Poster cockpit (the post form's saved settings). */
+export const brandPostDefaults = pgTable('brand_post_defaults', {
+  brand: text('brand').primaryKey(),
+  platforms: jsonb('platforms').$type<string[]>().notNull().default([]),
+  hashtagStyle: text('hashtag_style'),
+  audience: text('audience'),
+  firstCommentTemplate: text('first_comment_template'),
+  cadence: text('cadence'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+/** A platform-specific post (the My Poster cockpit's unit; one row per platform). */
+export const posts = pgTable('posts', {
+  id: text('id').primaryKey(),
+  productionId: text('production_id')
+    .notNull()
+    .references(() => productions.id, { onDelete: 'cascade' }),
+  brand: text('brand').notNull(),
+  platform: text('platform').notNull(), // tiktok | youtube | instagram | facebook | linkedin | x
+  status: text('status').notNull().default('draft'), // draft | scheduled | published | failed
+  title: text('title'), // YouTube
+  caption: text('caption'),
+  hashtags: jsonb('hashtags').$type<string[]>().notNull().default([]),
+  firstComment: text('first_comment'),
+  coverAssetId: text('cover_asset_id'),
+  switches: jsonb('switches').$type<Record<string, unknown>>(),
+  scheduleAt: timestamp('schedule_at', { withTimezone: true }),
+  postUrl: text('post_url'),
+  error: text('error'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),

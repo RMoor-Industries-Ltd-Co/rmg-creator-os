@@ -4,6 +4,7 @@ import { navigate } from './router';
 import { VoiceDirection } from './VoiceDirection';
 import { Assets } from './Assets';
 import { Generate } from './Generate';
+import { Post } from './Post';
 
 export const STEPS = [
   { key: 'script', label: 'Script' },
@@ -88,6 +89,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
             <Assets p={p} />
           ) : step === 'generate' ? (
             <Generate p={p} />
+          ) : step === 'post' ? (
+            <Post p={p} />
           ) : (
             <div className="stage-ph">
               <h2>{STEPS[idx].label}</h2>

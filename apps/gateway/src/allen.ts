@@ -84,6 +84,31 @@ export async function allenEmotionProfiles(): Promise<{
   }>;
 }
 
+export interface AllenMetadata {
+  title: string;
+  caption: string;
+  hashtags: string[];
+  first_comment: string;
+  audience: string;
+}
+
+export async function allenMetadata(body: {
+  brand: string;
+  platform: string;
+  topic?: string;
+  persona?: string;
+  script?: string;
+}): Promise<AllenMetadata> {
+  const res = await fetch(`${ALLEN_URL}/metadata`, {
+    method: 'POST',
+    headers: allenHeaders(),
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as AllenMetadata & { detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN metadata failed (${res.status})`);
+  return json;
+}
+
 export async function allenSpeak(
   text: string,
   opts: { voiceId?: string; modelId?: string; stability?: number } = {}

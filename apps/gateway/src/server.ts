@@ -9,6 +9,7 @@ import {
   allenDirect,
   allenDraft,
   allenEmotionProfiles,
+  allenMetadata,
   allenSpeak
 } from './allen.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
@@ -1565,6 +1566,104 @@ app.delete<{ Params: { id: string } }>('/videos/:id', async (request, reply) => 
   }
   await db.delete(tables.videos).where(eq(tables.videos.id, row.id));
   return { ok: true };
+});
+
+// --- My Poster cockpit (Post step): brand defaults, post packages, ALLIE suggest ---
+
+app.get<{ Params: { brand: string } }>('/brands/:brand/post-defaults', async (request) => {
+  const [row] = await db
+    .select()
+    .from(tables.brandPostDefaults)
+    .where(eq(tables.brandPostDefaults.brand, request.params.brand));
+  return row ?? { brand: request.params.brand, platforms: [], hashtagStyle: null, audience: null, firstCommentTemplate: null, cadence: null };
+});
+
+app.put<{
+  Params: { brand: string };
+  Body: { platforms?: string[]; hashtagStyle?: string; audience?: string; firstCommentTemplate?: string; cadence?: string };
+}>('/brands/:brand/post-defaults', async (request) => {
+  const b = request.body ?? {};
+  const values = {
+    brand: request.params.brand,
+    platforms: b.platforms ?? [],
+    hashtagStyle: b.hashtagStyle ?? null,
+    audience: b.audience ?? null,
+    firstCommentTemplate: b.firstCommentTemplate ?? null,
+    cadence: b.cadence ?? null,
+    updatedAt: new Date()
+  };
+  const [row] = await db
+    .insert(tables.brandPostDefaults)
+    .values(values)
+    .onConflictDoUpdate({ target: tables.brandPostDefaults.brand, set: values })
+    .returning();
+  return row;
+});
+
+app.get<{ Params: { id: string } }>('/productions/:id/posts', async (request) =>
+  db.select().from(tables.posts).where(eq(tables.posts.productionId, request.params.id))
+);
+
+// Upsert one platform's post for a production.
+app.put<{
+  Params: { id: string; platform: string };
+  Body: {
+    title?: string;
+    caption?: string;
+    hashtags?: string[];
+    firstComment?: string;
+    coverAssetId?: string;
+    switches?: Record<string, unknown>;
+    scheduleAt?: string | null;
+    status?: string;
+  };
+}>('/productions/:id/posts/:platform', async (request, reply) => {
+  const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!prod) return reply.code(404).send({ error: 'production not found' });
+  const b = request.body ?? {};
+  const [existing] = await db
+    .select()
+    .from(tables.posts)
+    .where(and(eq(tables.posts.productionId, request.params.id), eq(tables.posts.platform, request.params.platform)));
+  const fields = {
+    title: b.title ?? null,
+    caption: b.caption ?? null,
+    hashtags: b.hashtags ?? [],
+    firstComment: b.firstComment ?? null,
+    coverAssetId: b.coverAssetId ?? null,
+    switches: b.switches ?? null,
+    scheduleAt: b.scheduleAt ? new Date(b.scheduleAt) : null,
+    status: b.status ?? 'draft',
+    updatedAt: new Date()
+  };
+  if (existing) {
+    const [row] = await db.update(tables.posts).set(fields).where(eq(tables.posts.id, existing.id)).returning();
+    return row;
+  }
+  const [row] = await db
+    .insert(tables.posts)
+    .values({ id: crypto.randomUUID(), productionId: request.params.id, brand: prod.brand, platform: request.params.platform, createdAt: new Date(), ...fields })
+    .returning();
+  return reply.code(201).send(row);
+});
+
+// ALLIE v1: suggest metadata for a production + platform.
+app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/:id/suggest', async (request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+  const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!prod) return reply.code(404).send({ error: 'production not found' });
+  const platform = request.body?.platform || 'tiktok';
+  try {
+    return await allenMetadata({
+      brand: prod.brand,
+      platform,
+      topic: prod.topic ?? '',
+      persona: prod.persona ?? undefined,
+      script: prod.taggedScript || prod.scriptText || undefined
+    });
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
 });
 
 try {

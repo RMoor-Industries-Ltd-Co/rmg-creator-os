@@ -301,6 +301,13 @@ footer a { color: var(--accent); text-decoration: none; }
   width: 100%; box-sizing: border-box; margin-top: 2px; background: #0a0e12; color: var(--text);
   border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 5px 8px; font-size: 11px;
 }
+.poster { display: flex; flex-direction: column; gap: 8px; }
+.switch-grid { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; }
+.switch-sel { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.switch-sel select {
+  background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 5px 8px; font-size: 12px;
+}
 .login-gate { display: flex; flex-direction: column; align-items: center; padding-top: 12vh; }
 .login-card {
   margin-top: 24px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px;

@@ -251,4 +251,55 @@ export const assets = {
   }
 };
 
+export interface Post {
+  id: string;
+  productionId: string;
+  brand: string;
+  platform: string;
+  status: string;
+  title: string | null;
+  caption: string | null;
+  hashtags: string[];
+  firstComment: string | null;
+  coverAssetId: string | null;
+  switches: Record<string, unknown> | null;
+  scheduleAt: string | null;
+  postUrl: string | null;
+  error: string | null;
+}
+
+export interface BrandPostDefaults {
+  brand: string;
+  platforms: string[];
+  hashtagStyle: string | null;
+  audience: string | null;
+  firstCommentTemplate: string | null;
+  cadence: string | null;
+}
+
+export const poster = {
+  posts: (id: string) => req<Post[]>(`/productions/${id}/posts`),
+  savePost: (
+    id: string,
+    platform: string,
+    body: {
+      title?: string;
+      caption?: string;
+      hashtags?: string[];
+      firstComment?: string;
+      switches?: Record<string, unknown>;
+      scheduleAt?: string | null;
+      status?: string;
+    }
+  ) => req<Post>(`/productions/${id}/posts/${platform}`, { method: 'PUT', body: JSON.stringify(body) }),
+  suggest: (id: string, platform: string) =>
+    req<{ title: string; caption: string; hashtags: string[]; first_comment: string; audience: string }>(
+      `/productions/${id}/suggest`,
+      { method: 'POST', body: JSON.stringify({ platform }) }
+    ),
+  defaults: (brand: string) => req<BrandPostDefaults>(`/brands/${brand}/post-defaults`),
+  saveDefaults: (brand: string, body: Partial<BrandPostDefaults>) =>
+    req<BrandPostDefaults>(`/brands/${brand}/post-defaults`, { method: 'PUT', body: JSON.stringify(body) })
+};
+
 export const TERMINAL = new Set(['completed', 'failed']);
