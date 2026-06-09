@@ -24,3 +24,11 @@ rmg-creator-os.rmasters.group {
 		reverse_proxy dashboard:80
 	}
 }
+
+# Social Manager for RMG (self-hosted Postiz) — separate app, owns its host.
+# Postiz runs in /opt/postiz and is bridged onto this Caddy's network.
+# Auto-TLS activates once social.rmasters.group's DNS A record points here.
+social.rmasters.group {
+	encode zstd gzip
+	reverse_proxy postiz:5000
+}
