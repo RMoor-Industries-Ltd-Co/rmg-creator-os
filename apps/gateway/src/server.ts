@@ -1543,11 +1543,11 @@ app.post<{ Params: { id: string } }>('/videos/:id/approve', async (request, repl
     .set({ approved: true, updatedAt: new Date() })
     .where(eq(tables.videos.id, row.id))
     .returning();
-  // HeyGen render approved → ready to schedule.
+  // HeyGen render approved → ready to post.
   if (row.productionId && row.source === 'heygen') {
     await db
       .update(tables.productions)
-      .set({ stage: 'schedule', updatedAt: new Date() })
+      .set({ stage: 'post', updatedAt: new Date() })
       .where(eq(tables.productions.id, row.productionId));
   }
   return updated;

@@ -11,7 +11,6 @@ export const STEPS = [
   { key: 'voice', label: 'Voice' },
   { key: 'assets', label: 'Assets' },
   { key: 'generate', label: 'Generate' },
-  { key: 'schedule', label: 'Schedule' },
   { key: 'post', label: 'Post' }
 ] as const;
 
