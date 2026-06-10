@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
+import { AskAllen } from './AskAllen';
 import { ProductionWizard } from './ProductionWizard';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
@@ -41,7 +42,8 @@ export function App() {
   const wizard = path.match(/^\/produce\/([^/]+)\/([^/]+)/);
   const isProduce = path === '/produce';
   const isStudio = path === '/studio';
-  const isOverview = !wizard && !isProduce && !isStudio;
+  const isAllen = path === '/allen';
+  const isOverview = !wizard && !isProduce && !isStudio && !isAllen;
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -70,11 +72,15 @@ export function App() {
         <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
         </button>
+        <button className={isAllen ? 'active' : ''} onClick={() => navigate('/allen')}>
+          Ask ALLEN
+        </button>
       </nav>
 
       {wizard && <ProductionWizard id={wizard[1]} step={wizard[2]} />}
       {isProduce && <Produce />}
       {isStudio && <Studio />}
+      {isAllen && <AskAllen />}
 
       {isOverview && (
       <>

@@ -113,6 +113,27 @@ export async function allenTopics(body: {
   return { topics: json.topics ?? [] };
 }
 
+export interface AllenChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export async function allenChat(body: {
+  message: string;
+  brand?: string;
+  persona?: string;
+  history?: AllenChatMessage[];
+}): Promise<{ reply: string }> {
+  const res = await fetch(`${ALLEN_URL}/chat`, {
+    method: 'POST',
+    headers: allenHeaders(),
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as { reply?: string; detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN chat failed (${res.status})`);
+  return { reply: json.reply ?? '' };
+}
+
 export async function allenMetadata(body: {
   brand: string;
   platform: string;

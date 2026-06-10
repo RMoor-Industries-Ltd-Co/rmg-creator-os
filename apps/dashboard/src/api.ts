@@ -320,4 +320,26 @@ export const poster = {
     req<BrandPostDefaults>(`/brands/${brand}/post-defaults`, { method: 'PUT', body: JSON.stringify(body) })
 };
 
+export interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export const allen = {
+  chat: (body: { message: string; brand?: string; history?: ChatTurn[] }) =>
+    req<{ reply: string }>('/allen/chat', { method: 'POST', body: JSON.stringify(body) }),
+  async speak(text: string, voiceId?: string): Promise<string> {
+    const res = await fetch(`${API}/allen/speak`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voiceId })
+    });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `speak failed (${res.status})`);
+    }
+    return URL.createObjectURL(await res.blob());
+  }
+};
+
 export const TERMINAL = new Set(['completed', 'failed']);

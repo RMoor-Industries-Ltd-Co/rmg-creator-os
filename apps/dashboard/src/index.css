@@ -301,6 +301,26 @@ footer a { color: var(--accent); text-decoration: none; }
   width: 100%; box-sizing: border-box; margin-top: 2px; background: #0a0e12; color: var(--text);
   border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 5px 8px; font-size: 11px;
 }
+.ask-allen { display: flex; flex-direction: column; gap: 14px; }
+.ask-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.ask-head h2 { margin: 0 0 2px; }
+.ask-controls { display: flex; align-items: center; gap: 14px; }
+.ask-controls select { background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+.chat-log { display: flex; flex-direction: column; gap: 12px; min-height: 320px; max-height: 56vh; overflow-y: auto; padding: 8px 2px; }
+.chat-empty { margin: auto; text-align: center; }
+.starters { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 12px; }
+.starter { background: #0f1419; border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 8px 14px; font-size: 13px; cursor: pointer; }
+.starter:hover { border-color: var(--accent); color: var(--accent); }
+.bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; }
+.bubble-role { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 3px; }
+.bubble-text { white-space: pre-wrap; line-height: 1.5; }
+.bubble.user { align-self: flex-end; background: #1d2b3a; border: 1px solid var(--border); }
+.bubble.assistant { align-self: flex-start; background: #0f1419; border: 1px solid var(--border); }
+.speak-btn { margin-top: 8px; background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.speak-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.chat-input { display: flex; gap: 10px; }
+.chat-input input { flex: 1; background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.chat-input .btn { margin-top: 0; flex: none; }
 .allie-suggest { margin-top: 10px; }
 .allie-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .trend-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }

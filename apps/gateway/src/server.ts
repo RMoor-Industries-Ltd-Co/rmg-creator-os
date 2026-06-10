@@ -5,13 +5,15 @@ import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
 import {
+  allenChat,
   allenConfigured,
   allenDirect,
   allenDraft,
   allenEmotionProfiles,
   allenMetadata,
   allenSpeak,
-  allenTopics
+  allenTopics,
+  type AllenChatMessage
 } from './allen.js';
 import { brandTrends, ensureDefaultFeeds, trendContext, type TrendItem } from './feeds.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
@@ -1671,6 +1673,45 @@ app.get<{ Params: { brand: string }; Querystring: { count?: string; trends?: str
     try {
       const { topics } = await allenTopics({ brand, count, context });
       return { topics, trends };
+    } catch (err) {
+      return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+    }
+  }
+);
+
+// Talk to ALLEN — conversational reply (written to be spoken).
+app.post<{ Body: { message?: string; brand?: string; persona?: string; history?: AllenChatMessage[] } }>(
+  '/allen/chat',
+  async (request, reply) => {
+    if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+    const message = (request.body?.message ?? '').trim();
+    if (!message) return reply.code(400).send({ error: 'message required' });
+    try {
+      return await allenChat({
+        message,
+        brand: request.body?.brand,
+        persona: request.body?.persona,
+        history: (request.body?.history ?? []).slice(-8)
+      });
+    } catch (err) {
+      return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+    }
+  }
+);
+
+// ALLEN speaks — generic text → ElevenLabs audio (mp3).
+app.post<{ Body: { text?: string; voiceId?: string; stability?: number } }>(
+  '/allen/speak',
+  async (request, reply) => {
+    if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+    const text = (request.body?.text ?? '').trim();
+    if (!text) return reply.code(400).send({ error: 'text required' });
+    try {
+      const audio = await allenSpeak(text, {
+        voiceId: request.body?.voiceId,
+        stability: request.body?.stability
+      });
+      return reply.type('audio/mpeg').send(audio);
     } catch (err) {
       return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
     }
