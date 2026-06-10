@@ -114,9 +114,17 @@ export interface EmotionProfile {
   stability: number;
 }
 
+export interface TopicSuggestion {
+  title: string;
+  hook: string;
+  angle: string;
+}
+
 export const productions = {
   get: (id: string) => req<Production>(`/productions/${id}`),
   list: () => req<Production[]>('/productions'),
+  topics: (brand: string, count = 6) =>
+    req<{ topics: TopicSuggestion[] }>(`/brands/${brand}/topics?count=${count}`),
   create: (input: {
     brand: string;
     topic: string;

@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
-import { productions } from './api';
+import { productions, type TopicSuggestion } from './api';
 import { ProductionList } from './ProductionList';
 import { navigate } from './router';
 
@@ -15,7 +15,22 @@ export function Produce() {
   const [notice, setNotice] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<TopicSuggestion[]>([]);
+  const [suggesting, setSuggesting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  async function suggestTopics() {
+    setSuggesting(true);
+    setError(null);
+    try {
+      const r = await productions.topics(brand, 6);
+      setSuggestions(r.topics);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setSuggesting(false);
+    }
+  }
 
   async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
@@ -87,6 +102,35 @@ export function Produce() {
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
         />
+
+        <div className="allie-suggest">
+          <button type="button" className="attach" onClick={suggestTopics} disabled={suggesting}>
+            {suggesting ? 'ALLIE is thinking…' : `✨ Ask ALLIE for ${BRAND_OPTIONS.find((b) => b.value === brand)?.label ?? ''} topics`}
+          </button>
+          {suggestions.length > 0 && (
+            <ul className="topic-cards">
+              {suggestions.map((t, i) => (
+                <li key={i} className="topic-card">
+                  <div className="topic-main">
+                    <strong>{t.title}</strong>
+                    {t.hook && <span className="topic-hook">“{t.hook}”</span>}
+                    {t.angle && <span className="muted topic-angle">{t.angle}</span>}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn sm"
+                    onClick={() => {
+                      setTopic(t.title);
+                      if (t.hook || t.angle) setContext([t.hook, t.angle].filter(Boolean).join(' — '));
+                    }}
+                  >
+                    Use →
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         <div className="intake-actions">
           <button className="attach" onClick={() => fileRef.current?.click()} type="button">

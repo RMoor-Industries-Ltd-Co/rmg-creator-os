@@ -10,7 +10,8 @@ import {
   allenDraft,
   allenEmotionProfiles,
   allenMetadata,
-  allenSpeak
+  allenSpeak,
+  allenTopics
 } from './allen.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import {
@@ -1646,6 +1647,20 @@ app.put<{
     .returning();
   return reply.code(201).send(row);
 });
+
+// ALLIE: suggested next topics for a brand (front of the pipeline).
+app.get<{ Params: { brand: string }; Querystring: { count?: string } }>(
+  '/brands/:brand/topics',
+  async (request, reply) => {
+    if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+    const count = Math.min(12, Math.max(3, Number(request.query.count) || 6));
+    try {
+      return await allenTopics({ brand: request.params.brand, count });
+    } catch (err) {
+      return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+    }
+  }
+);
 
 // ALLIE v1: suggest metadata for a production + platform.
 app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/:id/suggest', async (request, reply) => {

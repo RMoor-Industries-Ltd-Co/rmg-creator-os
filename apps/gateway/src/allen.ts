@@ -92,6 +92,27 @@ export interface AllenMetadata {
   audience: string;
 }
 
+export interface AllenTopic {
+  title: string;
+  hook: string;
+  angle: string;
+}
+
+export async function allenTopics(body: {
+  brand: string;
+  count?: number;
+  context?: string;
+}): Promise<{ topics: AllenTopic[] }> {
+  const res = await fetch(`${ALLEN_URL}/topics`, {
+    method: 'POST',
+    headers: allenHeaders(),
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as { topics?: AllenTopic[]; detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN topics failed (${res.status})`);
+  return { topics: json.topics ?? [] };
+}
+
 export async function allenMetadata(body: {
   brand: string;
   platform: string;
