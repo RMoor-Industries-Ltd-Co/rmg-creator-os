@@ -16,6 +16,14 @@ import {
   type AllenChatMessage
 } from './allen.js';
 import { brandTrends, ensureDefaultFeeds, trendContext, type TrendItem } from './feeds.js';
+import {
+  createPost as postizCreatePost,
+  listIntegrations as postizListIntegrations,
+  matchIntegration,
+  postizConfigured,
+  uploadFromUrl as postizUploadFromUrl,
+  type PostizPostInput
+} from './postiz.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import {
   createDriveClient,
@@ -1675,6 +1683,84 @@ app.get<{ Params: { brand: string }; Querystring: { count?: string; trends?: str
       return { topics, trends };
     } catch (err) {
       return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+    }
+  }
+);
+
+// Social Manager (Postiz) status + connected channels.
+app.get('/postiz/status', async () => {
+  if (!postizConfigured()) return { configured: false, integrations: [] };
+  try {
+    return { configured: true, integrations: await postizListIntegrations() };
+  } catch (err) {
+    return { configured: true, integrations: [], error: (err as Error).message };
+  }
+});
+
+// My Poster → Postiz hand-off: push the final video + per-platform metadata to the engine.
+app.post<{ Params: { id: string }; Body: { platforms?: string[]; type?: 'draft' | 'schedule' | 'now'; date?: string } }>(
+  '/productions/:id/publish',
+  async (request, reply) => {
+    if (!postizConfigured()) return reply.code(503).send({ error: 'Postiz not configured (set POSTIZ_API_KEY)' });
+    if (!PUBLIC_API_BASE) return reply.code(503).send({ error: 'PUBLIC_API_BASE not set' });
+    const { id } = request.params;
+    const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, id));
+    if (!prod) return reply.code(404).send({ error: 'production not found' });
+
+    // The final video for this production (the rendered cut), public for Postiz to fetch.
+    const vids = await db.select().from(tables.videos).where(eq(tables.videos.productionId, id));
+    const completed = vids.filter((v) => v.status === 'completed');
+    const finalVid =
+      completed.filter((v) => v.source === 'final').sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))[0] ??
+      completed.filter((v) => v.approved).sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))[0] ??
+      completed.sort((a, b) => +new Date(b.updatedAt) - +new Date(a.updatedAt))[0];
+    if (!finalVid) return reply.code(400).send({ error: 'no completed video to publish — finish the render first' });
+    const mediaUrl = `${PUBLIC_API_BASE}/videos/${finalVid.id}/raw`;
+
+    const postRows = await db.select().from(tables.posts).where(eq(tables.posts.productionId, id));
+    const wanted = request.body?.platforms?.length ? request.body.platforms : postRows.map((p) => p.platform);
+    if (!wanted.length) return reply.code(400).send({ error: 'no platforms selected (compose drafts first)' });
+
+    let integrations;
+    try {
+      integrations = await postizListIntegrations();
+    } catch (err) {
+      return reply.code(502).send({ error: `Postiz: ${(err as Error).message}` });
+    }
+
+    // Build a post per connected platform.
+    const built: PostizPostInput[] = [];
+    const results: Array<{ platform: string; ok: boolean; channel?: string; reason?: string }> = [];
+    for (const platform of wanted) {
+      const integ = matchIntegration(platform, integrations);
+      if (!integ) {
+        results.push({ platform, ok: false, reason: 'no connected channel in Postiz' });
+        continue;
+      }
+      const row = postRows.find((p) => p.platform === platform);
+      const caption = row?.caption ?? prod.title ?? prod.topic;
+      const tags = (row?.hashtags ?? []).join(' ');
+      const content = [caption, tags].filter(Boolean).join('\n\n');
+      built.push({ integrationId: integ.id, identifier: integ.identifier, content, media: [] });
+      results.push({ platform, ok: true, channel: integ.name });
+    }
+    if (!built.length) return reply.code(400).send({ error: 'none of the selected platforms are connected in Postiz', results });
+
+    const type = request.body?.type ?? 'draft';
+    try {
+      const media = await postizUploadFromUrl(mediaUrl);
+      for (const b of built) b.media = [media];
+      const postizRes = await postizCreatePost({ type, date: request.body?.date, posts: built });
+      const newStatus = type === 'now' ? 'published' : type === 'draft' ? 'draft' : 'scheduled';
+      for (const r of results.filter((x) => x.ok)) {
+        await db
+          .update(tables.posts)
+          .set({ status: newStatus, updatedAt: new Date() })
+          .where(and(eq(tables.posts.productionId, id), eq(tables.posts.platform, r.platform)));
+      }
+      return { ok: true, type, channels: results, postiz: postizRes };
+    } catch (err) {
+      return reply.code(502).send({ error: `Postiz: ${(err as Error).message}`, results });
     }
   }
 );

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { poster, type Post as PostRow, type Production } from './api';
+import { poster, type Post as PostRow, type PostizIntegration, type Production } from './api';
 
 const PLATFORMS = [
   { key: 'tiktok', label: 'TikTok' },
@@ -63,6 +63,31 @@ export function Post({ p }: { p: Production }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [audience, setAudience] = useState('');
+  const [postiz, setPostiz] = useState<{ configured: boolean; integrations: PostizIntegration[] } | null>(null);
+  const [publishMsg, setPublishMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    poster.postizStatus().then(setPostiz).catch(() => setPostiz({ configured: false, integrations: [] }));
+  }, []);
+
+  async function publish(type: 'draft' | 'now') {
+    setBusy('publish');
+    setError(null);
+    setPublishMsg(null);
+    try {
+      const res = await poster.publish(p.id, { platforms: active, type });
+      const ok = res.channels.filter((c) => c.ok).map((c) => `${c.platform}→${c.channel}`);
+      const skipped = res.channels.filter((c) => !c.ok).map((c) => `${c.platform} (${c.reason})`);
+      setPublishMsg(
+        `${type === 'now' ? 'Published' : 'Sent as drafts'}: ${ok.join(', ') || 'none'}` +
+          (skipped.length ? ` · skipped: ${skipped.join(', ')}` : '')
+      );
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   useEffect(() => {
     poster.posts(p.id).then((rows) => {
@@ -233,9 +258,40 @@ export function Post({ p }: { p: Production }) {
             {d.status === 'scheduled' && <span className="badge live">scheduled</span>}
             {d.postUrl && <a className="drive-link" href={d.postUrl} target="_blank" rel="noreferrer">live ↗</a>}
           </div>
-          <p className="muted hint">Saved as a draft post package. Once Postiz + your platform apps are connected, “publish” goes live and captures the URL.</p>
+          <p className="muted hint">Saved as a draft post package. Use “Send to Social Manager” below to push the finished video + metadata into Postiz.</p>
         </>
       )}
+
+      <div className="publish-panel">
+        <div className="publish-head">
+          <strong>🚀 Send to Social Manager</strong>
+          {postiz?.configured ? (
+            postiz.integrations.length ? (
+              <span className="muted">
+                Connected: {postiz.integrations.map((i) => i.name).join(', ')}
+              </span>
+            ) : (
+              <span className="muted">No channels connected yet — add one in Postiz.</span>
+            )
+          ) : (
+            <span className="muted">Not connected — add a Postiz API key to enable.</span>
+          )}
+        </div>
+        {postiz?.configured && (
+          <div className="gen-row">
+            <button className="btn" onClick={() => publish('draft')} disabled={busy === 'publish' || !active.length}>
+              {busy === 'publish' ? 'Sending…' : '📤 Push drafts to Postiz'}
+            </button>
+            <button className="btn ghost" onClick={() => publish('now')} disabled={busy === 'publish' || !active.length}>
+              ⚡ Publish now
+            </button>
+            <a className="drive-link" href="https://social.rmasters.group/launches" target="_blank" rel="noreferrer">
+              open Postiz ↗
+            </a>
+          </div>
+        )}
+        {publishMsg && <p className="muted hint">{publishMsg}</p>}
+      </div>
 
       {error && <p className="err">{error}</p>}
     </div>

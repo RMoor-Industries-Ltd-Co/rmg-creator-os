@@ -301,6 +301,8 @@ footer a { color: var(--accent); text-decoration: none; }
   width: 100%; box-sizing: border-box; margin-top: 2px; background: #0a0e12; color: var(--text);
   border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 5px 8px; font-size: 11px;
 }
+.publish-panel { margin-top: 18px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #0f1419; }
+.publish-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .ask-allen { display: flex; flex-direction: column; gap: 14px; }
 .ask-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .ask-head h2 { margin: 0 0 2px; }

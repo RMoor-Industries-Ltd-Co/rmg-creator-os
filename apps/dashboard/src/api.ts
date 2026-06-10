@@ -317,8 +317,24 @@ export const poster = {
     ),
   defaults: (brand: string) => req<BrandPostDefaults>(`/brands/${brand}/post-defaults`),
   saveDefaults: (brand: string, body: Partial<BrandPostDefaults>) =>
-    req<BrandPostDefaults>(`/brands/${brand}/post-defaults`, { method: 'PUT', body: JSON.stringify(body) })
+    req<BrandPostDefaults>(`/brands/${brand}/post-defaults`, { method: 'PUT', body: JSON.stringify(body) }),
+  postizStatus: () =>
+    req<{ configured: boolean; integrations: PostizIntegration[]; error?: string }>('/postiz/status'),
+  publish: (id: string, body: { platforms?: string[]; type?: 'draft' | 'schedule' | 'now'; date?: string }) =>
+    req<{
+      ok: boolean;
+      type: string;
+      channels: Array<{ platform: string; ok: boolean; channel?: string; reason?: string }>;
+    }>(`/productions/${id}/publish`, { method: 'POST', body: JSON.stringify(body) })
 };
+
+export interface PostizIntegration {
+  id: string;
+  name: string;
+  identifier: string;
+  picture?: string;
+  disabled?: boolean;
+}
 
 export interface ChatTurn {
   role: 'user' | 'assistant';
