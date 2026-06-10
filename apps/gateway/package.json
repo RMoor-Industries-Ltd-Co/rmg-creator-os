@@ -17,7 +17,8 @@
     "@rmg-creator-os/integrations": "workspace:*",
     "@rmg-creator-os/types": "workspace:*",
     "fastify": "^5.0.0",
-    "ioredis": "^5.4.1"
+    "ioredis": "^5.4.1",
+    "rss-parser": "^3.13.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

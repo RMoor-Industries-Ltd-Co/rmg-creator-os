@@ -120,11 +120,21 @@ export interface TopicSuggestion {
   angle: string;
 }
 
+export interface TrendItem {
+  title: string;
+  link: string;
+  source?: string;
+  publishedAt?: string;
+}
+
 export const productions = {
   get: (id: string) => req<Production>(`/productions/${id}`),
   list: () => req<Production[]>('/productions'),
-  topics: (brand: string, count = 6) =>
-    req<{ topics: TopicSuggestion[] }>(`/brands/${brand}/topics?count=${count}`),
+  topics: (brand: string, count = 6, useTrends = true) =>
+    req<{ topics: TopicSuggestion[]; trends: TrendItem[] }>(
+      `/brands/${brand}/topics?count=${count}&trends=${useTrends ? 1 : 0}`
+    ),
+  trends: (brand: string) => req<{ items: TrendItem[] }>(`/brands/${brand}/trends`),
   create: (input: {
     brand: string;
     topic: string;

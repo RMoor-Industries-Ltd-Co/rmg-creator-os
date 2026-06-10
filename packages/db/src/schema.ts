@@ -100,6 +100,17 @@ export const posts = pgTable('posts', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** ALLIE's trend sources — per-brand RSS / Google-News feeds that keep suggestions current. */
+export const brandFeeds = pgTable('brand_feeds', {
+  id: text('id').primaryKey(),
+  brand: text('brand').notNull(),
+  url: text('url').notNull(),
+  title: text('title'),
+  kind: text('kind').notNull().default('rss'), // rss | gnews
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),

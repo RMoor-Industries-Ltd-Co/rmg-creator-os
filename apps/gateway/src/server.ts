@@ -13,6 +13,7 @@ import {
   allenSpeak,
   allenTopics
 } from './allen.js';
+import { brandTrends, ensureDefaultFeeds, trendContext, type TrendItem } from './feeds.js';
 import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
 import {
   createDriveClient,
@@ -1649,18 +1650,67 @@ app.put<{
 });
 
 // ALLIE: suggested next topics for a brand (front of the pipeline).
-app.get<{ Params: { brand: string }; Querystring: { count?: string } }>(
+// ?trends=1 (default) grounds suggestions in current RSS/Google-News headlines.
+app.get<{ Params: { brand: string }; Querystring: { count?: string; trends?: string } }>(
   '/brands/:brand/topics',
   async (request, reply) => {
     if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+    const { brand } = request.params;
     const count = Math.min(12, Math.max(3, Number(request.query.count) || 6));
+    const useTrends = request.query.trends !== '0';
+    let trends: TrendItem[] = [];
+    let context: string | undefined;
+    if (useTrends) {
+      try {
+        trends = await brandTrends(db, brand);
+        context = trendContext(trends) || undefined;
+      } catch {
+        /* trends are best-effort; never block suggestions */
+      }
+    }
     try {
-      return await allenTopics({ brand: request.params.brand, count });
+      const { topics } = await allenTopics({ brand, count, context });
+      return { topics, trends };
     } catch (err) {
       return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
     }
   }
 );
+
+// ALLIE trends: the current headlines ALLIE is drawing from for a brand.
+app.get<{ Params: { brand: string } }>('/brands/:brand/trends', async (request) => {
+  const items = await brandTrends(db, request.params.brand);
+  return { items };
+});
+
+// Manage a brand's trend sources.
+app.get<{ Params: { brand: string } }>('/brands/:brand/feeds', async (request) => {
+  const feeds = await ensureDefaultFeeds(db, request.params.brand);
+  return { feeds };
+});
+
+app.post<{ Params: { brand: string }; Body: { url?: string; title?: string } }>(
+  '/brands/:brand/feeds',
+  async (request, reply) => {
+    const url = (request.body?.url ?? '').trim();
+    if (!/^https?:\/\//i.test(url)) return reply.code(400).send({ error: 'valid feed url required' });
+    const row = {
+      id: `${request.params.brand}-${Date.now()}`,
+      brand: request.params.brand,
+      url,
+      title: (request.body?.title ?? '').trim() || null,
+      kind: 'rss',
+      enabled: true
+    };
+    await db.insert(tables.brandFeeds).values(row);
+    return reply.code(201).send(row);
+  }
+);
+
+app.delete<{ Params: { id: string } }>('/feeds/:id', async (request, reply) => {
+  await db.delete(tables.brandFeeds).where(eq(tables.brandFeeds.id, request.params.id));
+  return reply.code(204).send();
+});
 
 // ALLIE v1: suggest metadata for a production + platform.
 app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/:id/suggest', async (request, reply) => {

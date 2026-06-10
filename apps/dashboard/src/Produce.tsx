@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
-import { productions, type TopicSuggestion } from './api';
+import { productions, type TopicSuggestion, type TrendItem } from './api';
 import { ProductionList } from './ProductionList';
 import { navigate } from './router';
 
@@ -16,6 +16,8 @@ export function Produce() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<TopicSuggestion[]>([]);
+  const [trends, setTrends] = useState<TrendItem[]>([]);
+  const [useTrends, setUseTrends] = useState(true);
   const [suggesting, setSuggesting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -23,8 +25,9 @@ export function Produce() {
     setSuggesting(true);
     setError(null);
     try {
-      const r = await productions.topics(brand, 6);
+      const r = await productions.topics(brand, 6, useTrends);
       setSuggestions(r.topics);
+      setTrends(r.trends ?? []);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
@@ -104,9 +107,28 @@ export function Produce() {
         />
 
         <div className="allie-suggest">
-          <button type="button" className="attach" onClick={suggestTopics} disabled={suggesting}>
-            {suggesting ? 'ALLIE is thinking…' : `✨ Ask ALLIE for ${BRAND_OPTIONS.find((b) => b.value === brand)?.label ?? ''} topics`}
-          </button>
+          <div className="allie-row">
+            <button type="button" className="attach" onClick={suggestTopics} disabled={suggesting}>
+              {suggesting ? 'ALLIE is thinking…' : `✨ Ask ALLIE for ${BRAND_OPTIONS.find((b) => b.value === brand)?.label ?? ''} topics`}
+            </button>
+            <label className="trend-toggle" title="Ground topics in today's headlines">
+              <input type="checkbox" checked={useTrends} onChange={(e) => setUseTrends(e.target.checked)} />
+              🌀 Use today's trends
+            </label>
+          </div>
+          {useTrends && trends.length > 0 && (
+            <details className="trend-list">
+              <summary>📰 {trends.length} headlines ALLIE drew from</summary>
+              <ul>
+                {trends.slice(0, 8).map((t, i) => (
+                  <li key={i}>
+                    <a href={t.link} target="_blank" rel="noreferrer">{t.title}</a>
+                    {t.source && <span className="muted"> · {t.source}</span>}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           {suggestions.length > 0 && (
             <ul className="topic-cards">
               {suggestions.map((t, i) => (
