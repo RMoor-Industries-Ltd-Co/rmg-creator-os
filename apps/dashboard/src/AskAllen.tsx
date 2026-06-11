@@ -13,6 +13,12 @@ const STARTERS = [
   'Help me plan a Rahm Council episode.'
 ];
 
+// Voice gate — passphrases (case/punctuation tolerant; profanity may be mis-transcribed,
+// so the halt match keys on "i know you …" + "lying" rather than the exact words).
+const WAKE_RE = /\b(hey,?\s*allen|reddington|what it be like)\b/i;
+const HALT_RE = /\bi\s+know\s+you\b[\s\S]*\blying\b/i;
+const stripWake = (t: string): string => t.replace(WAKE_RE, '').replace(/^[\s,.!?–—-]+/, '').trim();
+
 export function AskAllen() {
   const [brand, setBrand] = useState('');
   const [input, setInput] = useState('');
@@ -29,6 +35,34 @@ export function AskAllen() {
   const [editId, setEditId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [copied, setCopied] = useState<number | null>(null);
+  const [dormant, setDormant] = useState(() => localStorage.getItem('allen_dormant') === '1');
+
+  function setGate(d: boolean) {
+    setDormant(d);
+    localStorage.setItem('allen_dormant', d ? '1' : '0');
+    if (!d) setError(null);
+  }
+
+  // Route a spoken/transcribed line through the passphrase gate before it becomes a message.
+  function routeVoiceText(text: string) {
+    const t = text.trim();
+    if (!t) return;
+    if (HALT_RE.test(t)) {
+      setGate(true);
+      if (recording) recRef.current?.stop();
+      return;
+    }
+    if (dormant) {
+      if (WAKE_RE.test(t)) {
+        setGate(false);
+        const rest = stripWake(t);
+        if (rest) setInput((c) => (c.trim() ? c.trim() + ' ' : '') + rest);
+      }
+      return; // dormant: ignore everything except the wake phrase
+    }
+    const body = WAKE_RE.test(t) ? stripWake(t) : t;
+    if (body) setInput((c) => (c.trim() ? c.trim() + ' ' : '') + body);
+  }
 
   async function copyReply(text: string, idx: number) {
     try {
@@ -70,8 +104,8 @@ export function AskAllen() {
         setTranscribing(true);
         try {
           const { text } = await allen.listen(blob);
-          // Land the transcript in the input so you can fix any misheard words before sending.
-          if (text.trim()) setInput((cur) => (cur.trim() ? cur.trim() + ' ' : '') + text.trim());
+          // Gate first (wake/halt), otherwise land the transcript in the input to edit before sending.
+          routeVoiceText(text);
         } catch (e: unknown) {
           setError(String(e));
         } finally {
@@ -146,6 +180,15 @@ export function AskAllen() {
   async function send(text: string) {
     const message = text.trim();
     if (!message || busy) return;
+    if (dormant) {
+      // Dormant: only the wake phrase gets through.
+      if (WAKE_RE.test(message)) {
+        setGate(false);
+        const rest = stripWake(message);
+        setInput(rest);
+      }
+      return;
+    }
     setError(null);
     setInput('');
     const history = turns.slice(-8);
@@ -182,6 +225,14 @@ export function AskAllen() {
           </label>
           <button type="button" className="attach sm" onClick={() => setShowMem((s) => !s)}>
             🧠 Memory ({memories.length})
+          </button>
+          <button
+            type="button"
+            className={`gate-chip ${dormant ? 'dormant' : 'active'}`}
+            onClick={() => setGate(!dormant)}
+            title={dormant ? "Tap to wake (or say 'Hey ALLEN')" : 'Tap to make ALLEN dormant'}
+          >
+            {dormant ? '🔴 Dormant' : '🟢 Active'}
           </button>
           <select value={brand} onChange={(e) => setBrand(e.target.value)}>
             {BRAND_OPTIONS.map((b) => (
@@ -297,6 +348,15 @@ export function AskAllen() {
 
       {error && <p className="error">{error}</p>}
 
+      {dormant && (
+        <div className="dormant-banner">
+          🔴 ALLEN is dormant — he won’t respond to anyone. Say <strong>“Hey ALLEN”</strong> (🎙️) to wake him.
+          <button type="button" className="btn sm" onClick={() => setGate(false)}>
+            Wake
+          </button>
+        </div>
+      )}
+
       <form
         className="chat-input"
         onSubmit={(e) => {
@@ -309,18 +369,20 @@ export function AskAllen() {
           className={`mic-btn ${recording ? 'rec' : ''}`}
           onClick={toggleMic}
           disabled={transcribing || busy}
-          title={recording ? 'Stop & send' : 'Hold a thought — tap to talk'}
+          title={recording ? 'Stop' : dormant ? "Say 'Hey ALLEN' to wake him" : 'Tap to talk'}
         >
           {recording ? '⏺ Stop' : transcribing ? '…' : '🎙️'}
         </button>
         <input
           type="text"
-          placeholder={recording ? 'Listening…' : transcribing ? 'Transcribing…' : 'Ask ALLEN…'}
+          placeholder={
+            dormant ? 'Dormant — say “Hey ALLEN”' : recording ? 'Listening…' : transcribing ? 'Transcribing…' : 'Ask ALLEN…'
+          }
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={busy || recording}
+          disabled={busy || recording || dormant}
         />
-        <button type="submit" className="btn" disabled={busy || !input.trim()}>
+        <button type="submit" className="btn" disabled={busy || !input.trim() || dormant}>
           Send
         </button>
       </form>

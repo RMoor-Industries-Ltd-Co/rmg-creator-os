@@ -320,7 +320,12 @@ footer a { color: var(--accent); text-decoration: none; }
 .bubble.assistant { align-self: flex-start; background: #0f1419; border: 1px solid var(--border); }
 .speak-btn { margin-top: 8px; background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .speak-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-.bubble-actions { display: flex; gap: 8px; margin-top: 8px; }
+.gate-chip { border: 1px solid var(--border); background: #0f1419; color: var(--text); border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer; }
+.gate-chip.active { border-color: #1e7e44; color: #4ade80; }
+.gate-chip.dormant { border-color: #c0392b; color: #ff6b6b; }
+.dormant-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: #2a1416; border: 1px solid #c0392b; color: #ffb4b4; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+.dormant-banner .btn.sm { margin: 0; }
+.bubble-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .mic-btn { flex: none; background: #0f1419; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 0 14px; font-size: 15px; cursor: pointer; }
 .mic-btn:hover:not(:disabled) { border-color: var(--accent); }
 .mic-btn.rec { background: #3a1d1d; border-color: #c0392b; color: #ff6b6b; animation: pulse 1.2s infinite; }
