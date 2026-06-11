@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">MSTR Atelier vector mark</title>
+  <desc id="desc">Abstract gold MSTR Atelier mark for favicon and app icon use.</desc>
+  <defs>
+    <linearGradient id="gold" x1="180" y1="180" x2="860" y2="860" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#8A6421"/>
+      <stop offset="0.28" stop-color="#F2D27B"/>
+      <stop offset="0.56" stop-color="#C39337"/>
+      <stop offset="0.78" stop-color="#FFE7A3"/>
+      <stop offset="1" stop-color="#8A6421"/>
+    </linearGradient>
+    <filter id="softGlow" x="-35%" y="-35%" width="170%" height="170%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="1024" height="1024" rx="192" fill="#080808"/>
+  <g fill="none" stroke="url(#gold)" stroke-width="58" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)">
+    <path d="M244 612 C294 438 394 286 520 244" />
+    <path d="M780 612 C730 438 630 286 504 244" />
+    <path d="M268 626 C372 575 445 464 511 339" />
+    <path d="M756 626 C652 575 579 464 513 339" />
+    <path d="M350 734 C438 774 586 774 674 734" stroke-width="38" />
+  </g>
+  <g fill="none" stroke="#FFE7A3" stroke-width="14" stroke-linecap="round" opacity="0.55">
+    <path d="M256 603 C314 432 398 314 512 265" />
+    <path d="M768 603 C710 432 626 314 512 265" />
+  </g>
+</svg>

@@ -51,10 +51,7 @@ export function Login({ clientId }: { clientId: string }) {
 
   return (
     <main className="wrap login-gate">
-      <header>
-        <h1>RMG Creator OS</h1>
-        <p className="tagline">Sign in to continue.</p>
-      </header>
+      <img src="/logo-full.png" alt="Master Atelier" className="login-logo" />
       <div className="login-card">
         <div ref={ref} />
         <p ref={errRef} className="err" />

@@ -57,9 +57,12 @@ export function App() {
 
   return (
     <main className="wrap">
-      <header>
-        <h1>RMG Creator OS</h1>
-        <p className="tagline">Minimal input → maximum social-ready output.</p>
+      <header className="brand-header">
+        <img src="/mark.svg" alt="Master Atelier" className="brand-mark" />
+        <div>
+          <h1>Master Atelier</h1>
+          <p className="tagline">Content production &amp; publishing, crafted.</p>
+        </div>
       </header>
 
       <nav className="tabs">
