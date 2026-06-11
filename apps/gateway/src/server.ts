@@ -1820,7 +1820,7 @@ async function buildConciergeContext(brand?: string): Promise<string> {
   if (relevant.length) {
     parts.push(
       'Saved memories (things Rahm told you to remember):\n' +
-        relevant.map((m) => `- ${m.brand ? `[${m.brand}] ` : ''}${m.content}`).join('\n')
+        relevant.map((m) => `- [id:${m.id}]${m.brand ? ` [${m.brand}]` : ''} ${m.content}`).join('\n')
     );
   }
   return parts.join('\n\n');
@@ -1835,18 +1835,64 @@ app.post<{ Body: { message?: string; brand?: string; persona?: string; history?:
     if (!message) return reply.code(400).send({ error: 'message required' });
     try {
       const context = await buildConciergeContext(request.body?.brand);
-      return await allenChat({
+      const { reply: raw } = await allenChat({
         message,
         brand: request.body?.brand,
         persona: request.body?.persona,
         history: (request.body?.history ?? []).slice(-8),
         context
       });
+      const { reply: cleaned, memoryChanged } = await applyMemoryOps(raw);
+      return { reply: cleaned, memoryChanged };
     } catch (err) {
       return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
     }
   }
 );
+
+// Parse ALLEN's @@MEMORY {...}@@ control block, run the ops, and strip it from the spoken reply.
+interface MemoryOp {
+  op: 'add' | 'update' | 'delete';
+  id?: string;
+  brand?: string | null;
+  content?: string;
+}
+async function applyMemoryOps(reply: string): Promise<{ reply: string; memoryChanged: boolean }> {
+  const m = reply.match(/@@MEMORY\s*(\{[\s\S]*?\})\s*@@/);
+  const cleaned = reply.replace(/@@MEMORY[\s\S]*?@@/g, '').trim();
+  if (!m) return { reply: reply.trim(), memoryChanged: false };
+  let ops: MemoryOp[] = [];
+  try {
+    ops = (JSON.parse(m[1]) as { ops?: MemoryOp[] }).ops ?? [];
+  } catch {
+    return { reply: cleaned, memoryChanged: false };
+  }
+  let changed = false;
+  for (const o of ops) {
+    try {
+      if (o.op === 'add' && o.content?.trim()) {
+        await db.insert(tables.allenMemories).values({
+          id: `mem-${Date.now()}-${Math.floor(Math.random() * 1e4)}`,
+          brand: (o.brand ?? '') || null,
+          content: o.content.trim(),
+          source: 'allen'
+        });
+        changed = true;
+      } else if (o.op === 'update' && o.id && o.content?.trim()) {
+        const patch: { content: string; brand?: string | null } = { content: o.content.trim() };
+        if (o.brand !== undefined) patch.brand = (o.brand ?? '') || null;
+        await db.update(tables.allenMemories).set(patch).where(eq(tables.allenMemories.id, o.id));
+        changed = true;
+      } else if (o.op === 'delete' && o.id) {
+        await db.delete(tables.allenMemories).where(eq(tables.allenMemories.id, o.id));
+        changed = true;
+      }
+    } catch {
+      /* skip a bad op, keep the rest */
+    }
+  }
+  return { reply: cleaned, memoryChanged: changed };
+}
 
 // ALLEN listens — transcribe an audio clip (mic input) via Whisper.
 app.post('/allen/listen', async (request, reply) => {
@@ -1881,6 +1927,23 @@ app.post<{ Body: { content?: string; brand?: string } }>('/allen/memory', async 
   await db.insert(tables.allenMemories).values(row);
   return reply.code(201).send(row);
 });
+
+app.put<{ Params: { id: string }; Body: { content?: string; brand?: string | null } }>(
+  '/allen/memory/:id',
+  async (request, reply) => {
+    const content = (request.body?.content ?? '').trim();
+    if (!content) return reply.code(400).send({ error: 'content required' });
+    const patch: { content: string; brand?: string | null } = { content };
+    if (request.body?.brand !== undefined) patch.brand = (request.body.brand ?? '') || null;
+    await db.update(tables.allenMemories).set(patch).where(eq(tables.allenMemories.id, request.params.id));
+    const [row] = await db
+      .select()
+      .from(tables.allenMemories)
+      .where(eq(tables.allenMemories.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'not found' });
+    return row;
+  }
+);
 
 app.delete<{ Params: { id: string } }>('/allen/memory/:id', async (request, reply) => {
   await db.delete(tables.allenMemories).where(eq(tables.allenMemories.id, request.params.id));

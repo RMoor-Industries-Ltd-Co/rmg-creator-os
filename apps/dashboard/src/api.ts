@@ -351,7 +351,10 @@ export interface Memory {
 
 export const allen = {
   chat: (body: { message: string; brand?: string; history?: ChatTurn[] }) =>
-    req<{ reply: string }>('/allen/chat', { method: 'POST', body: JSON.stringify(body) }),
+    req<{ reply: string; memoryChanged?: boolean }>('/allen/chat', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
   async speak(text: string, voiceId?: string): Promise<string> {
     const res = await fetch(`${API}/allen/speak`, {
       method: 'POST',
@@ -378,6 +381,8 @@ export const allen = {
     req<{ memories: Memory[] }>(`/allen/memory${brand ? `?brand=${brand}` : ''}`),
   addMemory: (content: string, brand?: string) =>
     req<Memory>('/allen/memory', { method: 'POST', body: JSON.stringify({ content, brand }) }),
+  updateMemory: (id: string, content: string, brand?: string | null) =>
+    req<Memory>(`/allen/memory/${id}`, { method: 'PUT', body: JSON.stringify({ content, brand }) }),
   async deleteMemory(id: string): Promise<void> {
     const res = await fetch(`${API}/allen/memory/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`delete failed (${res.status})`);

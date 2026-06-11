@@ -331,8 +331,11 @@ footer a { color: var(--accent); text-decoration: none; }
 .mem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 180px; overflow-y: auto; }
 .mem-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; padding: 6px 8px; background: #0b0f14; border-radius: 8px; }
 .mem-tag { font-size: 10px; text-transform: uppercase; background: #1d2b3a; color: var(--accent); border-radius: 4px; padding: 1px 5px; margin-right: 4px; }
-.mem-del { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.mem-tag.allen { background: #2a1d3a; color: #b794f6; margin-left: 4px; }
+.mem-actions { display: inline-flex; gap: 2px; flex: none; }
+.mem-del { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; padding: 0 4px; }
 .mem-del:hover { color: #ff6b6b; }
+.mem-edit { flex: 1; background: #0b0f14; color: var(--text); border: 1px solid var(--accent); border-radius: 6px; padding: 5px 8px; font-size: 13px; }
 .chat-input { display: flex; gap: 10px; }
 .chat-input input { flex: 1; background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .chat-input .btn { margin-top: 0; flex: none; }

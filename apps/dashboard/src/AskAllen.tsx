@@ -26,6 +26,8 @@ export function AskAllen() {
   const [memories, setMemories] = useState<Memory[]>([]);
   const [memInput, setMemInput] = useState('');
   const [showMem, setShowMem] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const recRef = useRef<MediaRecorder | null>(null);
@@ -93,6 +95,18 @@ export function AskAllen() {
     }
   }
 
+  async function saveEdit(m: Memory) {
+    const content = editText.trim();
+    if (!content) return;
+    try {
+      const updated = await allen.updateMemory(m.id, content, m.brand);
+      setMemories((cur) => cur.map((x) => (x.id === m.id ? updated : x)));
+      setEditId(null);
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
   async function remember(text: string) {
     try {
       const m = await allen.addMemory(text, brand || undefined);
@@ -127,9 +141,13 @@ export function AskAllen() {
     setTurns(next);
     setBusy(true);
     try {
-      const { reply } = await allen.chat({ message, brand: brand || undefined, history });
+      const { reply, memoryChanged } = await allen.chat({ message, brand: brand || undefined, history });
       const idx = next.length; // index of the assistant turn we're about to add
       setTurns([...next, { role: 'assistant', content: reply }]);
+      if (memoryChanged) {
+        allen.memories(brand || undefined).then((r) => setMemories(r.memories)).catch(() => undefined);
+        setShowMem(true);
+      }
       if (autoSpeak) void speak(reply, idx);
     } catch (e: unknown) {
       setError(String(e));
@@ -183,12 +201,40 @@ export function AskAllen() {
             <ul className="mem-list">
               {memories.map((m) => (
                 <li key={m.id}>
-                  <span>
-                    {m.brand && <span className="mem-tag">{m.brand}</span>} {m.content}
+                  {editId === m.id ? (
+                    <input
+                      className="mem-edit"
+                      autoFocus
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveEdit(m);
+                        if (e.key === 'Escape') setEditId(null);
+                      }}
+                      onBlur={() => saveEdit(m)}
+                    />
+                  ) : (
+                    <span>
+                      {m.brand && <span className="mem-tag">{m.brand}</span>} {m.content}
+                      {m.source === 'allen' && <span className="mem-tag allen">via ALLEN</span>}
+                    </span>
+                  )}
+                  <span className="mem-actions">
+                    <button
+                      type="button"
+                      className="mem-del"
+                      onClick={() => {
+                        setEditId(m.id);
+                        setEditText(m.content);
+                      }}
+                      title="Edit / overwrite"
+                    >
+                      ✎
+                    </button>
+                    <button type="button" className="mem-del" onClick={() => removeMemory(m.id)} title="Forget">
+                      ✕
+                    </button>
                   </span>
-                  <button type="button" className="mem-del" onClick={() => removeMemory(m.id)} title="Forget">
-                    ✕
-                  </button>
                 </li>
               ))}
             </ul>
