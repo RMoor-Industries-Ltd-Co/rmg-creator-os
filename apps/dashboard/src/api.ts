@@ -127,6 +127,25 @@ export interface TrendItem {
   publishedAt?: string;
 }
 
+export interface BrandFeed {
+  id: string;
+  brand: string;
+  url: string;
+  title: string | null;
+  kind: string;
+  enabled: boolean;
+}
+
+export const feeds = {
+  list: (brand: string) => req<{ feeds: BrandFeed[] }>(`/brands/${brand}/feeds`),
+  add: (brand: string, url: string, title?: string) =>
+    req<BrandFeed>(`/brands/${brand}/feeds`, { method: 'POST', body: JSON.stringify({ url, title }) }),
+  async remove(id: string): Promise<void> {
+    const res = await fetch(`${API}/feeds/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete failed (${res.status})`);
+  }
+};
+
 export const productions = {
   get: (id: string) => req<Production>(`/productions/${id}`),
   list: () => req<Production[]>('/productions'),

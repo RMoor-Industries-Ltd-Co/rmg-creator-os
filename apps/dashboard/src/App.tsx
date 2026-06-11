@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
 import { AskAllen } from './AskAllen';
+import { Allie } from './Allie';
 import { MorningBrief } from './MorningBrief';
 import { ProductionWizard } from './ProductionWizard';
 import { navigate, usePath } from './router';
@@ -44,7 +45,8 @@ export function App() {
   const isProduce = path === '/produce';
   const isStudio = path === '/studio';
   const isAllen = path === '/allen';
-  const isOverview = !wizard && !isProduce && !isStudio && !isAllen;
+  const isAllie = path === '/allie';
+  const isOverview = !wizard && !isProduce && !isStudio && !isAllen && !isAllie;
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -76,6 +78,9 @@ export function App() {
         <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
         </button>
+        <button className={isAllie ? 'active' : ''} onClick={() => navigate('/allie')}>
+          ALLIE
+        </button>
         <button className={isAllen ? 'active' : ''} onClick={() => navigate('/allen')}>
           Ask ALLEN
         </button>
@@ -84,6 +89,7 @@ export function App() {
       {wizard && <ProductionWizard id={wizard[1]} step={wizard[2]} />}
       {isProduce && <Produce />}
       {isStudio && <Studio />}
+      {isAllie && <Allie />}
       {isAllen && <AskAllen />}
 
       {isOverview && (
