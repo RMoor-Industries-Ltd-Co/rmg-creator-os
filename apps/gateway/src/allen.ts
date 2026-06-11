@@ -133,6 +133,29 @@ export async function allenListen(
   return { text: json.text ?? '' };
 }
 
+export async function allenMeeting(body: {
+  transcript: string;
+  brand?: string;
+}): Promise<{ summary: string; action_items: string[]; highlights: string[] }> {
+  const res = await fetch(`${ALLEN_URL}/meeting`, {
+    method: 'POST',
+    headers: allenHeaders(),
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    summary?: string;
+    action_items?: string[];
+    highlights?: string[];
+    detail?: string;
+  };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN meeting failed (${res.status})`);
+  return {
+    summary: json.summary ?? '',
+    action_items: json.action_items ?? [],
+    highlights: json.highlights ?? []
+  };
+}
+
 export async function allenChat(body: {
   message: string;
   brand?: string;

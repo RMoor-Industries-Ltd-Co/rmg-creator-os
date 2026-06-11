@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
-import { allen, type ChatTurn, type Memory } from './api';
+import { allen, type ChatTurn, type Memory, type Transcript } from './api';
 
 const BRAND_OPTIONS = [{ value: '', label: 'No brand voice' }].concat(
   BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }))
@@ -73,10 +73,81 @@ export function AskAllen() {
       /* clipboard unavailable */
     }
   }
+  const [transcripts, setTranscripts] = useState<Transcript[]>([]);
+  const [showTr, setShowTr] = useState(false);
+  const [openTr, setOpenTr] = useState<Transcript | null>(null);
+  const [meetingRec, setMeetingRec] = useState(false);
+  const [meetingBusy, setMeetingBusy] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const recRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const meetRecRef = useRef<MediaRecorder | null>(null);
+  const meetChunksRef = useRef<Blob[]>([]);
+
+  useEffect(() => {
+    allen.transcripts().then((r) => setTranscripts(r.transcripts)).catch(() => undefined);
+  }, []);
+
+  async function toggleMeeting() {
+    if (meetingRec) {
+      meetRecRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      meetChunksRef.current = [];
+      rec.ondataavailable = (e) => e.data.size && meetChunksRef.current.push(e.data);
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setMeetingRec(false);
+        const blob = new Blob(meetChunksRef.current, { type: 'audio/webm' });
+        if (blob.size < 2000) return;
+        if (blob.size > 24 * 1024 * 1024) {
+          setError('That recording is over ~24MB (Whisper’s limit). Record meetings in shorter segments for now.');
+          return;
+        }
+        setMeetingBusy(true);
+        setError(null);
+        try {
+          const title = window.prompt('Name this meeting (optional):') || undefined;
+          const { transcript, highlightsSaved } = await allen.transcribe(blob, { title, brand: brand || undefined });
+          setTranscripts((cur) => [transcript, ...cur]);
+          setOpenTr(transcript);
+          setShowTr(true);
+          if (highlightsSaved) allen.memories(brand || undefined).then((r) => setMemories(r.memories)).catch(() => undefined);
+        } catch (e: unknown) {
+          setError(String(e));
+        } finally {
+          setMeetingBusy(false);
+        }
+      };
+      meetRecRef.current = rec;
+      rec.start();
+      setMeetingRec(true);
+    } catch {
+      setError('Microphone access denied or unavailable.');
+    }
+  }
+
+  async function openTranscript(id: string) {
+    try {
+      setOpenTr(await allen.transcript(id));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function removeTranscript(id: string) {
+    try {
+      await allen.deleteTranscript(id);
+      setTranscripts((cur) => cur.filter((t) => t.id !== id));
+      setOpenTr((cur) => (cur?.id === id ? null : cur));
+    } catch {
+      /* ignore */
+    }
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -226,6 +297,18 @@ export function AskAllen() {
           <button type="button" className="attach sm" onClick={() => setShowMem((s) => !s)}>
             🧠 Memory ({memories.length})
           </button>
+          <button type="button" className="attach sm" onClick={() => setShowTr((s) => !s)}>
+            📝 Transcripts ({transcripts.length})
+          </button>
+          <button
+            type="button"
+            className={`attach sm ${meetingRec ? 'rec-meeting' : ''}`}
+            onClick={toggleMeeting}
+            disabled={meetingBusy}
+            title="Record a meeting → transcript + summary + action items"
+          >
+            {meetingRec ? '⏺ Stop meeting' : meetingBusy ? 'Transcribing…' : '🎤 Record meeting'}
+          </button>
           <button
             type="button"
             className={`gate-chip ${dormant ? 'dormant' : 'active'}`}
@@ -301,6 +384,55 @@ export function AskAllen() {
                 </li>
               ))}
             </ul>
+          )}
+        </div>
+      )}
+
+      {meetingRec && (
+        <div className="dormant-banner" style={{ background: '#161f2a', borderColor: 'var(--accent)', color: 'var(--accent)' }}>
+          🎤 Recording the meeting… tap <strong>Stop meeting</strong> when done and ALLEN will transcribe + summarize it.
+        </div>
+      )}
+
+      {showTr && (
+        <div className="memory-panel">
+          {transcripts.length === 0 ? (
+            <p className="muted hint">No transcripts yet. Tap “🎤 Record meeting” to capture one.</p>
+          ) : (
+            <ul className="mem-list">
+              {transcripts.map((t) => (
+                <li key={t.id}>
+                  <button type="button" className="tr-open" onClick={() => openTranscript(t.id)}>
+                    {t.brand && <span className="mem-tag">{t.brand}</span>} {t.title}
+                  </button>
+                  <button type="button" className="mem-del" onClick={() => removeTranscript(t.id)} title="Delete">
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {openTr && (
+            <div className="tr-detail">
+              <strong>{openTr.title}</strong>
+              {openTr.summary && <p className="tr-summary">{openTr.summary}</p>}
+              {openTr.actionItems?.length > 0 && (
+                <>
+                  <div className="tr-h">Action items</div>
+                  <ul className="tr-actions">
+                    {openTr.actionItems.map((a, i) => (
+                      <li key={i}>{a}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              {openTr.transcript && (
+                <details className="trend-list">
+                  <summary>Full transcript</summary>
+                  <p className="tr-full">{openTr.transcript}</p>
+                </details>
+              )}
+            </div>
           )}
         </div>
       )}

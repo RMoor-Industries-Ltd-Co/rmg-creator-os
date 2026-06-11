@@ -349,6 +349,16 @@ export interface Memory {
   createdAt?: string;
 }
 
+export interface Transcript {
+  id: string;
+  title: string | null;
+  brand: string | null;
+  summary: string | null;
+  actionItems: string[];
+  transcript?: string;
+  createdAt: string;
+}
+
 export const allen = {
   chat: (body: { message: string; brand?: string; history?: ChatTurn[] }) =>
     req<{ reply: string; memoryChanged?: boolean }>('/allen/chat', {
@@ -385,6 +395,28 @@ export const allen = {
     req<Memory>(`/allen/memory/${id}`, { method: 'PUT', body: JSON.stringify({ content, brand }) }),
   async deleteMemory(id: string): Promise<void> {
     const res = await fetch(`${API}/allen/memory/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete failed (${res.status})`);
+  },
+  async transcribe(
+    blob: Blob,
+    opts: { title?: string; brand?: string } = {}
+  ): Promise<{ transcript: Transcript; highlightsSaved: number }> {
+    const form = new FormData();
+    form.append('file', blob, 'meeting.webm');
+    const qs = new URLSearchParams();
+    if (opts.title) qs.set('title', opts.title);
+    if (opts.brand) qs.set('brand', opts.brand);
+    const res = await fetch(`${API}/allen/transcribe?${qs.toString()}`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `transcribe failed (${res.status})`);
+    }
+    return (await res.json()) as { transcript: Transcript; highlightsSaved: number };
+  },
+  transcripts: () => req<{ transcripts: Transcript[] }>('/allen/transcripts'),
+  transcript: (id: string) => req<Transcript>(`/allen/transcripts/${id}`),
+  async deleteTranscript(id: string): Promise<void> {
+    const res = await fetch(`${API}/allen/transcripts/${id}`, { method: 'DELETE' });
     if (!res.ok) throw new Error(`delete failed (${res.status})`);
   }
 };

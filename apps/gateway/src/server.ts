@@ -11,6 +11,7 @@ import {
   allenDraft,
   allenEmotionProfiles,
   allenListen,
+  allenMeeting,
   allenMetadata,
   allenSpeak,
   allenTopics,
@@ -1810,6 +1811,23 @@ async function buildConciergeContext(brand?: string): Promise<string> {
     );
   }
 
+  // Recent meeting transcripts (ALLEN Transcriber)
+  const trs = await db
+    .select({
+      title: tables.transcripts.title,
+      summary: tables.transcripts.summary,
+      createdAt: tables.transcripts.createdAt
+    })
+    .from(tables.transcripts)
+    .orderBy(desc(tables.transcripts.createdAt))
+    .limit(5);
+  if (trs.length) {
+    parts.push(
+      'Recent meeting transcripts you have on file:\n' +
+        trs.map((t) => `- ${t.title ?? 'Meeting'}${t.summary ? `: ${t.summary.slice(0, 200)}` : ''}`).join('\n')
+    );
+  }
+
   // Saved memories (global + this brand)
   const mems = await db
     .select()
@@ -1905,6 +1923,84 @@ app.post('/allen/listen', async (request, reply) => {
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
   }
+});
+
+// ALLEN Transcriber — record a meeting, transcribe (Whisper), summarize, save (Postgres),
+// and auto-commit the highlights to memory.
+app.post<{ Querystring: { title?: string; brand?: string } }>(
+  '/allen/transcribe',
+  async (request, reply) => {
+    if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+    const file = await request.file();
+    if (!file) return reply.code(400).send({ error: 'audio file required' });
+    const brand = (request.query.brand ?? '').trim() || null;
+    let transcript: string;
+    try {
+      const buf = await file.toBuffer();
+      transcript = (await allenListen(buf, file.filename || 'meeting.webm', file.mimetype || 'audio/webm')).text;
+    } catch (err) {
+      return reply.code(502).send({ error: `Transcription failed: ${(err as Error).message}` });
+    }
+    if (!transcript.trim()) return reply.code(422).send({ error: 'no speech detected in the recording' });
+
+    let meet = { summary: '', action_items: [] as string[], highlights: [] as string[] };
+    try {
+      meet = await allenMeeting({ transcript, brand: brand ?? undefined });
+    } catch {
+      /* keep the transcript even if summarization fails */
+    }
+
+    const now = new Date();
+    const id = `tr-${now.getTime()}`;
+    const title =
+      (request.query.title ?? '').trim() ||
+      `Meeting ${now.toISOString().slice(0, 16).replace('T', ' ')}`;
+    await db.insert(tables.transcripts).values({
+      id,
+      title: title.slice(0, 140),
+      brand,
+      transcript,
+      summary: meet.summary || null,
+      actionItems: meet.action_items
+    });
+    // Auto-save highlights to ALLEN's memory.
+    for (const h of meet.highlights) {
+      await db.insert(tables.allenMemories).values({
+        id: `mem-${now.getTime()}-${Math.floor(Math.random() * 1e4)}`,
+        brand,
+        content: h,
+        source: 'allen'
+      });
+    }
+    const [saved] = await db.select().from(tables.transcripts).where(eq(tables.transcripts.id, id));
+    return reply.code(201).send({ transcript: saved, highlightsSaved: meet.highlights.length });
+  }
+);
+
+app.get('/allen/transcripts', async () => {
+  const rows = await db
+    .select({
+      id: tables.transcripts.id,
+      title: tables.transcripts.title,
+      brand: tables.transcripts.brand,
+      summary: tables.transcripts.summary,
+      actionItems: tables.transcripts.actionItems,
+      createdAt: tables.transcripts.createdAt
+    })
+    .from(tables.transcripts)
+    .orderBy(desc(tables.transcripts.createdAt));
+  return { transcripts: rows };
+});
+
+app.get<{ Params: { id: string } }>('/allen/transcripts/:id', async (request, reply) => {
+  const [row] = await db.select().from(tables.transcripts).where(eq(tables.transcripts.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'not found' });
+  return row;
+});
+
+app.delete<{ Params: { id: string } }>('/allen/transcripts/:id', async (request, reply) => {
+  await db.delete(tables.transcripts).where(eq(tables.transcripts.id, request.params.id));
+  return reply.code(204).send();
 });
 
 // ALLEN memory / knowledge base.

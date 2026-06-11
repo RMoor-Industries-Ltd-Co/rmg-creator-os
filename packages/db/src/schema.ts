@@ -111,6 +111,18 @@ export const brandFeeds = pgTable('brand_feeds', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** ALLEN Transcriber — meeting transcripts (Postgres is the source of truth). */
+export const transcripts = pgTable('transcripts', {
+  id: text('id').primaryKey(),
+  title: text('title'),
+  brand: text('brand'),
+  transcript: text('transcript').notNull(),
+  summary: text('summary'),
+  actionItems: jsonb('action_items').$type<string[]>().notNull().default([]),
+  durationSec: real('duration_sec'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** ALLEN's persistent memory / knowledge base — facts Rahm commits for the concierge. */
 export const allenMemories = pgTable('allen_memories', {
   id: text('id').primaryKey(),
