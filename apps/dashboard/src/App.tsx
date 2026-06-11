@@ -58,7 +58,7 @@ export function App() {
   return (
     <main className="wrap">
       <header className="brand-header">
-        <img src="/mark.svg" alt="Master Atelier" className="brand-mark" />
+        <img src="/mark.png" alt="Master Atelier" className="brand-mark" />
         <div>
           <h1>Master Atelier</h1>
           <p className="tagline">Content production &amp; publishing, crafted.</p>
