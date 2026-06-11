@@ -28,6 +28,17 @@ export function AskAllen() {
   const [showMem, setShowMem] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
+  const [copied, setCopied] = useState<number | null>(null);
+
+  async function copyReply(text: string, idx: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(idx);
+      setTimeout(() => setCopied((c) => (c === idx ? null : c)), 1500);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const recRef = useRef<MediaRecorder | null>(null);
@@ -59,7 +70,8 @@ export function AskAllen() {
         setTranscribing(true);
         try {
           const { text } = await allen.listen(blob);
-          if (text.trim()) await send(text);
+          // Land the transcript in the input so you can fix any misheard words before sending.
+          if (text.trim()) setInput((cur) => (cur.trim() ? cur.trim() + ' ' : '') + text.trim());
         } catch (e: unknown) {
           setError(String(e));
         } finally {
@@ -268,6 +280,9 @@ export function AskAllen() {
                   disabled={speaking === i}
                 >
                   {speaking === i ? '🔊 Speaking…' : '🔊 Replay'}
+                </button>
+                <button type="button" className="speak-btn" onClick={() => copyReply(t.content, i)} title="Copy to clipboard">
+                  {copied === i ? '✓ Copied' : '📋 Copy'}
                 </button>
                 <button type="button" className="speak-btn" onClick={() => remember(t.content)} title="Save to ALLEN's memory">
                   🧠 Remember
