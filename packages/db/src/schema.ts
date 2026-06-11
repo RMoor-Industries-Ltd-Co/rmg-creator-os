@@ -111,6 +111,15 @@ export const brandFeeds = pgTable('brand_feeds', {
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
+/** ALLEN's persistent memory / knowledge base — facts Rahm commits for the concierge. */
+export const allenMemories = pgTable('allen_memories', {
+  id: text('id').primaryKey(),
+  brand: text('brand'), // null = global
+  content: text('content').notNull(),
+  source: text('source').notNull().default('user'), // user | allen
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
 /** Generated avatar videos (HeyGen), persisted so the dashboard can show them. */
 export const videos = pgTable('videos', {
   id: text('id').primaryKey(),

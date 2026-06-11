@@ -118,11 +118,27 @@ export interface AllenChatMessage {
   content: string;
 }
 
+export async function allenListen(
+  audio: Buffer,
+  filename: string,
+  mimetype: string
+): Promise<{ text: string }> {
+  const form = new FormData();
+  form.append('file', new Blob([new Uint8Array(audio)], { type: mimetype }), filename);
+  const headers: Record<string, string> = {};
+  if (ALLEN_API_KEY) headers['x-allen-key'] = ALLEN_API_KEY;
+  const res = await fetch(`${ALLEN_URL}/listen`, { method: 'POST', headers, body: form });
+  const json = (await res.json().catch(() => ({}))) as { text?: string; detail?: string };
+  if (!res.ok) throw new Error(json.detail ?? `ALLEN listen failed (${res.status})`);
+  return { text: json.text ?? '' };
+}
+
 export async function allenChat(body: {
   message: string;
   brand?: string;
   persona?: string;
   history?: AllenChatMessage[];
+  context?: string;
 }): Promise<{ reply: string }> {
   const res = await fetch(`${ALLEN_URL}/chat`, {
     method: 'POST',

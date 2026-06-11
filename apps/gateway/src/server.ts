@@ -10,6 +10,7 @@ import {
   allenDirect,
   allenDraft,
   allenEmotionProfiles,
+  allenListen,
   allenMetadata,
   allenSpeak,
   allenTopics,
@@ -33,6 +34,7 @@ import {
   HeyGenError
 } from '@rmg-creator-os/integrations';
 import type { HealthResponse, JobInput } from '@rmg-creator-os/types';
+import { BRANDS } from '@rmg-creator-os/types';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1765,7 +1767,66 @@ app.post<{ Params: { id: string }; Body: { platforms?: string[]; type?: 'draft' 
   }
 );
 
-// Talk to ALLEN — conversational reply (written to be spoken).
+// Build ALLEN's concierge context: who he is + current system state, recent work, and memories.
+async function buildConciergeContext(brand?: string): Promise<string> {
+  const parts: string[] = [];
+  parts.push(
+    'RMG Creator OS is Rahm\'s in-house content engine. Pipeline: ALLIE suggests a topic (grounded in ' +
+      'each brand and current trends) → ALLEN writes the script → Voice Direction → ElevenLabs voice → ' +
+      'video (HeyGen / clips) → My Poster composes per-platform metadata → Postiz publishes to the platforms. ' +
+      'Brands: ' +
+      BRANDS.filter((b) => b.contentFolder)
+        .map((b) => b.code)
+        .join(', ') +
+      '.'
+  );
+
+  // Recent productions
+  const prods = await db
+    .select()
+    .from(tables.productions)
+    .orderBy(desc(tables.productions.updatedAt))
+    .limit(8);
+  if (prods.length) {
+    parts.push(
+      'Recent productions:\n' +
+        prods
+          .map((p) => `- ${p.brand}: "${p.topic}" (stage: ${p.stage}, status: ${p.status})`)
+          .join('\n')
+    );
+  }
+
+  // Recent posts (My Poster drafts / scheduled / published)
+  const recentPosts = await db.select().from(tables.posts).orderBy(desc(tables.posts.updatedAt)).limit(10);
+  if (recentPosts.length) {
+    parts.push(
+      'Recent posts:\n' +
+        recentPosts
+          .map(
+            (p) =>
+              `- ${p.brand} ${p.platform} [${p.status}]${p.title ? ` "${p.title}"` : p.caption ? ` "${p.caption.slice(0, 60)}"` : ''}`
+          )
+          .join('\n')
+    );
+  }
+
+  // Saved memories (global + this brand)
+  const mems = await db
+    .select()
+    .from(tables.allenMemories)
+    .orderBy(desc(tables.allenMemories.createdAt))
+    .limit(50);
+  const relevant = mems.filter((m) => !m.brand || (brand && m.brand === brand));
+  if (relevant.length) {
+    parts.push(
+      'Saved memories (things Rahm told you to remember):\n' +
+        relevant.map((m) => `- ${m.brand ? `[${m.brand}] ` : ''}${m.content}`).join('\n')
+    );
+  }
+  return parts.join('\n\n');
+}
+
+// Talk to ALLEN — the concierge. Enriched with system state, recent work, and memories.
 app.post<{ Body: { message?: string; brand?: string; persona?: string; history?: AllenChatMessage[] } }>(
   '/allen/chat',
   async (request, reply) => {
@@ -1773,17 +1834,58 @@ app.post<{ Body: { message?: string; brand?: string; persona?: string; history?:
     const message = (request.body?.message ?? '').trim();
     if (!message) return reply.code(400).send({ error: 'message required' });
     try {
+      const context = await buildConciergeContext(request.body?.brand);
       return await allenChat({
         message,
         brand: request.body?.brand,
         persona: request.body?.persona,
-        history: (request.body?.history ?? []).slice(-8)
+        history: (request.body?.history ?? []).slice(-8),
+        context
       });
     } catch (err) {
       return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
     }
   }
 );
+
+// ALLEN listens — transcribe an audio clip (mic input) via Whisper.
+app.post('/allen/listen', async (request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+  const file = await request.file();
+  if (!file) return reply.code(400).send({ error: 'audio file required' });
+  try {
+    const buf = await file.toBuffer();
+    return await allenListen(buf, file.filename || 'audio.webm', file.mimetype || 'audio/webm');
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
+});
+
+// ALLEN memory / knowledge base.
+app.get<{ Querystring: { brand?: string } }>('/allen/memory', async (request) => {
+  const rows = await db.select().from(tables.allenMemories).orderBy(desc(tables.allenMemories.createdAt));
+  const brand = request.query.brand;
+  const memories = brand ? rows.filter((m) => !m.brand || m.brand === brand) : rows;
+  return { memories };
+});
+
+app.post<{ Body: { content?: string; brand?: string } }>('/allen/memory', async (request, reply) => {
+  const content = (request.body?.content ?? '').trim();
+  if (!content) return reply.code(400).send({ error: 'content required' });
+  const row = {
+    id: `mem-${Date.now()}-${Math.floor(Math.random() * 1e4)}`,
+    brand: (request.body?.brand ?? '').trim() || null,
+    content,
+    source: 'user'
+  };
+  await db.insert(tables.allenMemories).values(row);
+  return reply.code(201).send(row);
+});
+
+app.delete<{ Params: { id: string } }>('/allen/memory/:id', async (request, reply) => {
+  await db.delete(tables.allenMemories).where(eq(tables.allenMemories.id, request.params.id));
+  return reply.code(204).send();
+});
 
 // ALLEN speaks — generic text → ElevenLabs audio (mp3).
 app.post<{ Body: { text?: string; voiceId?: string; stability?: number } }>(

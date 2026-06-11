@@ -320,6 +320,19 @@ footer a { color: var(--accent); text-decoration: none; }
 .bubble.assistant { align-self: flex-start; background: #0f1419; border: 1px solid var(--border); }
 .speak-btn { margin-top: 8px; background: transparent; border: 1px solid var(--border); color: var(--muted); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .speak-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.bubble-actions { display: flex; gap: 8px; margin-top: 8px; }
+.mic-btn { flex: none; background: #0f1419; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 0 14px; font-size: 15px; cursor: pointer; }
+.mic-btn:hover:not(:disabled) { border-color: var(--accent); }
+.mic-btn.rec { background: #3a1d1d; border-color: #c0392b; color: #ff6b6b; animation: pulse 1.2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+.memory-panel { border: 1px solid var(--border); border-radius: 12px; background: #0f1419; padding: 12px; }
+.mem-add { display: flex; gap: 8px; margin-bottom: 10px; }
+.mem-add input { flex: 1; background: #0b0f14; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; }
+.mem-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 180px; overflow-y: auto; }
+.mem-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; padding: 6px 8px; background: #0b0f14; border-radius: 8px; }
+.mem-tag { font-size: 10px; text-transform: uppercase; background: #1d2b3a; color: var(--accent); border-radius: 4px; padding: 1px 5px; margin-right: 4px; }
+.mem-del { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 13px; }
+.mem-del:hover { color: #ff6b6b; }
 .chat-input { display: flex; gap: 10px; }
 .chat-input input { flex: 1; background: #0f1419; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
 .chat-input .btn { margin-top: 0; flex: none; }

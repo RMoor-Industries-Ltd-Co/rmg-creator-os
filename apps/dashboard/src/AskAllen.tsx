@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
-import { allen, type ChatTurn } from './api';
+import { allen, type ChatTurn, type Memory } from './api';
 
 const BRAND_OPTIONS = [{ value: '', label: 'No brand voice' }].concat(
   BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }))
@@ -21,12 +21,87 @@ export function AskAllen() {
   const [error, setError] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState<number | null>(null);
   const [autoSpeak, setAutoSpeak] = useState(true);
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [memories, setMemories] = useState<Memory[]>([]);
+  const [memInput, setMemInput] = useState('');
+  const [showMem, setShowMem] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const recRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [turns, busy]);
+
+  useEffect(() => {
+    allen.memories(brand || undefined).then((r) => setMemories(r.memories)).catch(() => undefined);
+  }, [brand]);
+
+  async function toggleMic() {
+    if (recording) {
+      recRef.current?.stop();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
+      rec.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecording(false);
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        if (blob.size < 1200) return;
+        setTranscribing(true);
+        try {
+          const { text } = await allen.listen(blob);
+          if (text.trim()) await send(text);
+        } catch (e: unknown) {
+          setError(String(e));
+        } finally {
+          setTranscribing(false);
+        }
+      };
+      recRef.current = rec;
+      rec.start();
+      setRecording(true);
+    } catch {
+      setError('Microphone access denied or unavailable.');
+    }
+  }
+
+  async function addMemory() {
+    const content = memInput.trim();
+    if (!content) return;
+    try {
+      const m = await allen.addMemory(content, brand || undefined);
+      setMemories((cur) => [m, ...cur]);
+      setMemInput('');
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
+  async function removeMemory(id: string) {
+    try {
+      await allen.deleteMemory(id);
+      setMemories((cur) => cur.filter((m) => m.id !== id));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function remember(text: string) {
+    try {
+      const m = await allen.addMemory(text, brand || undefined);
+      setMemories((cur) => [m, ...cur]);
+      setShowMem(true);
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
 
   async function speak(text: string, idx: number) {
     try {
@@ -75,6 +150,9 @@ export function AskAllen() {
             <input type="checkbox" checked={autoSpeak} onChange={(e) => setAutoSpeak(e.target.checked)} />
             🔊 Speak replies
           </label>
+          <button type="button" className="attach sm" onClick={() => setShowMem((s) => !s)}>
+            🧠 Memory ({memories.length})
+          </button>
           <select value={brand} onChange={(e) => setBrand(e.target.value)}>
             {BRAND_OPTIONS.map((b) => (
               <option key={b.value} value={b.value}>
@@ -84,6 +162,39 @@ export function AskAllen() {
           </select>
         </div>
       </div>
+
+      {showMem && (
+        <div className="memory-panel">
+          <div className="mem-add">
+            <input
+              type="text"
+              placeholder={`Teach ALLEN something${brand ? ` about ${brand}` : ''}… (e.g. "We post ORR on Tuesdays")`}
+              value={memInput}
+              onChange={(e) => setMemInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && addMemory()}
+            />
+            <button type="button" className="btn sm" onClick={addMemory} disabled={!memInput.trim()}>
+              Commit
+            </button>
+          </div>
+          {memories.length === 0 ? (
+            <p className="muted hint">No memories yet. Anything you commit here, ALLEN recalls in every chat.</p>
+          ) : (
+            <ul className="mem-list">
+              {memories.map((m) => (
+                <li key={m.id}>
+                  <span>
+                    {m.brand && <span className="mem-tag">{m.brand}</span>} {m.content}
+                  </span>
+                  <button type="button" className="mem-del" onClick={() => removeMemory(m.id)} title="Forget">
+                    ✕
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
 
       <div className="chat-log">
         {turns.length === 0 && (
@@ -103,14 +214,19 @@ export function AskAllen() {
             <div className="bubble-role">{t.role === 'user' ? 'You' : 'ALLEN'}</div>
             <div className="bubble-text">{t.content}</div>
             {t.role === 'assistant' && (
-              <button
-                type="button"
-                className="speak-btn"
-                onClick={() => speak(t.content, i)}
-                disabled={speaking === i}
-              >
-                {speaking === i ? '🔊 Speaking…' : '🔊 Replay'}
-              </button>
+              <div className="bubble-actions">
+                <button
+                  type="button"
+                  className="speak-btn"
+                  onClick={() => speak(t.content, i)}
+                  disabled={speaking === i}
+                >
+                  {speaking === i ? '🔊 Speaking…' : '🔊 Replay'}
+                </button>
+                <button type="button" className="speak-btn" onClick={() => remember(t.content)} title="Save to ALLEN's memory">
+                  🧠 Remember
+                </button>
+              </div>
             )}
           </div>
         ))}
@@ -127,12 +243,21 @@ export function AskAllen() {
           send(input);
         }}
       >
+        <button
+          type="button"
+          className={`mic-btn ${recording ? 'rec' : ''}`}
+          onClick={toggleMic}
+          disabled={transcribing || busy}
+          title={recording ? 'Stop & send' : 'Hold a thought — tap to talk'}
+        >
+          {recording ? '⏺ Stop' : transcribing ? '…' : '🎙️'}
+        </button>
         <input
           type="text"
-          placeholder="Ask ALLEN…"
+          placeholder={recording ? 'Listening…' : transcribing ? 'Transcribing…' : 'Ask ALLEN…'}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={busy}
+          disabled={busy || recording}
         />
         <button type="submit" className="btn" disabled={busy || !input.trim()}>
           Send

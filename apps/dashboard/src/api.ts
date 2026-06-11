@@ -341,6 +341,14 @@ export interface ChatTurn {
   content: string;
 }
 
+export interface Memory {
+  id: string;
+  brand: string | null;
+  content: string;
+  source: string;
+  createdAt?: string;
+}
+
 export const allen = {
   chat: (body: { message: string; brand?: string; history?: ChatTurn[] }) =>
     req<{ reply: string }>('/allen/chat', { method: 'POST', body: JSON.stringify(body) }),
@@ -355,6 +363,24 @@ export const allen = {
       throw new Error(b.error ?? `speak failed (${res.status})`);
     }
     return URL.createObjectURL(await res.blob());
+  },
+  async listen(blob: Blob): Promise<{ text: string }> {
+    const form = new FormData();
+    form.append('file', blob, 'speech.webm');
+    const res = await fetch(`${API}/allen/listen`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const b = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new Error(b.error ?? `transcription failed (${res.status})`);
+    }
+    return (await res.json()) as { text: string };
+  },
+  memories: (brand?: string) =>
+    req<{ memories: Memory[] }>(`/allen/memory${brand ? `?brand=${brand}` : ''}`),
+  addMemory: (content: string, brand?: string) =>
+    req<Memory>('/allen/memory', { method: 'POST', body: JSON.stringify({ content, brand }) }),
+  async deleteMemory(id: string): Promise<void> {
+    const res = await fetch(`${API}/allen/memory/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error(`delete failed (${res.status})`);
   }
 };
 
