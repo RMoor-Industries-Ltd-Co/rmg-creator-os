@@ -36,6 +36,8 @@ export function AskAllen() {
   const [editText, setEditText] = useState('');
   const [copied, setCopied] = useState<number | null>(null);
   const [dormant, setDormant] = useState(() => localStorage.getItem('allen_dormant') === '1');
+  const [editTurnIdx, setEditTurnIdx] = useState<number | null>(null);
+  const [editTurnText, setEditTurnText] = useState('');
 
   function setGate(d: boolean) {
     setDormant(d);
@@ -56,12 +58,13 @@ export function AskAllen() {
       if (WAKE_RE.test(t)) {
         setGate(false);
         const rest = stripWake(t);
-        if (rest) setInput((c) => (c.trim() ? c.trim() + ' ' : '') + rest);
+        if (rest) void runChat(rest, turns); // wake + immediately process the question
       }
       return; // dormant: ignore everything except the wake phrase
     }
+    // Active: process immediately on stop (no manual Send needed).
     const body = WAKE_RE.test(t) ? stripWake(t) : t;
-    if (body) setInput((c) => (c.trim() ? c.trim() + ' ' : '') + body);
+    if (body) void runChat(body, turns);
   }
 
   async function copyReply(text: string, idx: number) {
@@ -248,27 +251,19 @@ export function AskAllen() {
     }
   }
 
-  async function send(text: string) {
-    const message = text.trim();
-    if (!message || busy) return;
-    if (dormant) {
-      // Dormant: only the wake phrase gets through.
-      if (WAKE_RE.test(message)) {
-        setGate(false);
-        const rest = stripWake(message);
-        setInput(rest);
-      }
-      return;
-    }
+  // Core chat runner with an explicit base history (shared by typed send, voice, and hindsight edits).
+  async function runChat(message: string, baseTurns: ChatTurn[]) {
+    const msg = message.trim();
+    if (!msg || busy) return;
     setError(null);
     setInput('');
-    const history = turns.slice(-8);
-    const next = [...turns, { role: 'user', content: message } as ChatTurn];
+    const history = baseTurns.slice(-8);
+    const next: ChatTurn[] = [...baseTurns, { role: 'user', content: msg }];
     setTurns(next);
     setBusy(true);
     try {
-      const { reply, memoryChanged } = await allen.chat({ message, brand: brand || undefined, history });
-      const idx = next.length; // index of the assistant turn we're about to add
+      const { reply, memoryChanged } = await allen.chat({ message: msg, brand: brand || undefined, history });
+      const idx = next.length;
       setTurns([...next, { role: 'assistant', content: reply }]);
       if (memoryChanged) {
         allen.memories(brand || undefined).then((r) => setMemories(r.memories)).catch(() => undefined);
@@ -280,6 +275,31 @@ export function AskAllen() {
     } finally {
       setBusy(false);
     }
+  }
+
+  // Typed / Send-button path: respects the dormant gate.
+  async function send(text: string) {
+    const message = text.trim();
+    if (!message || busy) return;
+    if (dormant) {
+      if (WAKE_RE.test(message)) {
+        setGate(false);
+        const rest = stripWake(message);
+        if (rest) void runChat(rest, turns);
+        else setInput('');
+      }
+      return;
+    }
+    void runChat(message, turns);
+  }
+
+  // Hindsight correction: edit a previously submitted message and re-run the thread from that point.
+  async function saveEditTurn() {
+    if (editTurnIdx == null) return;
+    const i = editTurnIdx;
+    const text = editTurnText.trim();
+    setEditTurnIdx(null);
+    if (text) await runChat(text, turns.slice(0, i));
   }
 
   return (
@@ -453,7 +473,48 @@ export function AskAllen() {
         {turns.map((t, i) => (
           <div key={i} className={`bubble ${t.role}`}>
             <div className="bubble-role">{t.role === 'user' ? 'You' : 'ALLEN'}</div>
-            <div className="bubble-text">{t.content}</div>
+            {editTurnIdx === i ? (
+              <div className="turn-edit">
+                <textarea
+                  autoFocus
+                  rows={2}
+                  value={editTurnText}
+                  onChange={(e) => setEditTurnText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      void saveEditTurn();
+                    }
+                    if (e.key === 'Escape') setEditTurnIdx(null);
+                  }}
+                />
+                <div className="bubble-actions">
+                  <button type="button" className="btn sm" onClick={() => void saveEditTurn()} disabled={busy}>
+                    Re-run from here
+                  </button>
+                  <button type="button" className="speak-btn" onClick={() => setEditTurnIdx(null)}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="bubble-text">{t.content}</div>
+            )}
+            {t.role === 'user' && editTurnIdx !== i && (
+              <div className="bubble-actions">
+                <button
+                  type="button"
+                  className="speak-btn"
+                  title="Edit this message and re-run the conversation from here"
+                  onClick={() => {
+                    setEditTurnIdx(i);
+                    setEditTurnText(t.content);
+                  }}
+                >
+                  ✎ Edit &amp; re-run
+                </button>
+              </div>
+            )}
             {t.role === 'assistant' && (
               <div className="bubble-actions">
                 <button

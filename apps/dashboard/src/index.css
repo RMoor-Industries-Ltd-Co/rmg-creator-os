@@ -305,6 +305,15 @@ footer a { color: var(--accent); text-decoration: none; }
 }
 .publish-panel { margin-top: 18px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #0f1419; }
 .publish-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.brief-card { background: linear-gradient(135deg, #11151c, #0d1a18); border-color: #1e3a34; }
+.brief-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.brief-emoji { font-size: 30px; flex: none; }
+.brief-title { flex: 1; min-width: 160px; }
+.brief-title h2 { margin: 0; }
+.brief-title p { margin: 2px 0 0; }
+.brief-actions { display: flex; gap: 8px; align-items: center; }
+.brief-actions .btn.sm, .brief-actions .attach.sm { margin: 0; }
+.brief-text { font-size: 16px; line-height: 1.6; margin: 12px 0 0; max-width: 70ch; }
 .ask-allen { display: flex; flex-direction: column; gap: 14px; }
 .ask-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
 .ask-head h2 { margin: 0 0 2px; }
@@ -328,6 +337,10 @@ footer a { color: var(--accent); text-decoration: none; }
 .dormant-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: #2a1416; border: 1px solid #c0392b; color: #ffb4b4; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
 .dormant-banner .btn.sm { margin: 0; }
 .bubble-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.bubble.user .bubble-actions { opacity: 0; transition: opacity .12s; }
+.bubble.user:hover .bubble-actions { opacity: 1; }
+.turn-edit { display: flex; flex-direction: column; gap: 6px; }
+.turn-edit textarea { width: 100%; background: #0b0f14; color: var(--text); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; font: inherit; resize: vertical; }
 .mic-btn { flex: none; background: #0f1419; border: 1px solid var(--border); color: var(--text); border-radius: 10px; padding: 0 14px; font-size: 15px; cursor: pointer; }
 .mic-btn:hover:not(:disabled) { border-color: var(--accent); }
 .mic-btn.rec { background: #3a1d1d; border-color: #c0392b; color: #ff6b6b; animation: pulse 1.2s infinite; }

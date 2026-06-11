@@ -1912,6 +1912,27 @@ async function applyMemoryOps(reply: string): Promise<{ reply: string; memoryCha
   return { reply: cleaned, memoryChanged: changed };
 }
 
+// Morning brief — ALLIE preps the notes, ALLEN delivers them as a spoken greeting.
+app.get<{ Querystring: { brand?: string; daypart?: string } }>('/allen/brief', async (request, reply) => {
+  if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });
+  const daypart = ['morning', 'afternoon', 'evening'].includes(request.query.daypart ?? '')
+    ? request.query.daypart
+    : 'day';
+  const prompt =
+    `It is the start of the ${daypart} and ALLIE has prepped your notes for Rahm. Greet him warmly by name ` +
+    `(he is Rahm), then give him the two to four things that genuinely deserve attention right now — drawn from ` +
+    `the recent productions and posts, the trend signals, anything flagged, and the saved memories. Speak it ` +
+    `naturally, like a partner catching him up over coffee — you and ALLIE are a tight team. Keep it under 110 ` +
+    `words, no lists or bullet syntax, just flowing speech.`;
+  try {
+    const context = await buildConciergeContext(request.query.brand);
+    const { reply: brief } = await allenChat({ message: prompt, context });
+    return { brief };
+  } catch (err) {
+    return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
+  }
+});
+
 // ALLEN listens — transcribe an audio clip (mic input) via Whisper.
 app.post('/allen/listen', async (request, reply) => {
   if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured' });

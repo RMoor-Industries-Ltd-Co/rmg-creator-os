@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
 import { AskAllen } from './AskAllen';
+import { MorningBrief } from './MorningBrief';
 import { ProductionWizard } from './ProductionWizard';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
@@ -87,6 +88,7 @@ export function App() {
 
       {isOverview && (
       <>
+      <MorningBrief />
       <section className="panel">
         <h2>Control plane</h2>
         {error && <p className="err">Gateway unreachable: {error}</p>}

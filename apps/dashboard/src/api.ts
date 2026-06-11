@@ -413,6 +413,10 @@ export const allen = {
     }
     return (await res.json()) as { transcript: Transcript; highlightsSaved: number };
   },
+  brief: (brand?: string, daypart?: string) =>
+    req<{ brief: string }>(
+      `/allen/brief?${new URLSearchParams({ ...(brand ? { brand } : {}), ...(daypart ? { daypart } : {}) }).toString()}`
+    ),
   transcripts: () => req<{ transcripts: Transcript[] }>('/allen/transcripts'),
   transcript: (id: string) => req<Transcript>(`/allen/transcripts/${id}`),
   async deleteTranscript(id: string): Promise<void> {
