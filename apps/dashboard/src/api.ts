@@ -136,6 +136,26 @@ export interface BrandFeed {
   enabled: boolean;
 }
 
+export interface Outlier {
+  videoId: string;
+  title: string;
+  channel: string;
+  views: number;
+  channelAvgViews: number;
+  score: number;
+  publishedAt: string;
+  thumbnail: string;
+  url: string;
+}
+
+export const radar = {
+  status: () => req<{ configured: boolean }>('/allie/outliers/status'),
+  outliers: (brand: string, q?: string) =>
+    req<{ configured: boolean; query: string; outliers: Outlier[] }>(
+      `/allie/outliers?${new URLSearchParams({ brand, ...(q ? { q } : {}) }).toString()}`
+    )
+};
+
 export const feeds = {
   list: (brand: string) => req<{ feeds: BrandFeed[] }>(`/brands/${brand}/feeds`),
   add: (brand: string, url: string, title?: string) =>

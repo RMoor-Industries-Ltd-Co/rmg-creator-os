@@ -18,6 +18,7 @@ import {
   type AllenChatMessage
 } from './allen.js';
 import { brandTrends, ensureDefaultFeeds, trendContext, type TrendItem } from './feeds.js';
+import { BRAND_QUERY, outliers as ytOutliers, youtubeConfigured } from './youtube.js';
 import {
   createPost as postizCreatePost,
   listIntegrations as postizListIntegrations,
@@ -2091,6 +2092,20 @@ app.get<{ Params: { brand: string } }>('/brands/:brand/trends', async (request) 
   const items = await brandTrends(db, request.params.brand);
   return { items };
 });
+
+// ALLIE Outlier Radar — YouTube videos overperforming their channel (the 1of10 signal).
+app.get<{ Querystring: { brand?: string; q?: string } }>('/allie/outliers', async (request, reply) => {
+  if (!youtubeConfigured()) return reply.code(503).send({ configured: false, error: 'YouTube not configured' });
+  const query = (request.query.q ?? '').trim() || BRAND_QUERY[request.query.brand ?? ''] || '';
+  if (!query) return reply.code(400).send({ error: 'q or a known brand is required' });
+  try {
+    return { configured: true, query, outliers: await ytOutliers(query) };
+  } catch (err) {
+    return reply.code(502).send({ error: `YouTube: ${(err as Error).message}` });
+  }
+});
+
+app.get('/allie/outliers/status', async () => ({ configured: youtubeConfigured() }));
 
 // Manage a brand's trend sources.
 app.get<{ Params: { brand: string } }>('/brands/:brand/feeds', async (request) => {
