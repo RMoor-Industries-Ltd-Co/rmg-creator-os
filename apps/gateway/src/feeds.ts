@@ -33,13 +33,13 @@ const gnews = (q: string): string =>
 // Seed queries are derived from each brand's content lane. The user can add or
 // remove feeds per brand via the /feeds endpoints; these only seed when empty.
 const DEFAULT_FEEDS: Record<string, Array<{ title: string; url: string }>> = {
-  orr: [{ title: 'Travel & cruise news', url: gnews('("royal caribbean" OR cruise OR "cruise deals" OR "all-inclusive resort" OR "travel deals") when:14d') }],
-  com: [{ title: 'Growth & discipline', url: gnews('("personal growth" OR self-discipline OR mindset OR accountability OR "mental health") when:14d') }],
-  vlog: [{ title: 'Builder & tech', url: gnews('("AI tools" OR "developer tools" OR software OR "open source" OR framework) when:7d') }],
-  'busy-mf': [{ title: 'Gear & deals', url: gnews('("tech deals" OR "best gadgets" OR "product review" OR "creator gear") when:7d') }],
-  'mstr-rahm': [{ title: 'Mindset & masculinity', url: gnews('(masculinity OR discipline OR "self improvement" OR motivation OR accountability) when:14d') }],
-  trc: [{ title: "Men's issues & culture", url: gnews('(masculinity OR relationships OR fatherhood OR "men\'s issues" OR dating OR purpose) when:14d') }],
-  tgl: [{ title: 'Legacy & power', url: gnews('(legacy OR "rise and fall" OR downfall OR mortality OR "famous last words") when:30d') }]
+  orr: [{ title: 'Travel & cruise news', url: gnews('("royal caribbean" OR "cruise review" OR "cruise deals" OR "all-inclusive resort" OR "travel deals") -injury -crash when:14d') }],
+  com: [{ title: 'Growth & discipline', url: gnews('("personal development" OR "self discipline" OR "self mastery" OR "decision making" OR "mental clarity") -NFL -NBA -game -coach when:14d') }],
+  vlog: [{ title: 'Builder & tech', url: gnews('("AI tools" OR "developer tools" OR "open source" OR "software framework" OR "developer productivity") when:7d') }],
+  'busy-mf': [{ title: 'Gear & deals', url: gnews('("tech deals" OR "best gadgets" OR "gadget review" OR "creator gear" OR "best tools for") when:7d') }],
+  'mstr-rahm': [{ title: 'Mindset & masculinity', url: gnews('("self improvement" OR "personal development" OR "mens mental health" OR stoicism OR "discipline mindset" OR "self mastery") -NFL -NBA -MLB -game -coach -roster when:14d') }],
+  trc: [{ title: "Men's issues & culture", url: gnews('("modern masculinity" OR fatherhood OR "men\'s mental health" OR "dating advice" OR "relationship advice") -NFL -NBA -game when:14d') }],
+  tgl: [{ title: 'Legacy & power', url: gnews('("his legacy" OR "rise and fall" OR "cautionary tale" OR "lasting legacy" OR "power and downfall") when:30d') }]
 };
 
 export async function listFeeds(db: Database, brand: string): Promise<BrandFeed[]> {
@@ -70,16 +70,24 @@ async function fetchFeed(url: string): Promise<TrendItem[]> {
     const feed = await parser.parseURL(url);
     const items: TrendItem[] = (feed.items ?? [])
       .slice(0, 25)
-      .map((it) => ({
-        title: (it.title ?? '').trim(),
-        link: it.link ?? '',
-        source:
-          (it as { source?: { $?: { url?: string } } }).source?.$?.url ??
-          (typeof (it as { creator?: string }).creator === 'string' ? (it as { creator?: string }).creator : undefined) ??
-          feed.title ??
-          undefined,
-        publishedAt: it.isoDate ?? it.pubDate ?? undefined
-      }))
+      .map((it) => {
+        let title = (it.title ?? '').trim();
+        let source: string | undefined;
+        // Google News titles are "Headline - Publisher" — split out a clean headline + publisher.
+        const m = title.match(/\s[-–—]\s([^-–—]{2,45})$/);
+        if (m && m.index) {
+          source = m[1].trim();
+          title = title.slice(0, m.index).trim();
+        }
+        // An explicit <source> element (publisher name) wins when present.
+        const srcEl = (it as { source?: unknown }).source;
+        if (typeof srcEl === 'string' && srcEl.trim()) source = srcEl.trim();
+        else if (srcEl && typeof srcEl === 'object') {
+          const o = srcEl as { _?: string; '#'?: string };
+          source = o._ ?? o['#'] ?? source;
+        }
+        return { title, link: it.link ?? '', source, publishedAt: it.isoDate ?? it.pubDate ?? undefined };
+      })
       .filter((i) => i.title);
     CACHE.set(url, { at: Date.now(), items });
     return items;
