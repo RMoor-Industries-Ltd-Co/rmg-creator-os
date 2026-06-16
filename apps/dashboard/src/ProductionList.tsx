@@ -16,8 +16,11 @@ function ago(iso: string): string {
 
 const stepLabel = (key: string) => STEPS.find((s) => s.key === key)?.label ?? key;
 // Where to drop the user back in. A locked emotion means Voice is done.
+// The backend tracks the four build steps under one coarse `generate` stage,
+// so resume there at the first of them (Scenes).
 function resumeStep(p: Production): string {
   if (STEPS.some((s) => s.key === p.stage)) return p.stage;
+  if (p.stage === 'generate') return 'scenes';
   return 'script';
 }
 

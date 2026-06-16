@@ -3,15 +3,25 @@ import { productions, type Production } from './api';
 import { navigate } from './router';
 import { VoiceDirection } from './VoiceDirection';
 import { Assets } from './Assets';
-import { Generate } from './Generate';
+import { HiggsfieldPanel } from './HiggsfieldPanel';
+import { ARoll } from './ARoll';
+import { StockBroll } from './StockBroll';
+import { FinalCut } from './FinalCut';
 import { Post } from './Post';
 
+// One visible progression from topic to publish. The four "build" steps
+// (scenes → a-roll → b-roll → final cut) were previously hidden inside a
+// single "Generate" page; the backend still tracks them under one coarse
+// `generate` stage (see ProductionList.resumeStep).
 export const STEPS = [
   { key: 'script', label: 'Script' },
   { key: 'voice', label: 'Voice' },
   { key: 'assets', label: 'Assets' },
-  { key: 'generate', label: 'Generate' },
-  { key: 'post', label: 'Post' }
+  { key: 'scenes', label: 'Scenes' },
+  { key: 'aroll', label: 'A-roll' },
+  { key: 'broll', label: 'B-roll' },
+  { key: 'finalcut', label: 'Final cut' },
+  { key: 'post', label: 'Publish' }
 ] as const;
 
 export function ProductionWizard({ id, step }: { id: string; step: string }) {
@@ -86,8 +96,16 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
             <VoiceDirection p={p} onUpdate={setP} onLocked={() => go(idx + 1)} />
           ) : step === 'assets' ? (
             <Assets p={p} />
-          ) : step === 'generate' ? (
-            <Generate p={p} />
+          ) : step === 'scenes' ? (
+            <div className="stage-card">
+              <HiggsfieldPanel p={p} />
+            </div>
+          ) : step === 'aroll' ? (
+            <ARoll p={p} />
+          ) : step === 'broll' ? (
+            <StockBroll p={p} />
+          ) : step === 'finalcut' ? (
+            <FinalCut p={p} />
           ) : step === 'post' ? (
             <Post p={p} />
           ) : (
@@ -106,13 +124,9 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
         <button className="attach" onClick={() => go(idx - 1)} disabled={idx === 0}>
           ← Back
         </button>
-        {idx < STEPS.length - 1 ? (
+        {idx < STEPS.length - 1 && (
           <button className="btn" onClick={() => go(idx + 1)}>
             Next →
-          </button>
-        ) : (
-          <button className="btn" disabled>
-            Post
           </button>
         )}
       </div>

@@ -176,6 +176,17 @@ app.get('/health', async (): Promise<HealthResponse> => {
   } catch {
     checks.redis = 'fail';
   }
+  // Integration availability (key-configured check, not a live API ping).
+  checks.heygen = heygen ? 'ok' : 'fail';
+  checks.higgsfield = higgs ? 'ok' : 'fail';
+  checks.drive = drive ? 'ok' : 'fail';
+  // ALLEN health proxy — reports llm/tts/stt/docs.
+  try {
+    const allenHealth = await fetch('http://allen:8090/health', { signal: AbortSignal.timeout(3000) });
+    checks.allen = allenHealth.ok ? 'ok' : 'fail';
+  } catch {
+    checks.allen = 'fail';
+  }
   const status = Object.values(checks).every((v) => v === 'ok') ? 'ok' : 'degraded';
   return { status, service: 'gateway', checks, time: new Date().toISOString() };
 });

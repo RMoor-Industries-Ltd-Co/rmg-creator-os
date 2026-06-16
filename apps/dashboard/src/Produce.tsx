@@ -78,8 +78,8 @@ export function Produce() {
   return (
     <div className="produce">
       <section className="panel">
-        <h2>New production — ask ALLEN</h2>
-        <p className="muted">Describe what you want. ALLEN writes it in the brand voice and saves a draft to Drive.</p>
+        <h2>New production</h2>
+        <p className="muted">Describe what you want — it's written in the brand voice and a draft is saved to Drive.</p>
 
         <div className="intake-meta">
           <label>
@@ -109,7 +109,7 @@ export function Produce() {
         <div className="allie-suggest">
           <div className="allie-row">
             <button type="button" className="attach" onClick={suggestTopics} disabled={suggesting}>
-              {suggesting ? 'ALLIE is thinking…' : `✨ Ask ALLIE for ${BRAND_OPTIONS.find((b) => b.value === brand)?.label ?? ''} topics`}
+              {suggesting ? 'Finding topics…' : `✨ Suggest ${BRAND_OPTIONS.find((b) => b.value === brand)?.label ?? ''} topics`}
             </button>
             <label className="trend-toggle" title="Ground topics in today's headlines">
               <input type="checkbox" checked={useTrends} onChange={(e) => setUseTrends(e.target.checked)} />
@@ -118,7 +118,7 @@ export function Produce() {
           </div>
           {useTrends && trends.length > 0 && (
             <details className="trend-list">
-              <summary>📰 {trends.length} headlines ALLIE drew from</summary>
+              <summary>📰 {trends.length} headlines used</summary>
               <ul>
                 {trends.slice(0, 8).map((t, i) => (
                   <li key={i}>
@@ -166,7 +166,7 @@ export function Produce() {
             onChange={onFile}
           />
           <button className="btn" onClick={submit} disabled={submitting}>
-            {submitting ? 'ALLEN is writing…' : 'Submit'}
+            {submitting ? 'Writing your script…' : 'Submit'}
           </button>
         </div>
         <p className="muted hint">

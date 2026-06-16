@@ -172,7 +172,7 @@ export function Post({ p }: { p: Production }) {
         <strong>My Poster — schedule the post</strong>
         <span className="badge">{p.brand}</span>
       </div>
-      <p className="muted">Pick platforms, compose the metadata (ALLIE suggests), set the schedule. Publishing engine (Postiz) lights up once your platform apps are connected.</p>
+      <p className="muted">Pick platforms, compose the metadata (AI-suggested), set the schedule. Publishing engine (Postiz) lights up once your platform apps are connected.</p>
 
       <label className="vd-label">Platforms for {p.brand}</label>
       <ul className="checks vd-brands">
@@ -190,7 +190,7 @@ export function Post({ p }: { p: Production }) {
         })}
       </ul>
       <div className="gen-row">
-        <input className="hf-select" style={{ flex: 1, minWidth: 200 }} type="text" placeholder="Target audience (ALLIE)…" value={audience} onChange={(e) => setAudience(e.target.value)} />
+        <input className="hf-select" style={{ flex: 1, minWidth: 200 }} type="text" placeholder="Target audience…" value={audience} onChange={(e) => setAudience(e.target.value)} />
         <button className="attach sm" onClick={saveDefaults}>Save brand defaults</button>
       </div>
 
@@ -206,7 +206,7 @@ export function Post({ p }: { p: Production }) {
 
           <div className="gen-row">
             <button className="btn ghost" onClick={suggest} disabled={busy === 'suggest'}>
-              {busy === 'suggest' ? 'Asking ALLIE…' : '✨ Suggest with ALLIE'}
+              {busy === 'suggest' ? 'Suggesting…' : '✨ Suggest metadata'}
             </button>
             <span className="muted">researched caption · hashtags · first comment</span>
           </div>
