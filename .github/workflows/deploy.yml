@@ -88,6 +88,7 @@ jobs:
               fi
             }
             upsert HEYGEN_API_KEY "${{ secrets.HEYGEN_API_KEY }}"
+            upsert HIGGSFIELD_ENABLED "true"
 
       - name: Run remote deploy
         uses: appleboy/ssh-action@v1.0.3
