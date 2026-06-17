@@ -59,6 +59,25 @@ jobs:
           target: /opt/rmg-creator-os/control-server
           strip_components: 2
 
+      - name: Inject API keys into server .env
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.CONTROL_HOST }}
+          username: ${{ secrets.CONTROL_USER }}
+          key: ${{ secrets.CONTROL_SSH_KEY }}
+          script: |
+            ENV_FILE="/opt/rmg-creator-os/control-server/.env"
+            upsert() {
+              local key="$1" val="$2"
+              if [ -z "$val" ]; then return; fi
+              if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+                sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
+              else
+                echo "${key}=${val}" >> "$ENV_FILE"
+              fi
+            }
+            upsert HEYGEN_API_KEY "${{ secrets.HEYGEN_API_KEY }}"
+
       - name: Run remote deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
