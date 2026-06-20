@@ -9,14 +9,6 @@ import { Login } from './Login';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
-const SERVICES = [
-  { id: 'story-director', name: 'Story Director', desc: 'Raw recording → branded, captioned video', status: 'In build' },
-  { id: 'social-manager', name: 'Social Manager', desc: 'Scheduling & publishing across platforms', status: 'Planned' },
-  { id: 'allen', name: 'A.L.L.E.N', desc: 'Speech-enabled company LLM interface', status: 'Planned' },
-  { id: 'allie', name: 'A.L.L.I.E', desc: 'Investigator agent — RSS, research, library', status: 'Planned' },
-  { id: 'my-poster', name: 'My Poster', desc: 'Image enhancement & Shopify product content', status: 'Planned' }
-] as const;
-
 function Dot({ ok }: { ok: boolean }) {
   return <span className={`dot ${ok ? 'ok' : 'fail'}`} aria-hidden />;
 }
@@ -69,7 +61,7 @@ export function App() {
           Overview
         </button>
         <button className={path.startsWith('/produce') ? 'active' : ''} onClick={() => navigate('/produce')}>
-          Produce
+          Production
         </button>
         <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
@@ -101,21 +93,7 @@ export function App() {
         )}
       </section>
 
-      <section className="panel">
-        <h2>Suite</h2>
-        <div className="grid">
-          {SERVICES.map((s) => (
-            <article key={s.id} className="card">
-              <div className="card-head">
-                <h3>{s.name}</h3>
-                <span className={`badge ${s.status === 'In build' ? 'live' : ''}`}>{s.status}</span>
-              </div>
-              <p>{s.desc}</p>
-            </article>
-          ))}
-        </div>
-      </section>
-      </>
+</>
       )}
 
       <footer className="muted">

@@ -812,11 +812,11 @@ app.get<{ Querystring: { type?: 'image' | 'video' } }>('/higgsfield/models', asy
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetId?: string; sceneId?: string };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetId } = request.body ?? {};
+  const { prompt, model, sourceAssetId, sceneId } = request.body ?? {};
   if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
 
   const [row] = await db
@@ -856,7 +856,7 @@ app.post<{
         inputText: prompt.slice(0, 2000),
         title: row.title ?? null,
         brand: row.brand,
-        config: { model, prompt, sourceAssetId: sourceAssetId ?? null },
+        config: { model, prompt, sourceAssetId: sourceAssetId ?? null, sceneId: sceneId ?? null },
         createdAt: now,
         updatedAt: now
       })

@@ -29,6 +29,7 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [version, setVersion] = useState(0);
 
   useEffect(() => {
     productions.get(id).then(setP).catch((e: unknown) => setError(String(e)));
@@ -68,7 +69,7 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
       {!p && !error && <p className="muted">Loading production…</p>}
 
       {p && (
-        <section className="panel">
+        <section className="panel" key={version}>
           {step === 'script' ? (
             <>
               <div className="video-head">
@@ -123,6 +124,9 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
       <div className="wizard-nav">
         <button className="attach" onClick={() => go(idx - 1)} disabled={idx === 0}>
           ← Back
+        </button>
+        <button className="attach" onClick={() => setVersion((v) => v + 1)} title="Restart this step with a fresh panel">
+          ↺ New version
         </button>
         {idx < STEPS.length - 1 && (
           <button className="btn" onClick={() => go(idx + 1)}>

@@ -240,6 +240,49 @@ footer a { color: var(--accent); text-decoration: none; }
   background: #0f1419; cursor: pointer;
 }
 
+/* --- Scene tabs (HiggsfieldPanel) ----------------------------------------- */
+.scene-tabs {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 10px 0 6px; border-bottom: 1px solid var(--border); padding-bottom: 8px;
+}
+.scene-tab {
+  display: flex; align-items: center; gap: 0;
+  background: #0f1419; border: 1px solid var(--border);
+  border-radius: 8px 8px 0 0; overflow: hidden;
+}
+.scene-tab.active { border-color: var(--accent); background: #11161c; }
+.scene-tab button { background: transparent; color: var(--muted); border: none; padding: 6px 12px; font-size: 13px; cursor: pointer; }
+.scene-tab.active button { color: var(--text); }
+.scene-tab-del {
+  background: transparent !important; color: var(--muted) !important;
+  border-left: 1px solid var(--border) !important; border-radius: 0 !important;
+  padding: 6px 8px !important; font-size: 13px; cursor: pointer;
+}
+.scene-tab-del:hover { color: var(--fail) !important; }
+.scene-tab-add {
+  background: transparent; color: var(--muted); border: 1px dashed var(--border);
+  border-radius: 8px; padding: 5px 12px; font-size: 13px; cursor: pointer;
+}
+.scene-tab-add:hover { color: var(--accent); border-color: var(--accent); }
+
+.scene-name-input {
+  width: 100%; background: transparent; color: var(--text);
+  border: none; border-bottom: 1px solid var(--border); padding: 4px 0 6px;
+  font-size: 15px; font-weight: 600; outline: none; margin-bottom: 6px;
+}
+.scene-name-input:focus { border-bottom-color: var(--accent); }
+
+/* LED indicator for director keywords */
+.director-field { position: relative; display: inline-flex; align-items: center; }
+.led-dot {
+  position: absolute; top: -4px; right: -4px; z-index: 1;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--ok); box-shadow: 0 0 6px var(--ok);
+  animation: led-pulse 1.8s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes led-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
+
 .higgs-card {
   margin-top: 18px; background: #0f1419; border: 1px dashed var(--border); border-radius: 10px;
   padding: 12px 14px;
