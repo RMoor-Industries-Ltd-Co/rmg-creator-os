@@ -17,9 +17,12 @@ cd "$DEPLOY_DIR"
 
 echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
 
-# Source Doppler secrets into the shell, then re-assert deploy-time vars so
-# they cannot be shadowed by any same-named Doppler entries.
+# Source Doppler secrets into the shell with auto-export so docker compose
+# inherits every secret (POSTGRES_PASSWORD etc.). Then re-assert deploy-time
+# vars so they cannot be shadowed by any same-named Doppler entries.
+set -a
 eval "$(DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler secrets download --no-file --format env-no-quotes)"
+set +a
 export GHCR_IMAGE_PREFIX IMAGE_TAG
 
 # Ensure the DB user password matches Doppler. The container superuser is
