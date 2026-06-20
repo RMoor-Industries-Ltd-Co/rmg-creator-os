@@ -22,7 +22,8 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
 eval "$(DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler secrets download --no-file --format env-no-quotes)"
 export GHCR_IMAGE_PREFIX IMAGE_TAG
 
-docker compose pull gateway dashboard allen
+# Only pull images owned by this org; allen is managed by piaar/rmg-ai separately.
+docker compose pull gateway dashboard
 docker compose up -d
 docker image prune -f
 
