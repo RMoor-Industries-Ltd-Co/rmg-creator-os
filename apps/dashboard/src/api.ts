@@ -1,5 +1,7 @@
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
+import { startLoad, endLoad } from './loading';
+
 export interface HeyGenAvatar {
   avatar_id: string;
   avatar_name?: string;
@@ -43,16 +45,21 @@ export interface GenerateConfig {
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
-  });
-  const body = (await res.json().catch(() => ({}))) as unknown;
-  if (!res.ok) {
-    const msg = (body as { error?: string }).error ?? `Request failed (${res.status})`;
-    throw new Error(msg);
+  startLoad();
+  try {
+    const res = await fetch(`${API}${path}`, {
+      ...init,
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
+    });
+    const body = (await res.json().catch(() => ({}))) as unknown;
+    if (!res.ok) {
+      const msg = (body as { error?: string }).error ?? `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return body as T;
+  } finally {
+    endLoad();
   }
-  return body as T;
 }
 
 export interface HiggsModel {
@@ -256,16 +263,21 @@ export const productions = {
     id: string,
     opts: { directed?: boolean; stabilityMode?: string } = {}
   ): Promise<string> {
-    const res = await fetch(`${API}/productions/${id}/speak`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(opts)
-    });
-    if (!res.ok) {
-      const b = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(b.error ?? `speak failed (${res.status})`);
+    startLoad();
+    try {
+      const res = await fetch(`${API}/productions/${id}/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(opts)
+      });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `speak failed (${res.status})`);
+      }
+      return URL.createObjectURL(await res.blob());
+    } finally {
+      endLoad();
     }
-    return URL.createObjectURL(await res.blob());
   }
 };
 
@@ -287,17 +299,22 @@ export const assets = {
   list: (productionId: string) => req<Asset[]>(`/productions/${productionId}/assets`),
   rawUrl: (assetId: string) => `${API}/assets/${assetId}/raw`,
   async upload(productionId: string, files: FileList | File[]): Promise<Asset[]> {
-    const form = new FormData();
-    for (const f of Array.from(files)) form.append('file', f, f.name);
-    const res = await fetch(`${API}/productions/${productionId}/assets`, {
-      method: 'POST',
-      body: form
-    });
-    if (!res.ok) {
-      const b = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(b.error ?? `upload failed (${res.status})`);
+    startLoad();
+    try {
+      const form = new FormData();
+      for (const f of Array.from(files)) form.append('file', f, f.name);
+      const res = await fetch(`${API}/productions/${productionId}/assets`, {
+        method: 'POST',
+        body: form
+      });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `upload failed (${res.status})`);
+      }
+      return (await res.json()) as Asset[];
+    } finally {
+      endLoad();
     }
-    return (await res.json()) as Asset[];
   },
   async remove(assetId: string): Promise<void> {
     const res = await fetch(`${API}/assets/${assetId}`, { method: 'DELETE' });
@@ -405,26 +422,36 @@ export const allen = {
       body: JSON.stringify(body)
     }),
   async speak(text: string, voiceId?: string): Promise<string> {
-    const res = await fetch(`${API}/allen/speak`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text, voiceId })
-    });
-    if (!res.ok) {
-      const b = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(b.error ?? `speak failed (${res.status})`);
+    startLoad();
+    try {
+      const res = await fetch(`${API}/allen/speak`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voiceId })
+      });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `speak failed (${res.status})`);
+      }
+      return URL.createObjectURL(await res.blob());
+    } finally {
+      endLoad();
     }
-    return URL.createObjectURL(await res.blob());
   },
   async listen(blob: Blob): Promise<{ text: string }> {
-    const form = new FormData();
-    form.append('file', blob, 'speech.webm');
-    const res = await fetch(`${API}/allen/listen`, { method: 'POST', body: form });
-    if (!res.ok) {
-      const b = (await res.json().catch(() => ({}))) as { error?: string };
-      throw new Error(b.error ?? `transcription failed (${res.status})`);
+    startLoad();
+    try {
+      const form = new FormData();
+      form.append('file', blob, 'speech.webm');
+      const res = await fetch(`${API}/allen/listen`, { method: 'POST', body: form });
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error ?? `transcription failed (${res.status})`);
+      }
+      return (await res.json()) as { text: string };
+    } finally {
+      endLoad();
     }
-    return (await res.json()) as { text: string };
   },
   memories: (brand?: string) =>
     req<{ memories: Memory[] }>(`/allen/memory${brand ? `?brand=${brand}` : ''}`),

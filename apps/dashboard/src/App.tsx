@@ -6,6 +6,7 @@ import { ProductionWizard } from './ProductionWizard';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 import { Login } from './Login';
+import { useLoadingBar } from './loading';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
@@ -19,6 +20,7 @@ export function App() {
   const [auth, setAuth] = useState<'loading' | 'ok' | 'login'>('loading');
   const [clientId, setClientId] = useState('');
   const path = usePath();
+  const loading = useLoadingBar();
 
   // Gate the app behind Google sign-in when the gateway has auth enabled.
   useEffect(() => {
@@ -67,6 +69,7 @@ export function App() {
           Studio
         </button>
       </nav>
+      <div className={`loading-bar ${loading ? 'active' : ''}`} />
 
       {wizard && <ProductionWizard id={wizard[1]} step={wizard[2]} />}
       {isProduce && <Produce />}

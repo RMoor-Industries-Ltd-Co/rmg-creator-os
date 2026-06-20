@@ -70,26 +70,6 @@ jobs:
             grep -qF "$PUB" ~/.ssh/authorized_keys 2>/dev/null || echo "$PUB" >> ~/.ssh/authorized_keys
             chmod 600 ~/.ssh/authorized_keys
 
-      - name: Inject API keys into server .env
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.CONTROL_HOST }}
-          username: ${{ secrets.CONTROL_USER }}
-          key: ${{ secrets.CONTROL_SSH_KEY }}
-          script: |
-            ENV_FILE="/opt/rmg-creator-os/control-server/.env"
-            upsert() {
-              local key="$1" val="$2"
-              if [ -z "$val" ]; then return; fi
-              if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
-                sed -i "s|^${key}=.*|${key}=${val}|" "$ENV_FILE"
-              else
-                echo "${key}=${val}" >> "$ENV_FILE"
-              fi
-            }
-            upsert HEYGEN_API_KEY "${{ secrets.HEYGEN_API_KEY }}"
-            upsert HIGGSFIELD_ENABLED "true"
-
       - name: Run remote deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -104,4 +84,5 @@ jobs:
             IMAGE_TAG="${{ steps.vars.outputs.tag }}" \
             GHCR_USERNAME="${{ github.actor }}" \
             GHCR_TOKEN="${{ secrets.GITHUB_TOKEN }}" \
+            DOPPLER_TOKEN="${{ secrets.DOPPLER_TOKEN }}" \
             bash deploy.sh
