@@ -812,11 +812,11 @@ app.get<{ Querystring: { type?: 'image' | 'video' } }>('/higgsfield/models', asy
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetId?: string; sceneId?: string };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetId } = request.body ?? {};
+  const { prompt, model, sourceAssetId, sceneId } = request.body ?? {};
   if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
 
   const [row] = await db
@@ -856,7 +856,7 @@ app.post<{
         inputText: prompt.slice(0, 2000),
         title: row.title ?? null,
         brand: row.brand,
-        config: { model, prompt, sourceAssetId: sourceAssetId ?? null },
+        config: { model, prompt, sourceAssetId: sourceAssetId ?? null, sceneId: sceneId ?? null },
         createdAt: now,
         updatedAt: now
       })
@@ -1784,14 +1784,17 @@ app.post<{ Params: { id: string }; Body: { platforms?: string[]; type?: 'draft' 
 async function buildConciergeContext(brand?: string): Promise<string> {
   const parts: string[] = [];
   parts.push(
-    'RMG Creator OS is Rahm\'s in-house content engine. Pipeline: ALLIE suggests a topic (grounded in ' +
-      'each brand and current trends) → ALLEN writes the script → Voice Direction → ElevenLabs voice → ' +
-      'video (HeyGen / clips) → My Poster composes per-platform metadata → Postiz publishes to the platforms. ' +
+    'RMG Creator OS is Rahm\'s in-house content engine. Pipeline stages in order: topic → script → voice → ' +
+      'video → post → published. ' +
+      'Post status meanings — draft: not yet scheduled; scheduled: queued for publish (NOT live yet); ' +
+      'published: confirmed live with a postUrl; failed: publish error. ' +
+      'Production stage meanings — topic: idea only; script: needs script written or reviewed; ' +
+      'voice: needs voice direction; video: video rendering; final: assembled cut ready; archived: done. ' +
       'Brands: ' +
       BRANDS.filter((b) => b.contentFolder)
         .map((b) => b.code)
         .join(', ') +
-      '.'
+      '. IMPORTANT: you have NO engagement, analytics, or social performance data — do not infer any.'
   );
 
   // Recent productions
@@ -1931,11 +1934,17 @@ app.get<{ Querystring: { brand?: string; daypart?: string } }>('/allen/brief', a
     ? request.query.daypart
     : 'day';
   const prompt =
-    `It is the start of the ${daypart} and ALLIE has prepped your notes for Rahm. Greet him warmly by name ` +
-    `(he is Rahm), then give him the two to four things that genuinely deserve attention right now — drawn from ` +
-    `the recent productions and posts, the trend signals, anything flagged, and the saved memories. Speak it ` +
-    `naturally, like a partner catching him up over coffee — you and ALLIE are a tight team. Keep it under 110 ` +
-    `words, no lists or bullet syntax, just flowing speech.`;
+    `It is the ${daypart} and ALLIE has prepped your notes for Rahm. Greet him warmly by name ` +
+    `(he is Rahm), then give him the two to four things that genuinely deserve attention right now — drawn ` +
+    `strictly from the data in your context: recent productions (by stage and status), recent posts (by ` +
+    `status: draft/scheduled/published), and saved memories. ` +
+    `GROUNDING RULES — you must follow these exactly: ` +
+    `(1) Only say a post or video is "live" or "published" if its status field is literally "published" with a confirmed postUrl. ` +
+    `(2) Never claim engagement, traction, reach, or performance data — you have no analytics; omit those phrases entirely. ` +
+    `(3) Never infer or editorialize beyond what the status and stage fields tell you. ` +
+    `(4) If a production is at "script" stage, say it needs a script review; if at "voice", say it needs voice direction — use the actual stage name. ` +
+    `(5) If you are uncertain about a fact, skip it rather than guess. ` +
+    `Speak naturally, like a partner catching him up over coffee. Keep it under 120 words, no lists or bullet syntax, just flowing speech.`;
   try {
     const context = await buildConciergeContext(request.query.brand);
     const { reply: brief } = await allenChat({ message: prompt, context });
