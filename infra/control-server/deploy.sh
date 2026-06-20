@@ -2,7 +2,8 @@
 # Pull and (re)launch the control-server stack at a given image tag.
 #
 # All runtime secrets come from Doppler (DOPPLER_TOKEN must be set).
-# GHCR_IMAGE_PREFIX and IMAGE_TAG are deploy-time vars passed by the caller.
+# GHCR_IMAGE_PREFIX and IMAGE_TAG are deploy-time vars — they always win
+# over any same-named variables that may exist in Doppler.
 set -euo pipefail
 
 DEPLOY_DIR="${DEPLOY_DIR:-/opt/rmg-creator-os/control-server}"
@@ -16,10 +17,13 @@ cd "$DEPLOY_DIR"
 
 echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
 
+# Source Doppler secrets into the shell, then re-assert deploy-time vars so
+# they cannot be shadowed by any same-named Doppler entries.
+eval "$(DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler secrets download --no-file --format env-no-quotes)"
 export GHCR_IMAGE_PREFIX IMAGE_TAG
 
-DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler run -- docker compose pull gateway dashboard allen
-DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler run -- docker compose up -d
+docker compose pull gateway dashboard allen
+docker compose up -d
 docker image prune -f
 
 echo "deployed ${GHCR_IMAGE_PREFIX} @ ${IMAGE_TAG}"
