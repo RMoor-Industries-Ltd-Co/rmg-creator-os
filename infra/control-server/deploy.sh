@@ -36,4 +36,11 @@ docker compose pull gateway dashboard
 docker compose up -d
 docker image prune -f
 
+# Wait for the gateway to either stabilise or crash, then surface its logs.
+sleep 15
+echo "=== gateway logs (last 60 lines) ==="
+docker logs control-server-gateway-1 --tail 60 2>&1 || true
+echo "=== gateway container state ==="
+docker inspect control-server-gateway-1 --format '{{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' 2>&1 || true
+
 echo "deployed ${GHCR_IMAGE_PREFIX} @ ${IMAGE_TAG}"
