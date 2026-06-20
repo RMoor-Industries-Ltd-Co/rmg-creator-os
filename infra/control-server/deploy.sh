@@ -22,6 +22,16 @@ echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
 eval "$(DOPPLER_TOKEN="$DOPPLER_TOKEN" doppler secrets download --no-file --format env-no-quotes)"
 export GHCR_IMAGE_PREFIX IMAGE_TAG
 
+# Ensure the DB user password matches Doppler. The postgres superuser connects
+# via unix socket inside the container (no password needed), so this works even
+# when the app password is out of sync.
+if docker ps --format '{{.Names}}' | grep -q 'control-server-db-1'; then
+  docker exec control-server-db-1 \
+    psql -U postgres -d rmgcreator \
+    -c "ALTER USER rmgcreator WITH PASSWORD '${POSTGRES_PASSWORD}';" \
+    && echo "db password synced"
+fi
+
 # Only pull images owned by this org; allen is managed by piaar/rmg-ai separately.
 docker compose pull gateway dashboard
 docker compose up -d
