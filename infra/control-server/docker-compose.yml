@@ -97,11 +97,12 @@ services:
       redis:
         condition: service_healthy
 
-  # ALLEN — isolated AI scriptwriting service (PIAAR/rmg-ai). Gateway calls it at allen:8090.
+  # ALLEN — isolated AI scriptwriting + agentic assistant (PIAAR/rmg-ai).
   allen:
-    image: ghcr.io/piaar/rmg-ai/allen:latest
+    image: ghcr.io/rmoor-industries-ltd-co/rmg-ai/allen:latest
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-America/New_York}
       ALLEN_API_KEY: ${ALLEN_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
@@ -112,7 +113,17 @@ services:
       GDRIVE_CLIENT_SECRET: ${GDRIVE_CLIENT_SECRET:-}
       GDRIVE_REFRESH_TOKEN: ${GDRIVE_REFRESH_TOKEN:-}
       GDRIVE_SCRIPTS_FOLDER_ID: ${GDRIVE_SCRIPTS_FOLDER_ID:-}
+      GDRIVE_YOUTUBE_FOLDER_ID: ${GDRIVE_YOUTUBE_FOLDER_ID:-}
+      DATABASE_URL: postgres://rmgcreator:${POSTGRES_PASSWORD}@db:5432/rmgcreator
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_WHATSAPP_FROM: ${TWILIO_WHATSAPP_FROM:-}
+      TWILIO_WHATSAPP_TO: ${TWILIO_WHATSAPP_TO:-}
+      DAILY_REPORT_TIME: ${DAILY_REPORT_TIME:-07:00}
       PORT: 8090
+    depends_on:
+      db:
+        condition: service_healthy
 
   dashboard:
     image: ${GHCR_IMAGE_PREFIX}/dashboard:${IMAGE_TAG}
