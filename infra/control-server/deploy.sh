@@ -34,8 +34,7 @@ if docker ps --format '{{.Names}}' | grep -q 'control-server-db-1'; then
     && echo "db password synced" || echo "WARNING: db password sync failed"
 fi
 
-# Only pull images owned by this org; allen is managed by piaar/rmg-ai separately.
-docker compose pull gateway dashboard
+docker compose pull gateway dashboard allen
 docker compose up -d
 docker image prune -f
 
@@ -45,5 +44,7 @@ echo "=== gateway logs (last 60 lines) ==="
 docker logs control-server-gateway-1 --tail 60 2>&1 || true
 echo "=== gateway container state ==="
 docker inspect control-server-gateway-1 --format '{{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' 2>&1 || true
+echo "=== allen logs (last 30 lines) ==="
+docker logs control-server-allen-1 --tail 30 2>&1 || true
 
 echo "deployed ${GHCR_IMAGE_PREFIX} @ ${IMAGE_TAG}"
