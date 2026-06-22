@@ -97,13 +97,14 @@ services:
       redis:
         condition: service_healthy
 
-  # ALLEN — isolated AI scriptwriting + agentic assistant (PIAAR/rmg-ai).
+  # ALLEN — AI scriptwriting + WhatsApp bridge (rmoor-industries-ltd-co/rmg-ai).
   allen:
     image: ghcr.io/rmoor-industries-ltd-co/rmg-ai/allen:latest
     restart: unless-stopped
     environment:
       TZ: ${TZ:-America/New_York}
       ALLEN_API_KEY: ${ALLEN_API_KEY:-}
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-sonnet-4-6}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
