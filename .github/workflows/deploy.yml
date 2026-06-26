@@ -59,17 +59,6 @@ jobs:
           target: /opt/rmg-creator-os/control-server
           strip_components: 2
 
-      - name: Install local dev SSH key
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.CONTROL_HOST }}
-          username: ${{ secrets.CONTROL_USER }}
-          key: ${{ secrets.CONTROL_SSH_KEY }}
-          script: |
-            PUB="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJYDzgpCHR+7Uob1pNSiLLAkGpsU9zWDaRtUahAqOJhX blackmac@control-20260616"
-            grep -qF "$PUB" ~/.ssh/authorized_keys 2>/dev/null || echo "$PUB" >> ~/.ssh/authorized_keys
-            chmod 600 ~/.ssh/authorized_keys
-
       - name: Run remote deploy
         uses: appleboy/ssh-action@v1.0.3
         with:
