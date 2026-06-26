@@ -195,7 +195,7 @@ export const productions = {
   generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
-  higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetId?: string; sceneId?: string }) =>
+  higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetIds?: string[]; sceneId?: string }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   compose: (
     id: string,

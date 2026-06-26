@@ -812,12 +812,15 @@ app.get<{ Querystring: { type?: 'image' | 'video' } }>('/higgsfield/models', asy
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetId?: string; sceneId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetId, sceneId } = request.body ?? {};
+  const { prompt, model, sourceAssetIds, sceneId } = request.body ?? {};
   if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
+
+  const MAX_SOURCE_IMAGES = 4;
+  const ids = (sourceAssetIds ?? []).slice(0, MAX_SOURCE_IMAGES);
 
   const [row] = await db
     .select()
@@ -825,24 +828,27 @@ app.post<{
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
-  // Pull the source image down to a temp file if one was chosen.
-  let imagePath: string | undefined;
-  if (sourceAssetId) {
-    const [asset] = await db.select().from(tables.assets).where(eq(tables.assets.id, sourceAssetId));
-    if (!asset || !asset.driveFileId) return reply.code(404).send({ error: 'source asset not found' });
+  // Pull each source image down to a temp file.
+  const imagePaths: string[] = [];
+  if (ids.length > 0) {
     if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
-    try {
-      const { bytes } = await drive.download(asset.driveFileId);
-      const ext = (asset.mimeType.split('/')[1] || 'png').replace(/[^\w]/g, '');
-      imagePath = join(tmpdir(), `hf_${randomUUID()}.${ext}`);
-      await writeFile(imagePath, bytes);
-    } catch (err) {
-      return reply.code(502).send({ error: `source download failed: ${(err as Error).message}` });
+    for (const assetId of ids) {
+      const [asset] = await db.select().from(tables.assets).where(eq(tables.assets.id, assetId));
+      if (!asset || !asset.driveFileId) return reply.code(404).send({ error: `source asset not found: ${assetId}` });
+      try {
+        const { bytes } = await drive.download(asset.driveFileId);
+        const ext = (asset.mimeType.split('/')[1] || 'png').replace(/[^\w]/g, '');
+        const p = join(tmpdir(), `hf_${randomUUID()}.${ext}`);
+        await writeFile(p, bytes);
+        imagePaths.push(p);
+      } catch (err) {
+        return reply.code(502).send({ error: `source download failed: ${(err as Error).message}` });
+      }
     }
   }
 
   try {
-    const { jobId } = await client.createJob({ model, prompt, imagePath });
+    const { jobId } = await client.createJob({ model, prompt, imagePaths: imagePaths.length ? imagePaths : undefined });
     const now = new Date();
     const [video] = await db
       .insert(tables.videos)
@@ -856,7 +862,7 @@ app.post<{
         inputText: prompt.slice(0, 2000),
         title: row.title ?? null,
         brand: row.brand,
-        config: { model, prompt, sourceAssetId: sourceAssetId ?? null, sceneId: sceneId ?? null },
+        config: { model, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null },
         createdAt: now,
         updatedAt: now
       })
