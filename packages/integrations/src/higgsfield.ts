@@ -22,7 +22,7 @@ export interface HiggsJob {
 export interface HiggsfieldClient {
   account(): Promise<{ email?: string; credits?: number; plan?: string }>;
   listModels(type?: 'image' | 'video'): Promise<HiggsModel[]>;
-  createJob(opts: { model: string; prompt: string; imagePath?: string }): Promise<{ jobId: string }>;
+  createJob(opts: { model: string; prompt: string; imagePaths?: string[] }): Promise<{ jobId: string }>;
   getJob(jobId: string): Promise<HiggsJob>;
 }
 
@@ -84,9 +84,9 @@ export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
       return items as HiggsModel[];
     },
 
-    async createJob({ model, prompt, imagePath }) {
+    async createJob({ model, prompt, imagePaths }) {
       const args = ['generate', 'create', model, '--prompt', prompt];
-      if (imagePath) args.push('--image', imagePath);
+      for (const p of imagePaths ?? []) args.push('--image', p);
       const d = await run(args);
       const jobId = findId(d);
       if (!jobId) throw new Error('higgsfield: no job id in create output');

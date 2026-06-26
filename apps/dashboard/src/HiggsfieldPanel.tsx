@@ -46,7 +46,8 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [model, setModel] = useState('');
   const [scenePrompts, setScenePrompts] = useState<Array<{ name: string; text: string }>>([]);
   const [imgAssets, setImgAssets] = useState<Asset[]>([]);
-  const [sourceAssetId, setSourceAssetId] = useState('');
+  const [sourceAssetIds, setSourceAssetIds] = useState<string[]>([]);
+  const MAX_SOURCE_IMAGES = 4;
   const [takes, setTakes] = useState<VideoRow[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +103,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
       const v = await productions.higgsfield(p.id, {
         prompt: activeScene.prompt.trim(),
         model,
-        sourceAssetId: sourceAssetId || undefined,
+        sourceAssetIds: sourceAssetIds.length ? sourceAssetIds : undefined,
         sceneId: activeScene.id
       });
       setTakes((rows) => [v, ...rows]);
@@ -254,17 +255,35 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
 
       {imgAssets.length > 0 && (
         <>
-          <label className="vd-label">Source image (optional)</label>
+          <label className="vd-label">
+            Reference photos (optional)
+            {sourceAssetIds.length > 0 && (
+              <span className={`hf-src-count ${sourceAssetIds.length >= MAX_SOURCE_IMAGES ? 'maxed' : ''}`}>
+                {sourceAssetIds.length}/{MAX_SOURCE_IMAGES} selected{sourceAssetIds.length >= MAX_SOURCE_IMAGES ? ' — max reached' : ''}
+              </span>
+            )}
+          </label>
           <div className="hf-sources">
-            <button type="button" className={`hf-src none ${sourceAssetId === '' ? 'on' : ''}`} onClick={() => setSourceAssetId('')}>
+            <button type="button" className={`hf-src none ${sourceAssetIds.length === 0 ? 'on' : ''}`}
+              onClick={() => setSourceAssetIds([])}>
               none
             </button>
-            {imgAssets.map((a) => (
-              <button key={a.id} type="button" className={`hf-src ${sourceAssetId === a.id ? 'on' : ''}`}
-                onClick={() => setSourceAssetId(a.id)} title={a.fileName}>
-                <img src={assets.rawUrl(a.id)} alt={a.fileName} loading="lazy" />
-              </button>
-            ))}
+            {imgAssets.map((a) => {
+              const selected = sourceAssetIds.includes(a.id);
+              const atMax = sourceAssetIds.length >= MAX_SOURCE_IMAGES;
+              return (
+                <button key={a.id} type="button"
+                  className={`hf-src ${selected ? 'on' : ''} ${!selected && atMax ? 'disabled' : ''}`}
+                  disabled={!selected && atMax}
+                  onClick={() => setSourceAssetIds((prev) =>
+                    selected ? prev.filter((id) => id !== a.id) : [...prev, a.id]
+                  )}
+                  title={selected ? `${a.fileName} (click to deselect)` : atMax ? `Max ${MAX_SOURCE_IMAGES} images selected` : a.fileName}>
+                  {selected && <span className="hf-src-check">✓</span>}
+                  <img src={assets.rawUrl(a.id)} alt={a.fileName} loading="lazy" />
+                </button>
+              );
+            })}
           </div>
         </>
       )}
