@@ -30,15 +30,32 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const [version, setVersion] = useState(0);
+  const [scriptDraft, setScriptDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    productions.get(id).then(setP).catch((e: unknown) => setError(String(e)));
+    productions.get(id).then((prod) => { setP(prod); setScriptDraft(null); }).catch((e: unknown) => setError(String(e)));
   }, [id]);
 
   const idx = Math.max(0, STEPS.findIndex((s) => s.key === step));
   const go = (i: number) => {
     if (i >= 0 && i < STEPS.length) navigate(`/produce/${id}/${STEPS[i].key}`);
   };
+
+  async function saveScript() {
+    if (!p || scriptDraft === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await productions.saveScript(p.id, scriptDraft);
+      setP(updated);
+      setScriptDraft(null);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   async function hear() {
     if (!p) return;
@@ -79,7 +96,22 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                   {p.persona ? ` · ${p.persona}` : ''} · {p.scriptStatus}
                 </span>
               </div>
-              <textarea className="script-view" rows={14} readOnly value={p.scriptText ?? ''} />
+              <textarea
+                className="script-view"
+                rows={14}
+                value={scriptDraft ?? p.scriptText ?? ''}
+                onChange={(e) => setScriptDraft(e.target.value)}
+              />
+              {scriptDraft !== null && (
+                <div className="intake-actions">
+                  <button className="btn" onClick={() => void saveScript()} disabled={saving}>
+                    {saving ? 'Saving…' : '✓ Save edits'}
+                  </button>
+                  <button className="attach" onClick={() => setScriptDraft(null)} disabled={saving}>
+                    Discard
+                  </button>
+                </div>
+              )}
               <div className="intake-actions">
                 <button className="btn" onClick={hear} disabled={speaking}>
                   {speaking ? 'Synthesizing…' : '▶ Hear it'}
