@@ -27,7 +27,7 @@ import {
   uploadFromUrl as postizUploadFromUrl,
   type PostizPostInput
 } from './postiz.js';
-import { and, createDb, desc, eq, enqueueJob, runMigrations, tables } from '@rmg-creator-os/db';
+import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
   createDriveClient,
   createHeyGenClient,
@@ -419,6 +419,15 @@ app.post<{
   const { brand, topic, persona, outputKind, context } = request.body ?? {};
   if (!brand || !topic) return reply.code(400).send({ error: 'brand and topic are required' });
 
+  // Pull recent approved (voice-directed) scripts for this brand as style memory.
+  const styleRows = await db
+    .select({ scriptText: tables.productions.scriptText })
+    .from(tables.productions)
+    .where(and(eq(tables.productions.brand, brand), sql`${tables.productions.taggedScript} IS NOT NULL`))
+    .orderBy(desc(tables.productions.updatedAt))
+    .limit(3);
+  const brandExamples = styleRows.map((r) => r.scriptText).filter((t): t is string => Boolean(t));
+
   let draft;
   try {
     draft = await allenDraft({
@@ -427,7 +436,8 @@ app.post<{
       persona,
       output_kind: outputKind ?? 'post',
       allie_context: context,
-      write_doc: true
+      write_doc: true,
+      brand_examples: brandExamples.length ? brandExamples : undefined
     });
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
@@ -514,6 +524,22 @@ app.post<{
 
   const { voiceBrand, intensity, stabilityMode, lock } = request.body ?? {};
   const brand = voiceBrand || row.brand;
+
+  // Pull previously tagged scripts for this brand as tagging style memory.
+  const taggedRows = await db
+    .select({ taggedScript: tables.productions.taggedScript })
+    .from(tables.productions)
+    .where(
+      and(
+        eq(tables.productions.brand, brand),
+        sql`${tables.productions.taggedScript} IS NOT NULL`,
+        sql`${tables.productions.id} != ${request.params.id}`
+      )
+    )
+    .orderBy(desc(tables.productions.updatedAt))
+    .limit(3);
+  const taggedExamples = taggedRows.map((r) => r.taggedScript).filter((t): t is string => Boolean(t));
+
   let result;
   try {
     result = await allenDirect({
@@ -521,7 +547,8 @@ app.post<{
       brand,
       persona: row.persona ?? undefined,
       intensity: intensity ?? undefined,
-      stability_mode: stabilityMode ?? undefined
+      stability_mode: stabilityMode ?? undefined,
+      brand_examples: taggedExamples.length ? taggedExamples : undefined
     });
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });

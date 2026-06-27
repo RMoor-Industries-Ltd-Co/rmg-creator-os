@@ -26,6 +26,7 @@ export async function allenDraft(body: {
   output_kind?: string;
   allie_context?: string;
   write_doc?: boolean;
+  brand_examples?: string[];
 }): Promise<AllenDraft> {
   const res = await fetch(`${ALLEN_URL}/draft`, {
     method: 'POST',
@@ -51,6 +52,7 @@ export async function allenDirect(body: {
   persona?: string;
   intensity?: string;
   stability_mode?: string;
+  brand_examples?: string[];
 }): Promise<AllenDirect> {
   const res = await fetch(`${ALLEN_URL}/direct`, {
     method: 'POST',
