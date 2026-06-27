@@ -7,6 +7,7 @@ import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 import { Login } from './Login';
 import { useLoadingBar } from './loading';
+import { QueueWidget } from './QueueWidget';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
@@ -98,6 +99,8 @@ export function App() {
 
 </>
       )}
+
+      <QueueWidget />
 
       <footer className="muted">
         <a href="/extra">Extra / Personal</a> ·{' '}

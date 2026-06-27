@@ -42,6 +42,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSequence, type Segment } from './compose.js';
+import { registerWorkerRoutes } from './worker.js';
+import { registerQueueRoutes } from './routes/queue.js';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 
@@ -2180,6 +2182,10 @@ app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
   }
 });
+
+// Production Queue — worker tick and queue management endpoints.
+registerWorkerRoutes(app, db);
+registerQueueRoutes(app, db);
 
 try {
   await app.listen({ port: PORT, host: HOST });
