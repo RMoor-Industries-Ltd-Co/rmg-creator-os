@@ -32,6 +32,7 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [version, setVersion] = useState(0);
   const [scriptDraft, setScriptDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
 
   useEffect(() => {
     productions.get(id).then((prod) => { setP(prod); setScriptDraft(null); }).catch((e: unknown) => setError(String(e)));
@@ -54,6 +55,20 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
       setError(String(e));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function enhance() {
+    if (!p) return;
+    setEnhancing(true);
+    setError(null);
+    try {
+      const updated = await productions.direct(p.id, { voiceBrand: p.brand });
+      setP(updated);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setEnhancing(false);
     }
   }
 
@@ -113,8 +128,11 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                 </div>
               )}
               <div className="intake-actions">
-                <button className="btn" onClick={hear} disabled={speaking}>
+                <button className="btn" onClick={hear} disabled={speaking || enhancing}>
                   {speaking ? 'Synthesizing…' : '▶ Hear it'}
+                </button>
+                <button className="btn ghost" onClick={() => void enhance()} disabled={enhancing || speaking}>
+                  {enhancing ? 'Enhancing…' : '✨ Enhance for voice'}
                 </button>
                 {p.scriptDocUrl && (
                   <a className="drive-link" href={p.scriptDocUrl} target="_blank" rel="noreferrer">
@@ -124,6 +142,20 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                 <span className="muted">model: {p.model}</span>
               </div>
               {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginTop: 10 }} />}
+              {p.taggedScript && (
+                <>
+                  <label className="vd-label" style={{ marginTop: 16 }}>
+                    ✨ Enhanced for ElevenLabs v3 — emotion tags applied
+                  </label>
+                  <textarea className="script-view tagged" rows={10} readOnly value={p.taggedScript} />
+                  <div className="intake-actions">
+                    <button className="btn" onClick={() => go(idx + 1)}>
+                      Next → Voice direction
+                    </button>
+                    <span className="muted">Fine-tune stability &amp; intensity in the next step.</span>
+                  </div>
+                </>
+              )}
             </>
           ) : step === 'voice' ? (
             <VoiceDirection p={p} onUpdate={setP} onLocked={() => go(idx + 1)} />
