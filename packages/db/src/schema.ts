@@ -1,6 +1,8 @@
 import { pgTable, text, timestamp, jsonb, pgEnum, real, boolean, uuid, integer } from 'drizzle-orm/pg-core';
 import type { InputKind, JobInput, OutputKind, RecipeStep } from '@rmg-creator-os/types';
 
+export const adIndexStatusEnum = pgEnum('ad_index_status', ['draft', 'approved', 'published', 'archived']);
+
 export const jobStatusEnum = pgEnum('job_status', [
   'queued',
   'running',
@@ -46,8 +48,31 @@ export const productions = pgTable('productions', {
   emotionLocked: boolean('emotion_locked').notNull().default(false),
   stage: text('stage').notNull().default('script'),
   status: text('status').notNull().default('active'),
+  // Delivery fields (contracts 18, 19)
+  adIndexCode: text('ad_index_code'),
+  finalVideoId: text('final_video_id'),
+  thumbnailDriveId: text('thumbnail_drive_id'),
+  brollScenes: jsonb('broll_scenes').$type<Record<string, unknown>[]>().default([]),
+  brollLibrary: jsonb('broll_library').$type<Record<string, unknown>[]>().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+/** Ad Index — unique codes assigned to approved productions. */
+export const adIndex = pgTable('ad_index', {
+  code: text('code').primaryKey(),
+  type: text('type').notNull(),
+  product: text('product').notNull(),
+  region: text('region').notNull(),
+  tz: text('tz').notNull(),
+  version: integer('version').notNull(),
+  productionId: text('production_id').references(() => productions.id, { onDelete: 'set null' }),
+  status: adIndexStatusEnum('status').notNull().default('draft'),
+  finalDriveId: text('final_drive_id'),
+  posterDriveId: text('poster_drive_id'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
 /** Uploaded inputs (images/video/reference) attached to a production — the Assets stage. */

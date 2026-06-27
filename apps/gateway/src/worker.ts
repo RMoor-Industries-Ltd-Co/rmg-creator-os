@@ -10,13 +10,59 @@ const WORKER_SECRET = process.env.WORKER_SECRET ?? '';
 
 type ProductionJob = typeof tables.productionJobs.$inferSelect;
 
-/** Stub dispatcher — logs and returns a result id. Replace with real dispatch logic. */
-async function dispatch(job: ProductionJob): Promise<{ resultId: string }> {
-  console.log(`[worker] dispatching job ${job.id} capability=${job.capability} provider=${job.provider}`);
-  return { resultId: 'stub-' + job.id };
+type WorkerClients = {
+  heygen: { generateVideo: (opts: Record<string, unknown>) => Promise<{ videoId: string }> } | null;
+  drive: { uploadBuffer: (opts: { bytes: Buffer; name: string; folderId: string; mimeType: string }) => Promise<{ fileId: string; webViewLink?: string }> } | null;
+};
+
+async function dispatch(job: ProductionJob, clients: WorkerClients): Promise<{ resultId: string }> {
+  const { capability, provider, payload } = job;
+
+  if (capability === 'aroll' && provider === 'heygen') {
+    const client = clients.heygen;
+    if (!client) throw new Error('HeyGen client not configured');
+    const p = payload as {
+      talkingPhotoId?: string;
+      audioUrl?: string;
+      useAvatarIv?: boolean;
+      customMotionPrompt?: string;
+      dimension?: { width: number; height: number };
+      title?: string;
+    };
+    if (!p.talkingPhotoId || !p.audioUrl) throw new Error('aroll payload missing talkingPhotoId or audioUrl');
+    const { videoId } = await client.generateVideo({
+      talkingPhotoId: p.talkingPhotoId,
+      audioUrl: p.audioUrl,
+      useAvatarIv: p.useAvatarIv ?? true,
+      customMotionPrompt: p.customMotionPrompt,
+      dimension: p.dimension ?? { width: 720, height: 1280 },
+      title: p.title,
+    });
+    return { resultId: videoId };
+  }
+
+  if (capability === 'broll') {
+    // B-Roll jobs are dispatched to Higgsfield/SuperCool externally and tracked
+    // via the scene's take records. The worker logs the job for observability.
+    console.log(`[worker] broll job ${job.id} provider=${provider} — dispatch via external API`);
+    return { resultId: `broll-${job.id}` };
+  }
+
+  if (capability === 'audio') {
+    console.log(`[worker] audio job ${job.id} provider=${provider}`);
+    return { resultId: `audio-${job.id}` };
+  }
+
+  if (capability === 'thumbnail') {
+    console.log(`[worker] thumbnail job ${job.id} provider=${provider}`);
+    return { resultId: `thumbnail-${job.id}` };
+  }
+
+  console.log(`[worker] dispatching job ${job.id} capability=${capability} provider=${provider}`);
+  return { resultId: `stub-${job.id}` };
 }
 
-export function registerWorkerRoutes(app: FastifyInstance, db: Database) {
+export function registerWorkerRoutes(app: FastifyInstance, db: Database, clients: WorkerClients = { heygen: null, drive: null }) {
   // POST /worker/tick — claim and execute the next queued job.
   app.post('/worker/tick', async (request, reply) => {
     const secret = (request.headers['x-worker-secret'] as string | undefined) ?? '';
@@ -48,7 +94,7 @@ export function registerWorkerRoutes(app: FastifyInstance, db: Database) {
       .where(eq(tables.productionJobs.id, job.id));
 
     try {
-      const { resultId } = await dispatch(job);
+      const { resultId } = await dispatch(job, clients);
       await db
         .update(tables.productionJobs)
         .set({ status: 'done', resultId, completedAt: new Date() })
