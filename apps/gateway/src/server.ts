@@ -471,6 +471,22 @@ app.get<{ Params: { id: string } }>('/productions/:id', async (request, reply) =
   return row;
 });
 
+// Update script text (manual paste / edit).
+app.patch<{ Params: { id: string }; Body: { scriptText: string } }>(
+  '/productions/:id/script',
+  async (request, reply) => {
+    const { scriptText } = request.body ?? {};
+    if (typeof scriptText !== 'string') return reply.code(400).send({ error: 'scriptText required' });
+    const [row] = await db
+      .update(tables.productions)
+      .set({ scriptText, scriptStatus: 'draft', updatedAt: new Date() })
+      .where(eq(tables.productions.id, request.params.id))
+      .returning();
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    return row;
+  }
+);
+
 // Emotion profiles + tag rules for the Voice Direction step (proxies ALLEN).
 app.get('/emotion/profiles', async (_request, reply) => {
   if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured (set ALLEN_URL)' });
