@@ -13,3 +13,4 @@ dist/
 
 # OS
 .DS_Store
+apps/dashboard/tsconfig.tsbuildinfo
