@@ -85,6 +85,20 @@
       "when": 1780879600000,
       "tag": "0011_transcripts",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1782500000000,
+      "tag": "0012_production_jobs",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1782500100000,
+      "tag": "0013_atelier_delivery",
+      "breakpoints": true
     }
   ]
 }
