@@ -30,15 +30,47 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const [version, setVersion] = useState(0);
+  const [scriptDraft, setScriptDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [enhancing, setEnhancing] = useState(false);
 
   useEffect(() => {
-    productions.get(id).then(setP).catch((e: unknown) => setError(String(e)));
+    productions.get(id).then((prod) => { setP(prod); setScriptDraft(null); }).catch((e: unknown) => setError(String(e)));
   }, [id]);
 
   const idx = Math.max(0, STEPS.findIndex((s) => s.key === step));
   const go = (i: number) => {
     if (i >= 0 && i < STEPS.length) navigate(`/produce/${id}/${STEPS[i].key}`);
   };
+
+  async function saveScript() {
+    if (!p || scriptDraft === null) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const updated = await productions.saveScript(p.id, scriptDraft);
+      setP(updated);
+      setScriptDraft(null);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function enhance() {
+    if (!p) return;
+    setEnhancing(true);
+    setError(null);
+    try {
+      const updated = await productions.direct(p.id, { voiceBrand: p.brand });
+      setP(updated);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setEnhancing(false);
+    }
+  }
 
   async function hear() {
     if (!p) return;
@@ -79,10 +111,28 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                   {p.persona ? ` · ${p.persona}` : ''} · {p.scriptStatus}
                 </span>
               </div>
-              <textarea className="script-view" rows={14} readOnly value={p.scriptText ?? ''} />
+              <textarea
+                className="script-view"
+                rows={14}
+                value={scriptDraft ?? p.scriptText ?? ''}
+                onChange={(e) => setScriptDraft(e.target.value)}
+              />
+              {scriptDraft !== null && (
+                <div className="intake-actions">
+                  <button className="btn" onClick={() => void saveScript()} disabled={saving}>
+                    {saving ? 'Saving…' : '✓ Save edits'}
+                  </button>
+                  <button className="attach" onClick={() => setScriptDraft(null)} disabled={saving}>
+                    Discard
+                  </button>
+                </div>
+              )}
               <div className="intake-actions">
-                <button className="btn" onClick={hear} disabled={speaking}>
+                <button className="btn" onClick={hear} disabled={speaking || enhancing}>
                   {speaking ? 'Synthesizing…' : '▶ Hear it'}
+                </button>
+                <button className="btn ghost" onClick={() => void enhance()} disabled={enhancing || speaking}>
+                  {enhancing ? 'Enhancing…' : '✨ Enhance for voice'}
                 </button>
                 {p.scriptDocUrl && (
                   <a className="drive-link" href={p.scriptDocUrl} target="_blank" rel="noreferrer">
@@ -92,6 +142,20 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                 <span className="muted">model: {p.model}</span>
               </div>
               {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginTop: 10 }} />}
+              {p.taggedScript && (
+                <>
+                  <label className="vd-label" style={{ marginTop: 16 }}>
+                    ✨ Enhanced for ElevenLabs v3 — emotion tags applied
+                  </label>
+                  <textarea className="script-view tagged" rows={10} readOnly value={p.taggedScript} />
+                  <div className="intake-actions">
+                    <button className="btn" onClick={() => go(idx + 1)}>
+                      Next → Voice direction
+                    </button>
+                    <span className="muted">Fine-tune stability &amp; intensity in the next step.</span>
+                  </div>
+                </>
+              )}
             </>
           ) : step === 'voice' ? (
             <VoiceDirection p={p} onUpdate={setP} onLocked={() => go(idx + 1)} />
