@@ -199,7 +199,7 @@ export const productionJobCapability = pgEnum('production_job_capability', [
 /** A discrete unit of work in the production pipeline — claimed and executed by the worker. */
 export const productionJobs = pgTable('production_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  productionId: uuid('production_id')
+  productionId: text('production_id')
     .notNull()
     .references(() => productions.id, { onDelete: 'cascade' }),
   capability: productionJobCapability('capability').notNull(),

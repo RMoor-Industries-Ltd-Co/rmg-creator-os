@@ -1,5 +1,8 @@
 -- Ad Index: unique code per approved production (type-product-region-tz-version)
-CREATE TYPE ad_index_status AS ENUM ('draft', 'approved', 'published', 'archived');
+DO $$ BEGIN
+  CREATE TYPE ad_index_status AS ENUM ('draft', 'approved', 'published', 'archived');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
 CREATE TABLE ad_index (
   code            text PRIMARY KEY,          -- e.g. vlog-software-news-usa-est-001
