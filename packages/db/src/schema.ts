@@ -1,5 +1,7 @@
-import { pgTable, text, timestamp, jsonb, pgEnum, real, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, jsonb, pgEnum, real, boolean, uuid, integer } from 'drizzle-orm/pg-core';
 import type { InputKind, JobInput, OutputKind, RecipeStep } from '@rmg-creator-os/types';
+
+export const adIndexStatusEnum = pgEnum('ad_index_status', ['draft', 'approved', 'published', 'archived']);
 
 export const jobStatusEnum = pgEnum('job_status', [
   'queued',
@@ -46,8 +48,31 @@ export const productions = pgTable('productions', {
   emotionLocked: boolean('emotion_locked').notNull().default(false),
   stage: text('stage').notNull().default('script'),
   status: text('status').notNull().default('active'),
+  // Delivery fields (contracts 18, 19)
+  adIndexCode: text('ad_index_code'),
+  finalVideoId: text('final_video_id'),
+  thumbnailDriveId: text('thumbnail_drive_id'),
+  brollScenes: jsonb('broll_scenes').$type<Record<string, unknown>[]>().default([]),
+  brollLibrary: jsonb('broll_library').$type<Record<string, unknown>[]>().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+/** Ad Index — unique codes assigned to approved productions. */
+export const adIndex = pgTable('ad_index', {
+  code: text('code').primaryKey(),
+  type: text('type').notNull(),
+  product: text('product').notNull(),
+  region: text('region').notNull(),
+  tz: text('tz').notNull(),
+  version: integer('version').notNull(),
+  productionId: text('production_id').references(() => productions.id, { onDelete: 'set null' }),
+  status: adIndexStatusEnum('status').notNull().default('draft'),
+  finalDriveId: text('final_drive_id'),
+  posterDriveId: text('poster_drive_id'),
+  approvedAt: timestamp('approved_at', { withTimezone: true }),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
 });
 
 /** Uploaded inputs (images/video/reference) attached to a production — the Assets stage. */
@@ -152,6 +177,45 @@ export const videos = pgTable('videos', {
   config: jsonb('config').$type<Record<string, unknown>>(), // tweak settings used for this render
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+export const productionJobStatus = pgEnum('production_job_status', [
+  'queued',
+  'running',
+  'done',
+  'failed',
+  'cancelled'
+]);
+
+export const productionJobCapability = pgEnum('production_job_capability', [
+  'aroll',
+  'broll',
+  'lipsync',
+  'audio',
+  'thumbnail',
+  'poster'
+]);
+
+/** A discrete unit of work in the production pipeline — claimed and executed by the worker. */
+export const productionJobs = pgTable('production_jobs', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  productionId: uuid('production_id')
+    .notNull()
+    .references(() => productions.id, { onDelete: 'cascade' }),
+  capability: productionJobCapability('capability').notNull(),
+  provider: text('provider').notNull(),
+  payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
+  status: productionJobStatus('status').notNull().default('queued'),
+  priority: integer('priority').notNull().default(10),
+  attempt: integer('attempt').notNull().default(0),
+  maxAttempts: integer('max_attempts').notNull().default(2),
+  resultId: text('result_id'),
+  error: text('error'),
+  lockedUntil: timestamp('locked_until', { withTimezone: true, mode: 'date' }),
+  workerId: text('worker_id'),
+  enqueuedAt: timestamp('enqueued_at', { withTimezone: true, mode: 'date' }).defaultNow().notNull(),
+  startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
+  completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' })
 });
 
 /** A single run of a Recipe — the unit the orchestrator tracks. */

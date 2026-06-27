@@ -3,6 +3,7 @@ import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
 import { MorningBrief } from './MorningBrief';
 import { ProductionWizard } from './ProductionWizard';
+import { QueueWidget } from './QueueWidget';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 import { Login } from './Login';
@@ -99,6 +100,7 @@ export function App() {
 </>
       )}
 
+      <QueueWidget />
       <footer className="muted">
         <a href="/extra">Extra / Personal</a> ·{' '}
         <a href="/terms">Terms of Service</a> · <a href="/privacy">Privacy Policy</a> ·{' '}

@@ -27,7 +27,7 @@ import {
   uploadFromUrl as postizUploadFromUrl,
   type PostizPostInput
 } from './postiz.js';
-import { and, createDb, desc, eq, runMigrations, tables } from '@rmg-creator-os/db';
+import { and, createDb, desc, eq, enqueueJob, runMigrations, tables } from '@rmg-creator-os/db';
 import {
   createDriveClient,
   createHeyGenClient,
@@ -42,6 +42,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSequence, type Segment } from './compose.js';
+import { registerWorkerRoutes } from './worker.js';
+import { registerQueueRoutes } from './routes/queue.js';
+import { registerDeliveryRoutes } from './routes/delivery.js';
+import { registerAtelierBrollRoutes } from './routes/atelier_broll.js';
 import Fastify from 'fastify';
 import { Redis } from 'ioredis';
 
@@ -1489,6 +1493,14 @@ app.post<{
         })
         .returning();
       await db.update(tables.productions).set({ stage: 'generate', updatedAt: now }).where(eq(tables.productions.id, row.id));
+      // Record in the production job queue for observability + retry tracking.
+      await enqueueJob(db, {
+        productionId: row.id,
+        capability: 'aroll',
+        provider: 'heygen',
+        payload: { videoId, talkingPhotoId, audioUrl, dimension: dim, motionPrompt: motionPrompt ?? null, videoRowId: video.id },
+        priority: 5,
+      }).catch(() => undefined); // non-fatal — the video row is the source of truth
       reply.code(201);
       return video;
     });
@@ -2180,6 +2192,14 @@ app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
   }
 });
+
+// Production Queue — worker tick and queue management endpoints.
+registerWorkerRoutes(app, db, { heygen, drive });
+registerQueueRoutes(app, db);
+// Atelier delivery — Ad Index, My Poster approval, Final Cut re-upload, download package.
+registerDeliveryRoutes(app, db, drive as Parameters<typeof registerDeliveryRoutes>[2]);
+// Atelier B-Roll — scene-based AI video generation.
+registerAtelierBrollRoutes(app, db);
 
 try {
   await app.listen({ port: PORT, host: HOST });
