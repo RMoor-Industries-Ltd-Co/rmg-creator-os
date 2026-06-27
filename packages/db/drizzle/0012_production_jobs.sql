@@ -1,9 +1,15 @@
-CREATE TYPE production_job_status AS ENUM ('queued', 'running', 'done', 'failed', 'cancelled');
-CREATE TYPE production_job_capability AS ENUM ('aroll', 'broll', 'lipsync', 'audio', 'thumbnail', 'poster');
+DO $$ BEGIN
+  CREATE TYPE production_job_status AS ENUM ('queued', 'running', 'done', 'failed', 'cancelled');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+DO $$ BEGIN
+  CREATE TYPE production_job_capability AS ENUM ('aroll', 'broll', 'lipsync', 'audio', 'thumbnail', 'poster');
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TABLE production_jobs (
+CREATE TABLE IF NOT EXISTS production_jobs (
   id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  production_id uuid NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+  production_id text NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
   capability    production_job_capability NOT NULL,
   provider      text NOT NULL,
   payload       jsonb NOT NULL DEFAULT '{}',
@@ -20,6 +26,6 @@ CREATE TABLE production_jobs (
   completed_at  timestamptz
 );
 
-CREATE INDEX production_jobs_status_priority ON production_jobs (status, priority, enqueued_at)
+CREATE INDEX IF NOT EXISTS production_jobs_status_priority ON production_jobs (status, priority, enqueued_at)
   WHERE status = 'queued';
-CREATE INDEX production_jobs_production_id ON production_jobs (production_id);
+CREATE INDEX IF NOT EXISTS production_jobs_production_id ON production_jobs (production_id);
