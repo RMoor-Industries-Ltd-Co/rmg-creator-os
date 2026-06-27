@@ -27,7 +27,7 @@ import {
   uploadFromUrl as postizUploadFromUrl,
   type PostizPostInput
 } from './postiz.js';
-import { and, createDb, desc, eq, enqueueJob, runMigrations, tables } from '@rmg-creator-os/db';
+import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
   createDriveClient,
   createHeyGenClient,
