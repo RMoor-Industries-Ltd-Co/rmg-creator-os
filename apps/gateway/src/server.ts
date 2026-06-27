@@ -869,7 +869,18 @@ app.post<{
       .returning();
     return reply.code(201).send(video);
   } catch (err) {
-    return reply.code(502).send({ error: `Higgsfield generate failed: ${(err as Error).message}` });
+    const message = (err as Error).message;
+    // Text-to-image models (e.g. AutoSprite) reject reference images: the CLI
+    // fails with "Model does not accept media inputs." Surface a clean,
+    // actionable message instead of dumping the raw command + stderr.
+    if (ids.length > 0 && /does not accept media inputs/i.test(message)) {
+      return reply.code(422).send({
+        error: `The "${model}" model does not accept reference photos. Remove the reference photos, or pick a reference-capable model.`,
+        code: 'MODEL_REJECTS_MEDIA',
+        model
+      });
+    }
+    return reply.code(502).send({ error: `Higgsfield generate failed: ${message}` });
   }
 });
 

@@ -263,6 +263,11 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
               </span>
             )}
           </label>
+          {sourceAssetIds.length > 0 && (
+            <p style={{ margin: '4px 0 0', fontSize: 12, opacity: 0.7 }}>
+              Reference photos only apply to reference-capable models — text-to-image models (e.g. AutoSprite) reject them.
+            </p>
+          )}
           <div className="hf-sources">
             <button type="button" className={`hf-src none ${sourceAssetIds.length === 0 ? 'on' : ''}`}
               onClick={() => setSourceAssetIds([])}>
