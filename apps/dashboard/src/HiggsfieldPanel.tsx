@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, assets, productions, type Asset, type HiggsModel, type Production, type VideoRow } from './api';
+import { api, assets, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown', 'queued', 'in_progress']);
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
@@ -44,6 +44,8 @@ function hasKeyword(opts: string[], prompt: string): boolean {
 export function HiggsfieldPanel({ p }: { p: Production }) {
   const [models, setModels] = useState<HiggsModel[]>([]);
   const [model, setModel] = useState('');
+  const [modelSchema, setModelSchema] = useState<HiggsModelSchema | null>(null);
+  const [schemaLoading, setSchemaLoading] = useState(false);
   const [scenePrompts, setScenePrompts] = useState<Array<{ name: string; text: string }>>([]);
   const [imgAssets, setImgAssets] = useState<Asset[]>([]);
   const [sourceAssetIds, setSourceAssetIds] = useState<string[]>([]);
@@ -59,6 +61,16 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const activeScene = scenes[activeIdx] ?? scenes[0];
 
   useEffect(() => { saveScenes(p.id, scenes); }, [p.id, scenes]);
+
+  useEffect(() => {
+    if (!model) return;
+    setModelSchema(null);
+    setSchemaLoading(true);
+    api.higgsfieldModelSchema(model)
+      .then(setModelSchema)
+      .catch(() => setModelSchema(null))
+      .finally(() => setSchemaLoading(false));
+  }, [model]);
 
   function updateScene(idx: number, patch: Partial<Scene>) {
     setScenes((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
@@ -190,11 +202,20 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
       />
 
       <label className="vd-label">Model</label>
-      <select className="hf-select" value={model} onChange={(e) => setModel(e.target.value)}>
+      <select className="hf-select" value={model} onChange={(e) => { setModel(e.target.value); setSourceAssetIds([]); }}>
         {models.map((m) => (
           <option key={m.job_set_type} value={m.job_set_type}>{m.display_name} ({m.type})</option>
         ))}
       </select>
+      {schemaLoading && <p className="muted" style={{ fontSize: 12, margin: '4px 0' }}>Checking model capabilities…</p>}
+      {modelSchema && !schemaLoading && (
+        <p className="muted" style={{ fontSize: 12, margin: '4px 0' }}>
+          {modelSchema.supportsPrompt ? '✓ Text prompt' : '✗ No text prompt'}
+          {' · '}
+          {modelSchema.supportsImages ? '✓ Reference images' : '✗ No reference images'}
+          {modelSchema.params.length > 0 && ` · params: ${modelSchema.params.slice(0, 8).join(', ')}`}
+        </p>
+      )}
 
       {scenePrompts.length > 0 && (
         <>
@@ -253,7 +274,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         onChange={(e) => updateScene(activeIdx, { prompt: e.target.value })}
       />
 
-      {imgAssets.length > 0 && (
+      {imgAssets.length > 0 && (!modelSchema || modelSchema.supportsImages) && (
         <>
           <label className="vd-label">
             Reference photos (optional)
@@ -289,9 +310,15 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
       )}
 
       <div className="gen-row">
-        <button className="btn" onClick={generate} disabled={busy === 'generate' || !activeScene.prompt.trim() || !model}>
-          {busy === 'generate' ? 'Sending…' : '✨ Generate imagery'}
-        </button>
+        {modelSchema && !modelSchema.supportsPrompt ? (
+          <p className="err" style={{ margin: 0 }}>
+            This model doesn't accept a text prompt — select a different model or check Higgsfield docs for required inputs.
+          </p>
+        ) : (
+          <button className="btn" onClick={generate} disabled={busy === 'generate' || !activeScene.prompt.trim() || !model}>
+            {busy === 'generate' ? 'Sending…' : '✨ Generate imagery'}
+          </button>
+        )}
         <span className="muted">{activeScene.name} · Spends Higgsfield credits</span>
       </div>
 

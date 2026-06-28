@@ -845,12 +845,23 @@ function withHiggs(reply: import('fastify').FastifyReply) {
   return higgs;
 }
 
-// Available generation models (default: image).
+/// Available generation models (default: image).
 app.get<{ Querystring: { type?: 'image' | 'video' } }>('/higgsfield/models', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
   try {
     return await client.listModels(request.query.type ?? 'image');
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+// Per-model capability schema — which params does this model accept?
+app.get<{ Params: { model: string } }>('/higgsfield/models/:model/schema', async (request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.getModelSchema(request.params.model);
   } catch (err) {
     return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
   }
