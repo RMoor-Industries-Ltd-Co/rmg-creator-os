@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, assets, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
+import { api, assets, poster, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
 import { loadShortlist } from './Assets';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown', 'queued', 'in_progress']);
@@ -71,6 +71,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [enabled, setEnabled] = useState(true);
   const [scenes, setScenes] = useState<Scene[]>(() => loadScenes(p.id));
   const [activeIdx, setActiveIdx] = useState(0);
+  const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
   const polls = useRef<Record<string, number>>({});
 
   const activeScene = scenes[activeIdx] ?? scenes[0];
@@ -198,6 +199,16 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
     finally { setBusy(null); }
   }
 
+  async function setAsCover(v: VideoRow) {
+    if (!v.driveFileId) return;
+    setBusy(v.id + '-cover');
+    try {
+      await poster.setCover(p.id, v.driveFileId);
+      setCoverDriveId(v.driveFileId);
+    } catch (e: unknown) { setError(String(e)); }
+    finally { setBusy(null); }
+  }
+
   function addScene() {
     const next = [...scenes, newScene(scenes.length)];
     setScenes(next);
@@ -237,13 +248,60 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
     );
   }
 
+  function TakeCard({ v }: { v: VideoRow }) {
+    const done = v.status === 'completed';
+    const isImg = done && !!v.videoUrl && !isVideoUrl(v.videoUrl);
+    const isCover = isImg && !!v.driveFileId && coverDriveId === v.driveFileId;
+    const coverBusy = busy === v.id + '-cover';
+    return (
+      <div key={v.id} className={`gen-video ${v.approved ? 'approved' : ''} ${isCover ? 'is-cover' : ''}`}>
+        {v.videoUrl && done ? (
+          isVideoUrl(v.videoUrl)
+            ? <video src={v.videoUrl} controls />
+            : <img src={v.videoUrl} alt="render" />
+        ) : (
+          <div className={`video-ph ${v.status === 'failed' ? 'err' : ''}`}>
+            {v.status === 'failed' ? 'Failed' : <><span className="spinner" /> {v.status}…</>}
+          </div>
+        )}
+        <div className="gen-video-meta">
+          <span className={`badge ${v.approved ? 'live' : ''}`}>{v.approved ? 'approved ✓' : v.status}</span>
+          {isCover && <span className="badge live">★ cover</span>}
+          {v.driveLink && <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>}
+        </div>
+        <div className="take-actions">
+          {done && !v.approved && (
+            <button className="btn ghost sm" onClick={() => approve(v.id)} disabled={busy === v.id}>✓ Approve</button>
+          )}
+          {isImg && v.driveFileId && (
+            <button
+              className={`attach sm ${isCover ? 'active' : ''}`}
+              onClick={() => setAsCover(v)}
+              disabled={coverBusy || isCover}
+              title={isCover ? 'This image is the current cover' : 'Set as production cover for My Poster'}
+            >
+              {isCover ? '★ Cover' : '☆ Set as cover'}
+            </button>
+          )}
+          {done && (
+            <button className="attach sm" onClick={generate} disabled={busy === 'generate'}>↻ Regenerate</button>
+          )}
+          {!v.approved && (
+            <button className="attach sm danger" onClick={() => discard(v.id)} disabled={busy === v.id}>✕ Discard</button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="higgs-panel">
       <div className="video-head">
         <strong>① Clean Image — Higgsfield</strong>
         <span className="badge live">connected</span>
+        {coverDriveId && <span className="badge">cover set ★</span>}
       </div>
-      <p className="muted">Multi-scene composer. Each scene has its own directorial prompt and takes. Approve the best take per scene before moving to A-Roll.</p>
+      <p className="muted">Multi-scene composer. Each scene has its own directorial prompt and takes. Approve the best take per scene before moving to A-Roll. Set a completed image as cover for My Poster.</p>
 
       {/* Scene tabs */}
       <div className="scene-tabs">
@@ -436,37 +494,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
 
       {sceneTakes.length > 0 && (
         <div className="gen-videos">
-          {sceneTakes.map((v) => {
-            const done = v.status === 'completed';
-            return (
-              <div key={v.id} className={`gen-video ${v.approved ? 'approved' : ''}`}>
-                {v.videoUrl && done ? (
-                  isVideoUrl(v.videoUrl)
-                    ? <video src={v.videoUrl} controls />
-                    : <img src={v.videoUrl} alt="render" />
-                ) : (
-                  <div className={`video-ph ${v.status === 'failed' ? 'err' : ''}`}>
-                    {v.status === 'failed' ? 'Failed' : <><span className="spinner" /> {v.status}…</>}
-                  </div>
-                )}
-                <div className="gen-video-meta">
-                  <span className={`badge ${v.approved ? 'live' : ''}`}>{v.approved ? 'approved ✓' : v.status}</span>
-                  {v.driveLink && <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>}
-                </div>
-                <div className="take-actions">
-                  {done && !v.approved && (
-                    <button className="btn ghost sm" onClick={() => approve(v.id)} disabled={busy === v.id}>✓ Approve</button>
-                  )}
-                  {done && (
-                    <button className="attach sm" onClick={generate} disabled={busy === 'generate'}>↻ Regenerate</button>
-                  )}
-                  {!v.approved && (
-                    <button className="attach sm danger" onClick={() => discard(v.id)} disabled={busy === v.id}>✕ Discard</button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+          {sceneTakes.map((v) => <TakeCard key={v.id} v={v} />)}
         </div>
       )}
 
@@ -474,37 +502,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         <>
           <p className="muted" style={{ marginTop: 12, fontSize: 12 }}>Earlier takes (no scene tag)</p>
           <div className="gen-videos">
-            {legacyTakes.map((v) => {
-              const done = v.status === 'completed';
-              return (
-                <div key={v.id} className={`gen-video ${v.approved ? 'approved' : ''}`}>
-                  {v.videoUrl && done ? (
-                    isVideoUrl(v.videoUrl)
-                      ? <video src={v.videoUrl} controls />
-                      : <img src={v.videoUrl} alt="render" />
-                  ) : (
-                    <div className={`video-ph ${v.status === 'failed' ? 'err' : ''}`}>
-                      {v.status === 'failed' ? 'Failed' : <><span className="spinner" /> {v.status}…</>}
-                    </div>
-                  )}
-                  <div className="gen-video-meta">
-                    <span className={`badge ${v.approved ? 'live' : ''}`}>{v.approved ? 'approved ✓' : v.status}</span>
-                    {v.driveLink && <a className="drive-link" href={v.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>}
-                  </div>
-                  <div className="take-actions">
-                    {done && !v.approved && (
-                      <button className="btn ghost sm" onClick={() => approve(v.id)} disabled={busy === v.id}>✓ Approve</button>
-                    )}
-                    {done && (
-                      <button className="attach sm" onClick={generate} disabled={busy === 'generate'}>↻ Regenerate</button>
-                    )}
-                    {!v.approved && (
-                      <button className="attach sm danger" onClick={() => discard(v.id)} disabled={busy === v.id}>✕ Discard</button>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {legacyTakes.map((v) => <TakeCard key={v.id} v={v} />)}
           </div>
         </>
       )}

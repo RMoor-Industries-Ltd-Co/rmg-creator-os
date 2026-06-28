@@ -118,6 +118,8 @@ export interface Production {
   status: string;
   createdAt: string;
   updatedAt: string;
+  thumbnailDriveId?: string | null;
+  deliveryApprovals?: Record<string, string>;
 }
 
 export interface EmotionProfile {
@@ -316,6 +318,7 @@ export interface LibraryFile {
 export const assets = {
   list: (productionId: string) => req<Asset[]>(`/productions/${productionId}/assets`),
   rawUrl: (assetId: string) => `${API}/assets/${assetId}/raw`,
+  driveThumbUrl: (driveFileId: string) => `${API}/assets/drive-thumb/${encodeURIComponent(driveFileId)}`,
   library: () => req<LibraryFile[]>('/assets/library'),
   attach: (productionId: string, file: LibraryFile) =>
     req<Asset>(`/productions/${productionId}/assets/attach`, {
@@ -405,7 +408,11 @@ export const poster = {
       ok: boolean;
       type: string;
       channels: Array<{ platform: string; ok: boolean; channel?: string; reason?: string }>;
-    }>(`/productions/${id}/publish`, { method: 'POST', body: JSON.stringify(body) })
+    }>(`/productions/${id}/publish`, { method: 'POST', body: JSON.stringify(body) }),
+  setCover: (id: string, driveFileId: string) =>
+    req<Production>(`/productions/${id}/cover`, { method: 'PATCH', body: JSON.stringify({ driveFileId }) }),
+  setApproval: (id: string, brand: string, state: 'approved' | 'rejected' | 'pending') =>
+    req<Record<string, string>>(`/productions/${id}/approvals`, { method: 'PATCH', body: JSON.stringify({ brand, state }) })
 };
 
 export interface PostizIntegration {

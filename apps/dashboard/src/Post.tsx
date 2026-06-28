@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { poster, type Post as PostRow, type PostizIntegration, type Production } from './api';
+import { assets, poster, type Post as PostRow, type PostizIntegration, type Production } from './api';
 
 const PLATFORMS = [
   { key: 'tiktok', label: 'TikTok' },
@@ -65,12 +65,26 @@ export function Post({ p }: { p: Production }) {
   const [audience, setAudience] = useState('');
   const [postiz, setPostiz] = useState<{ configured: boolean; integrations: PostizIntegration[] } | null>(null);
   const [publishMsg, setPublishMsg] = useState<string | null>(null);
+  const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
+  const [approvals, setApprovals] = useState<Record<string, string>>(p.deliveryApprovals ?? {});
 
   useEffect(() => {
     poster.postizStatus().then(setPostiz).catch(() => setPostiz({ configured: false, integrations: [] }));
   }, []);
 
+  const brandApproved = approvals[p.brand] === 'approved';
+
+  async function setApproval(brand: string, state: 'approved' | 'rejected' | 'pending') {
+    try {
+      const updated = await poster.setApproval(p.id, brand, state);
+      setApprovals(updated);
+    } catch (e: unknown) {
+      setError(String(e));
+    }
+  }
+
   async function publish(type: 'draft' | 'now') {
+    if (!brandApproved) return;
     setBusy('publish');
     setError(null);
     setPublishMsg(null);
@@ -166,6 +180,8 @@ export function Post({ p }: { p: Production }) {
     }
   }
 
+  const approvalState = approvals[p.brand];
+
   return (
     <div className="poster">
       <div className="video-head">
@@ -173,6 +189,54 @@ export function Post({ p }: { p: Production }) {
         <span className="badge">{p.brand}</span>
       </div>
       <p className="muted">Pick platforms, compose the metadata (AI-suggested), set the schedule. Publishing engine (Postiz) lights up once your platform apps are connected.</p>
+
+      {/* Cover thumbnail */}
+      <div className="cover-preview">
+        <label className="vd-label">Cover image</label>
+        {coverDriveId ? (
+          <div className="cover-thumb-wrap">
+            <img
+              src={assets.driveThumbUrl(coverDriveId)}
+              alt="Production cover"
+              className="cover-thumb"
+              onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+            />
+            <span className="badge live">★ cover set</span>
+          </div>
+        ) : (
+          <p className="muted cover-empty">No cover selected — go to the Scenes step to set one via "☆ Set as cover" on a completed image take.</p>
+        )}
+      </div>
+
+      {/* Per-brand approval gate */}
+      <div className="approval-gate">
+        <label className="vd-label">Brand approval</label>
+        <div className="approval-row">
+          <span className="approval-brand">{p.brand}</span>
+          <button
+            type="button"
+            className={`btn sm ${approvalState === 'approved' ? 'live' : 'ghost'}`}
+            onClick={() => setApproval(p.brand, approvalState === 'approved' ? 'pending' : 'approved')}
+          >
+            ✓ Approve
+          </button>
+          <button
+            type="button"
+            className={`btn sm ${approvalState === 'rejected' ? 'danger' : 'ghost'}`}
+            onClick={() => setApproval(p.brand, approvalState === 'rejected' ? 'pending' : 'rejected')}
+          >
+            ✕ Reject
+          </button>
+          {approvalState && (
+            <span className={`badge ${approvalState === 'approved' ? 'live' : approvalState === 'rejected' ? 'err' : ''}`}>
+              {approvalState}
+            </span>
+          )}
+        </div>
+        {!brandApproved && (
+          <p className="muted hint">Approve this brand to enable publishing.</p>
+        )}
+      </div>
 
       <label className="vd-label">Platforms for {p.brand}</label>
       <ul className="checks vd-brands">
@@ -258,7 +322,7 @@ export function Post({ p }: { p: Production }) {
             {d.status === 'scheduled' && <span className="badge live">scheduled</span>}
             {d.postUrl && <a className="drive-link" href={d.postUrl} target="_blank" rel="noreferrer">live ↗</a>}
           </div>
-          <p className="muted hint">Saved as a draft post package. Use “Send to Social Manager” below to push the finished video + metadata into Postiz.</p>
+          <p className="muted hint">Saved as a draft post package. Use "Send to Social Manager" below to push the finished video + metadata into Postiz.</p>
         </>
       )}
 
@@ -277,12 +341,15 @@ export function Post({ p }: { p: Production }) {
             <span className="muted">Not connected — add a Postiz API key to enable.</span>
           )}
         </div>
+        {!brandApproved && (
+          <p className="muted hint">⚠️ Approve the brand above before publishing.</p>
+        )}
         {postiz?.configured && (
           <div className="gen-row">
-            <button className="btn" onClick={() => publish('draft')} disabled={busy === 'publish' || !active.length}>
+            <button className="btn" onClick={() => publish('draft')} disabled={busy === 'publish' || !active.length || !brandApproved}>
               {busy === 'publish' ? 'Sending…' : '📤 Push drafts to Postiz'}
             </button>
-            <button className="btn ghost" onClick={() => publish('now')} disabled={busy === 'publish' || !active.length}>
+            <button className="btn ghost" onClick={() => publish('now')} disabled={busy === 'publish' || !active.length || !brandApproved}>
               ⚡ Publish now
             </button>
             <a className="drive-link" href="https://social.rmasters.group/launches" target="_blank" rel="noreferrer">
