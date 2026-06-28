@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
 import { feeds, productions, radar, type BrandFeed, type Outlier, type TopicSuggestion, type TrendItem } from './api';
+import { navigate } from './router';
 
 const BRAND_OPTIONS = BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }));
 
@@ -15,6 +16,7 @@ export function Allie() {
   const [newTitle, setNewTitle] = useState('');
   const [loadingTrends, setLoadingTrends] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
+  const [starting, setStarting] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [radarOn, setRadarOn] = useState(false);
   const [radarQ, setRadarQ] = useState('');
@@ -86,6 +88,20 @@ export function Allie() {
       setErr(String(e));
     }
   }
+
+  async function startFromTopic(t: TopicSuggestion) {
+    setStarting(t.title);
+    setErr(null);
+    try {
+      const prod = await productions.create({ brand, topic: t.title, context: t.hook ?? t.angle });
+      navigate(`/produce/${prod.id}/script`);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setStarting(null);
+    }
+  }
+
   async function suggest() {
     setSuggesting(true);
     try {
@@ -105,7 +121,7 @@ export function Allie() {
         <div>
           <h2>ALLIE — Trend Desk</h2>
           <p className="muted">
-            Validate ALLIE’s inputs: the feeds she reads, the live headlines she’s pulling, and the topics she suggests.
+            Validate ALLIE's inputs: the feeds she reads, the live headlines she's pulling, and the topics she suggests.
           </p>
         </div>
         <select value={brand} onChange={(e) => setBrand(e.target.value)}>
@@ -184,7 +200,7 @@ export function Allie() {
       <section className="panel">
         <h3>🎯 Outlier Radar <span className="muted">— viral YouTube videos for this lane</span></h3>
         <p className="muted hint">
-          Videos doing far more views than their channel’s norm — the “why did this pop?” signal. Score = views ÷ channel average.
+          Videos doing far more views than their channel's norm — the "why did this pop?" signal. Score = views ÷ channel average.
         </p>
         {!radarOn ? (
           <p className="muted">
@@ -239,9 +255,17 @@ export function Allie() {
               <li key={i} className="topic-card">
                 <div className="topic-main">
                   <strong>{t.title}</strong>
-                  {t.hook && <span className="topic-hook">“{t.hook}”</span>}
+                  {t.hook && <span className="topic-hook">&ldquo;{t.hook}&rdquo;</span>}
                   {t.angle && <span className="muted topic-angle">{t.angle}</span>}
                 </div>
+                <button
+                  type="button"
+                  className="btn sm"
+                  onClick={() => void startFromTopic(t)}
+                  disabled={starting !== null}
+                >
+                  {starting === t.title ? 'Starting…' : '▶ Start production'}
+                </button>
               </li>
             ))}
           </ul>

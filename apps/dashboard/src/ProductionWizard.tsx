@@ -6,6 +6,7 @@ import { Assets } from './Assets';
 import { HiggsfieldPanel } from './HiggsfieldPanel';
 import { ARoll } from './ARoll';
 import { StockBroll } from './StockBroll';
+import { AtelierBroll } from './AtelierBroll';
 import { FinalCut } from './FinalCut';
 import { Post } from './Post';
 
@@ -26,6 +27,7 @@ export const STEPS = [
 
 export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [p, setP] = useState<Production | null>(null);
+  const [brollTab, setBrollTab] = useState<'stock' | 'atelier'>('stock');
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
@@ -168,7 +170,27 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
           ) : step === 'aroll' ? (
             <ARoll p={p} />
           ) : step === 'broll' ? (
-            <StockBroll p={p} />
+            <>
+              <div className="tab-bar">
+                <button
+                  className={`tab ${brollTab === 'stock' ? 'active' : ''}`}
+                  onClick={() => setBrollTab('stock')}
+                >
+                  Stock (Pexels / Pixabay)
+                </button>
+                <button
+                  className={`tab ${brollTab === 'atelier' ? 'active' : ''}`}
+                  onClick={() => setBrollTab('atelier')}
+                >
+                  Atelier (AI-generated)
+                </button>
+              </div>
+              {brollTab === 'stock' ? (
+                <StockBroll p={p} />
+              ) : (
+                <AtelierBroll productionId={p.id} />
+              )}
+            </>
           ) : step === 'finalcut' ? (
             <FinalCut p={p} />
           ) : step === 'post' ? (
