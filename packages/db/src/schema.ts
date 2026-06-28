@@ -54,6 +54,8 @@ export const productions = pgTable('productions', {
   thumbnailDriveId: text('thumbnail_drive_id'),
   brollScenes: jsonb('broll_scenes').$type<Record<string, unknown>[]>().default([]),
   brollLibrary: jsonb('broll_library').$type<Record<string, unknown>[]>().default([]),
+  // My Poster approval gate (contract 06) — { [brandSlug]: 'pending' | 'approved' | 'rejected' }
+  deliveryApprovals: jsonb('delivery_approvals').$type<Record<string, string>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });

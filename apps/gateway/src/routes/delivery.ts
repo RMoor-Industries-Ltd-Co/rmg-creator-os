@@ -131,6 +131,43 @@ export function registerDeliveryRoutes(app: FastifyInstance, db: Database, drive
     return { production: updated, adIndexCode };
   });
 
+  // ── Cover image ───────────────────────────────────────────────────────────
+
+  // PATCH /productions/:id/cover — set the production's cover thumbnail from a Higgsfield take
+  app.patch<{ Params: { id: string }; Body: { driveFileId: string } }>(
+    '/productions/:id/cover',
+    async (request, reply) => {
+      const { driveFileId } = request.body ?? {};
+      if (!driveFileId) return reply.code(400).send({ error: 'driveFileId is required' });
+      const [updated] = await db
+        .update(tables.productions)
+        .set({ thumbnailDriveId: driveFileId, updatedAt: new Date() })
+        .where(eq(tables.productions.id, request.params.id))
+        .returning();
+      if (!updated) return reply.code(404).send({ error: 'production not found' });
+      return { production: updated };
+    }
+  );
+
+  // PATCH /productions/:id/approvals — set per-brand approval state for My Poster scheduling gate
+  app.patch<{ Params: { id: string }; Body: { brand: string; state: 'approved' | 'rejected' | 'pending' } }>(
+    '/productions/:id/approvals',
+    async (request, reply) => {
+      const { brand, state } = request.body ?? {};
+      if (!brand || !state) return reply.code(400).send({ error: 'brand and state are required' });
+      const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+      if (!prod) return reply.code(404).send({ error: 'production not found' });
+      const existing = (prod.deliveryApprovals ?? {}) as Record<string, string>;
+      const approvals = { ...existing, [brand]: state };
+      const [updated] = await db
+        .update(tables.productions)
+        .set({ deliveryApprovals: approvals, updatedAt: new Date() })
+        .where(eq(tables.productions.id, request.params.id))
+        .returning();
+      return { approvals: updated.deliveryApprovals };
+    }
+  );
+
   // ── Final Cut ─────────────────────────────────────────────────────────────
 
   // POST /productions/:id/final-cut — re-upload the CapCut-edited final video

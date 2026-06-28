@@ -100,6 +100,7 @@ function isPublicRoute(method: string, url: string): boolean {
   if (method === 'OPTIONS') return true;
   if (path === '/health' || path.startsWith('/auth/')) return true;
   if (/^\/(assets|videos)\/[^/]+\/raw$/.test(path)) return true;
+  if (path.startsWith('/assets/drive-thumb/')) return true;
   return false;
 }
 
@@ -692,6 +693,19 @@ app.get<{ Params: { assetId: string } }>('/assets/:assetId/raw', async (request,
   try {
     const { bytes, mimeType } = await drive.download(row.driveFileId);
     reply.header('Content-Type', row.mimeType || mimeType);
+    reply.header('Cache-Control', 'private, max-age=3600');
+    return reply.send(bytes);
+  } catch (err) {
+    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
+  }
+});
+
+// Stream a Drive file by ID directly — used for cover thumbnails in the My Poster step.
+app.get<{ Params: { fileId: string } }>('/assets/drive-thumb/:fileId', async (request, reply) => {
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  try {
+    const { bytes, mimeType } = await drive.download(request.params.fileId);
+    reply.header('Content-Type', mimeType || 'image/jpeg');
     reply.header('Cache-Control', 'private, max-age=3600');
     return reply.send(bytes);
   } catch (err) {
