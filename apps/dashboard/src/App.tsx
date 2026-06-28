@@ -6,6 +6,7 @@ import { ProductionWizard } from './ProductionWizard';
 import { QueueWidget } from './QueueWidget';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
+import { AdIndex } from './AdIndex';
 import { Login } from './Login';
 import { useLoadingBar } from './loading';
 
@@ -37,7 +38,8 @@ export function App() {
   const wizard = path.match(/^\/produce\/([^/]+)\/([^/]+)/);
   const isProduce = path === '/produce';
   const isStudio = path === '/studio';
-  const isOverview = !wizard && !isProduce && !isStudio;
+  const isAdIndex = path === '/ad-index';
+  const isOverview = !wizard && !isProduce && !isStudio && !isAdIndex;
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -69,12 +71,16 @@ export function App() {
         <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
         </button>
+        <button className={isAdIndex ? 'active' : ''} onClick={() => navigate('/ad-index')}>
+          Ad Index
+        </button>
       </nav>
       <div className={`loading-bar ${loading ? 'active' : ''}`} />
 
       {wizard && <ProductionWizard id={wizard[1]} step={wizard[2]} />}
       {isProduce && <Produce />}
       {isStudio && <Studio />}
+      {isAdIndex && <AdIndex />}
 
       {isOverview && (
       <>
