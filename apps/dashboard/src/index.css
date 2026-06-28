@@ -217,6 +217,23 @@ footer a { color: var(--accent); text-decoration: none; }
   font-size: 13px; line-height: 1; padding: 2px 4px; border-radius: 4px;
 }
 .asset-del:hover { color: var(--fail); }
+.asset-section-head { display: flex; align-items: baseline; gap: 10px; margin-top: 12px; margin-bottom: 4px; }
+.asset-section-hint { font-size: 11px; color: var(--muted); }
+.asset-attach {
+  flex: none; background: transparent; border: 1px solid var(--border); color: var(--muted);
+  cursor: pointer; font-size: 13px; line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.asset-attach:disabled { opacity: 0.4; cursor: default; }
+.asset-card.shortlistable { cursor: pointer; position: relative; }
+.asset-card.shortlistable:hover { border-color: var(--accent); }
+.asset-card.shortlisted { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.shortlist-check {
+  position: absolute; top: 6px; left: 6px; background: var(--accent); color: #000;
+  font-size: 11px; font-weight: 700; border-radius: 50%; width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+}
+.library-card.attached { border-color: var(--accent); opacity: 0.6; }
 
 /* --- Generate step -------------------------------------------------------- */
 .generate { display: flex; flex-direction: column; gap: 8px; }

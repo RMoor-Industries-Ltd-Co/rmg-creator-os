@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { assets, type Asset, type LibraryFile, type Production } from './api';
 
-/**
- * Assets step — upload images/video for a production. They store privately in
- * Drive (IMAGE_PRODUCTION) and show here. These are the visual inputs that later
- * route to Higgsfield (image → video) and My Poster.
- *
- * Also exposes a "Brand Library" tab: browse a shared Drive folder of evergreen
- * reference photos (e.g. Coach Rahm headshots) and attach them without re-uploading.
- */
+export const SHORTLIST_KEY = (productionId: string) => `atelier-img-shortlist-${productionId}`;
+
+export function loadShortlist(productionId: string): string[] {
+  try {
+    const raw = localStorage.getItem(SHORTLIST_KEY(productionId));
+    return raw ? (JSON.parse(raw) as string[]) : [];
+  } catch { return []; }
+}
+
+function saveShortlist(productionId: string, ids: string[]) {
+  try { localStorage.setItem(SHORTLIST_KEY(productionId), JSON.stringify(ids)); } catch { /* ignore */ }
+}
+
 export function Assets({ p }: { p: Production }) {
   const [rows, setRows] = useState<Asset[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -19,6 +24,7 @@ export function Assets({ p }: { p: Production }) {
   const [libraryLoading, setLibraryLoading] = useState(false);
   const [libraryError, setLibraryError] = useState<string | null>(null);
   const [attaching, setAttaching] = useState<Set<string>>(new Set());
+  const [shortlist, setShortlist] = useState<string[]>(() => loadShortlist(p.id));
   const fileRef = useRef<HTMLInputElement>(null);
 
   function load() {
@@ -28,6 +34,10 @@ export function Assets({ p }: { p: Production }) {
       .catch((e: unknown) => setError(String(e)));
   }
   useEffect(load, [p.id]);
+
+  useEffect(() => {
+    saveShortlist(p.id, shortlist);
+  }, [p.id, shortlist]);
 
   function loadLibrary() {
     if (library) return;
@@ -63,6 +73,7 @@ export function Assets({ p }: { p: Production }) {
     try {
       await assets.remove(id);
       setRows((r) => (r ? r.filter((a) => a.id !== id) : r));
+      setShortlist((s) => s.filter((sid) => sid !== id));
     } catch (e: unknown) {
       setError(String(e));
     }
@@ -86,13 +97,26 @@ export function Assets({ p }: { p: Production }) {
     }
   }
 
+  function toggleShortlist(id: string) {
+    setShortlist((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
   const attachedDriveIds = new Set((rows ?? []).map((a) => a.driveFileId).filter(Boolean));
+  const imageRows = (rows ?? []).filter((a) => a.kind === 'image');
+  const otherRows = (rows ?? []).filter((a) => a.kind !== 'image');
 
   return (
     <div className="assets">
       <div className="video-head">
         <strong>Assets</strong>
         <span className="badge">{rows ? `${rows.length} file${rows.length === 1 ? '' : 's'}` : '…'}</span>
+        {shortlist.length > 0 && (
+          <span className="badge live" title="Images shortlisted for Scenes">
+            {shortlist.length} shortlisted
+          </span>
+        )}
       </div>
       <p className="muted">
         Upload images, video, or your own <strong>voiceover</strong> (wav/mp3/aac) for{' '}
@@ -112,16 +136,9 @@ export function Assets({ p }: { p: Production }) {
       {tab === 'upload' && (
         <div
           className={`dropzone ${drag ? 'drag' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDrag(true);
-          }}
+          onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
           onDragLeave={() => setDrag(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDrag(false);
-            upload(e.dataTransfer.files);
-          }}
+          onDrop={(e) => { e.preventDefault(); setDrag(false); upload(e.dataTransfer.files); }}
           onClick={() => fileRef.current?.click()}
           role="button"
         >
@@ -133,12 +150,8 @@ export function Assets({ p }: { p: Production }) {
             accept="image/*,video/*,audio/*"
             onChange={(e) => e.target.files && upload(e.target.files)}
           />
-          {uploading ? (
-            <span>Uploading…</span>
-          ) : (
-            <span>
-              <strong>Drop images/video here</strong> or click to choose
-            </span>
+          {uploading ? <span>Uploading…</span> : (
+            <span><strong>Drop images/video here</strong> or click to choose</span>
           )}
         </div>
       )}
@@ -165,9 +178,7 @@ export function Assets({ p }: { p: Production }) {
                         <div className="asset-file">🖼</div>
                       )}
                       <figcaption>
-                        <span className="asset-name" title={f.name}>
-                          {f.name}
-                        </span>
+                        <span className="asset-name" title={f.name}>{f.name}</span>
                         <button
                           className="asset-attach"
                           onClick={() => attach(f)}
@@ -187,17 +198,50 @@ export function Assets({ p }: { p: Production }) {
 
       {error && <p className="err">{error}</p>}
 
-      {rows && rows.length > 0 && (
+      {imageRows.length > 0 && (
         <>
-          <p className="muted" style={{ marginTop: '1rem' }}>
-            <strong>This production's assets</strong>
-          </p>
+          <div className="asset-section-head">
+            <strong>Images</strong>
+            <span className="muted asset-section-hint">Click to shortlist for Scenes — only shortlisted images load on the Scenes page</span>
+          </div>
           <div className="asset-grid">
-            {rows.map((a) => (
-              <figure key={a.id} className="asset-card">
-                {a.kind === 'image' ? (
+            {imageRows.map((a) => {
+              const selected = shortlist.includes(a.id);
+              return (
+                <figure
+                  key={a.id}
+                  className={`asset-card shortlistable ${selected ? 'shortlisted' : ''}`}
+                  onClick={() => toggleShortlist(a.id)}
+                  title={selected ? 'Remove from Scenes shortlist' : 'Add to Scenes shortlist'}
+                >
                   <img src={assets.rawUrl(a.id)} alt={a.fileName} loading="lazy" />
-                ) : a.kind === 'video' ? (
+                  {selected && <span className="shortlist-check">✓</span>}
+                  <figcaption>
+                    <span className="asset-name" title={a.fileName}>{a.fileName}</span>
+                    <button
+                      className="asset-del"
+                      onClick={(e) => { e.stopPropagation(); remove(a.id); }}
+                      title="Remove"
+                    >
+                      ✕
+                    </button>
+                  </figcaption>
+                </figure>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {otherRows.length > 0 && (
+        <>
+          <div className="asset-section-head" style={{ marginTop: imageRows.length > 0 ? 12 : 0 }}>
+            <strong>Video / Audio</strong>
+          </div>
+          <div className="asset-grid">
+            {otherRows.map((a) => (
+              <figure key={a.id} className="asset-card">
+                {a.kind === 'video' ? (
                   <video src={assets.rawUrl(a.id)} controls preload="metadata" />
                 ) : a.kind === 'audio' ? (
                   <div className="asset-file">
@@ -208,12 +252,8 @@ export function Assets({ p }: { p: Production }) {
                   <div className="asset-file">📄</div>
                 )}
                 <figcaption>
-                  <span className="asset-name" title={a.fileName}>
-                    {a.fileName}
-                  </span>
-                  <button className="asset-del" onClick={() => remove(a.id)} title="Remove">
-                    ✕
-                  </button>
+                  <span className="asset-name" title={a.fileName}>{a.fileName}</span>
+                  <button className="asset-del" onClick={() => remove(a.id)} title="Remove">✕</button>
                 </figcaption>
               </figure>
             ))}

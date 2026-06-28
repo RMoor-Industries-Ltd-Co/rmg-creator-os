@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, assets, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
+import { loadShortlist } from './Assets';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown', 'queued', 'in_progress']);
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
@@ -123,7 +124,12 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
       setModel((cur) => cur || m[0]?.job_set_type || '');
     }).catch(() => setEnabled(false));
     productions.prompts('scene').then(setScenePrompts).catch(() => setScenePrompts([]));
-    assets.list(p.id).then((a) => setImgAssets(a.filter((x) => x.kind === 'image'))).catch(() => undefined);
+    assets.list(p.id).then((a) => {
+      const all = a.filter((x) => x.kind === 'image');
+      const sl = loadShortlist(p.id);
+      // Use only shortlisted images if a shortlist exists; otherwise fall back to all.
+      setImgAssets(sl.length > 0 ? all.filter((x) => sl.includes(x.id)) : all);
+    }).catch(() => undefined);
     productions.videos(p.id).then((vs) => {
       const hf = vs.filter((v) => v.source === 'higgsfield');
       setTakes(hf);
