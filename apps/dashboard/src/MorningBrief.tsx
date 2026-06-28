@@ -13,17 +13,17 @@ export function MorningBrief() {
   const [brief, setBrief] = useState('');
   const [loading, setLoading] = useState(true);
   const [speaking, setSpeaking] = useState(false);
-  const [err, setErr] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const dp = daypart();
 
   async function load() {
     setLoading(true);
-    setErr(false);
+    setErr(null);
     try {
       const r = await allen.brief(undefined, dp);
       setBrief(r.brief);
-    } catch {
-      setErr(true);
+    } catch (e) {
+      setErr(String(e));
     } finally {
       setLoading(false);
     }
@@ -55,7 +55,7 @@ export function MorningBrief() {
           <p className="muted">Your briefing for the {dp}.</p>
         </div>
         <div className="brief-actions">
-          <button type="button" className="btn sm" onClick={() => void hear()} disabled={speaking || loading || !brief}>
+          <button type="button" className="btn sm" onClick={() => void hear()} disabled={speaking || loading || !brief || !!err}>
             {speaking ? '🔊 …' : '🔊 Hear it'}
           </button>
           <button type="button" className="attach sm" onClick={() => void load()} disabled={loading}>
@@ -66,7 +66,7 @@ export function MorningBrief() {
       {loading ? (
         <p className="muted">ALLIE is prepping ALLEN’s notes…</p>
       ) : err ? (
-        <p className="muted">Briefing unavailable right now — tap ↻ to retry.</p>
+        <p className="err">Briefing failed: {err}</p>
       ) : (
         <p className="brief-text">{brief}</p>
       )}

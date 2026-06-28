@@ -170,7 +170,7 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
 }
 
 app.get('/health', async (): Promise<HealthResponse> => {
-  const checks: Record<string, 'ok' | 'fail'> = {};
+  const checks: Record<string, 'ok' | 'fail' | 'unconfigured'> = {};
   try {
     await pool.query('select 1');
     checks.postgres = 'ok';
@@ -186,10 +186,16 @@ app.get('/health', async (): Promise<HealthResponse> => {
   checks.heygen = heygen ? 'ok' : 'fail';
   checks.higgsfield = higgs ? 'ok' : 'fail';
   checks.drive = drive ? 'ok' : 'fail';
-  // ALLEN health proxy — reports llm/tts/stt/docs.
+  // ALLEN health proxy — inspect llm/tts/stt sub-checks, not just HTTP 200.
   try {
-    const allenHealth = await fetch('http://allen:8090/health', { signal: AbortSignal.timeout(3000) });
-    checks.allen = allenHealth.ok ? 'ok' : 'fail';
+    const allenRes = await fetch('http://allen:8090/health', { signal: AbortSignal.timeout(3000) });
+    if (!allenRes.ok) {
+      checks.allen = 'fail';
+    } else {
+      const allenJson = (await allenRes.json().catch(() => null)) as null | { checks?: Record<string, string> };
+      const llm = allenJson?.checks?.llm;
+      checks.allen = llm === 'ok' ? 'ok' : (llm === 'unconfigured' ? 'unconfigured' : 'fail');
+    }
   } catch {
     checks.allen = 'fail';
   }

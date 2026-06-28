@@ -5,7 +5,7 @@
 export interface HealthResponse {
   status: 'ok' | 'degraded';
   service: string;
-  checks: Record<string, 'ok' | 'fail'>;
+  checks: Record<string, 'ok' | 'fail' | 'unconfigured'>;
   time: string;
 }
 
