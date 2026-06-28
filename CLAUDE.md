@@ -1,5 +1,7 @@
 # RMG Creator OS — Claude Orientation
 
+> **Cross-project contracts and architecture** live in [`rmg-piaar-system`](https://github.com/RMoor-Industries-Ltd-Co/rmg-piaar-system). Read that first for the full system picture.
+
 ## Server Layout
 
 | Thing | Path |
@@ -72,4 +74,5 @@ cd /opt/rmg-creator-os/control-server && docker compose up -d
 | Secret | Project | Status |
 |---|---|---|
 | `YOUTUBE_API_KEY` | master-atelier prd | Added Jun 27 2026 |
+| `GDRIVE_LIBRARY_FOLDER_ID` | master-atelier prd | Added Jun 28 2026 — brand asset library |
 | `DATABASE_URL` | master-atelier prd | **Do not add** — built by compose |
