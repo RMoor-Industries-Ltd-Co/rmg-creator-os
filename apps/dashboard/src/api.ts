@@ -68,6 +68,13 @@ export interface HiggsModel {
   type: string;
 }
 
+export interface HiggsModelSchema {
+  model: string;
+  supportsPrompt: boolean;
+  supportsImages: boolean;
+  params: string[];
+}
+
 export const api = {
   avatars: () => req<HeyGenAvatar[]>('/heygen/avatars'),
   voices: () => req<HeyGenVoice[]>('/heygen/voices'),
@@ -75,6 +82,8 @@ export const api = {
   getVideo: (id: string) => req<VideoRow>(`/heygen/videos/${id}`),
   higgsfieldModels: (type: 'image' | 'video' = 'image') =>
     req<HiggsModel[]>(`/higgsfield/models?type=${type}`),
+  higgsfieldModelSchema: (model: string) =>
+    req<HiggsModelSchema>(`/higgsfield/models/${encodeURIComponent(model)}/schema`),
   generate: (input: {
     avatarId: string;
     voiceId: string;

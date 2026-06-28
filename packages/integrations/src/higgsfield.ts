@@ -19,9 +19,18 @@ export interface HiggsJob {
   jobSetType?: string;
 }
 
+export interface HiggsModelSchema {
+  model: string;
+  supportsPrompt: boolean;
+  supportsImages: boolean;
+  params: string[];
+  raw: unknown;
+}
+
 export interface HiggsfieldClient {
   account(): Promise<{ email?: string; credits?: number; plan?: string }>;
   listModels(type?: 'image' | 'video'): Promise<HiggsModel[]>;
+  getModelSchema(model: string): Promise<HiggsModelSchema>;
   createJob(opts: { model: string; prompt: string; imagePaths?: string[] }): Promise<{ jobId: string }>;
   getJob(jobId: string): Promise<HiggsJob>;
 }
@@ -50,8 +59,8 @@ function findId(o: any): string | undefined {
 }
 
 export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
-  async function run(args: string[], timeoutMs = 120_000): Promise<unknown> {
-    const { stdout } = await pexec(bin, [...args, '--json', '--no-color'], {
+  async function run(args: string[], timeoutMs = 120_000, extraFlags: string[] = ['--json', '--no-color']): Promise<unknown> {
+    const { stdout } = await pexec(bin, [...args, ...extraFlags], {
       maxBuffer: 64 * 1024 * 1024,
       timeout: timeoutMs
     });
@@ -68,6 +77,16 @@ export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
     }
   }
 
+  // Parse plain-text output from `hf model get` (not JSON — returns usage info).
+  function parseModelParams(text: string): string[] {
+    const params: string[] = [];
+    for (const line of text.split('\n')) {
+      const m = line.match(/--(\w[\w-]*)/g);
+      if (m) params.push(...m.map((p) => p.slice(2)));
+    }
+    return [...new Set(params)];
+  }
+
   return {
     async account() {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,6 +101,30 @@ export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
       const d: any = await run(args);
       const items = Array.isArray(d) ? d : d.models ?? d.data ?? [];
       return items as HiggsModel[];
+    },
+
+    async getModelSchema(model) {
+      // `hf model get <model>` outputs plain usage text, not JSON — parse it.
+      let raw: unknown = null;
+      let text = '';
+      try {
+        const { stdout, stderr } = await pexec(bin, ['model', 'get', model], {
+          maxBuffer: 64 * 1024 * 1024, timeout: 30_000
+        });
+        text = (stdout + '\n' + stderr).trim();
+        try { raw = JSON.parse(text); } catch { raw = text; }
+      } catch (err: unknown) {
+        text = String(err);
+        raw = text;
+      }
+      const params = parseModelParams(text);
+      return {
+        model,
+        supportsPrompt: params.includes('prompt') || text.toLowerCase().includes('--prompt'),
+        supportsImages: params.includes('image') || text.toLowerCase().includes('--image'),
+        params,
+        raw,
+      };
     },
 
     async createJob({ model, prompt, imagePaths }) {
