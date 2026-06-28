@@ -60,6 +60,7 @@ const GDRIVE_AUDIO_FOLDER_ID = process.env.GDRIVE_AUDIO_FOLDER_ID ?? '';
 const GDRIVE_BROLL_FOLDER_ID = process.env.GDRIVE_BROLL_FOLDER_ID ?? '';
 const GDRIVE_PROMPTS_FOLDER_ID = process.env.GDRIVE_PROMPTS_FOLDER_ID ?? '';
 const GDRIVE_PERSONA_PROMPTS_FOLDER_ID = process.env.GDRIVE_PERSONA_PROMPTS_FOLDER_ID ?? '';
+const GDRIVE_LIBRARY_FOLDER_ID = process.env.GDRIVE_LIBRARY_FOLDER_ID ?? '';
 // Public base the gateway is reachable at, so HeyGen can fetch hosted audio.
 const PUBLIC_API_BASE = (process.env.PUBLIC_API_BASE ?? '').replace(/\/$/, '');
 
@@ -711,6 +712,46 @@ app.delete<{ Params: { assetId: string } }>('/assets/:assetId', async (request, 
   }
   await db.delete(tables.assets).where(eq(tables.assets.id, row.id));
   return { ok: true };
+});
+
+// List the central brand-asset library (a shared Drive folder).
+app.get('/assets/library', async (_request, reply) => {
+  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  if (!GDRIVE_LIBRARY_FOLDER_ID) return reply.code(503).send({ error: 'Library not configured (set GDRIVE_LIBRARY_FOLDER_ID)' });
+  try {
+    const files = await drive.listFolder(GDRIVE_LIBRARY_FOLDER_ID);
+    return files.filter((f) => !f.mimeType.includes('folder'));
+  } catch (err) {
+    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
+  }
+});
+
+// Attach a library file to a production (creates an asset DB row, no upload needed).
+app.post<{
+  Params: { id: string };
+  Body: { driveFileId: string; fileName: string; mimeType: string };
+}>('/productions/:id/assets/attach', async (request, reply) => {
+  const { driveFileId, fileName, mimeType } = request.body;
+  if (!driveFileId || !fileName) return reply.code(400).send({ error: 'driveFileId and fileName required' });
+  const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!prod) return reply.code(404).send({ error: 'production not found' });
+  const [row] = await db
+    .insert(tables.assets)
+    .values({
+      id: crypto.randomUUID(),
+      productionId: prod.id,
+      kind: kindFor(mimeType ?? 'application/octet-stream'),
+      role: 'source',
+      fileName,
+      mimeType: mimeType ?? 'application/octet-stream',
+      sizeBytes: '0',
+      driveFileId,
+      driveLink: null,
+      status: 'stored',
+      createdAt: new Date()
+    })
+    .returning();
+  return reply.code(201).send(row);
 });
 
 // --- Generate (the wizard's Generate stage) -------------------------------

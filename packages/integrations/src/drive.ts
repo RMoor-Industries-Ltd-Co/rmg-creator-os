@@ -32,7 +32,7 @@ export interface DriveClient {
   }): Promise<DriveUploadResult>;
   download(fileId: string): Promise<DriveDownload>;
   deleteFile(fileId: string): Promise<void>;
-  listFolder(folderId: string): Promise<Array<{ id: string; name: string; mimeType: string }>>;
+  listFolder(folderId: string): Promise<Array<{ id: string; name: string; mimeType: string; thumbnailLink?: string }>>;
   readText(fileId: string, mimeType: string): Promise<string>;
   createFolder(name: string, parentId: string): Promise<string>;
   updateFile(
@@ -138,11 +138,11 @@ export function createDriveClient(cfg: DriveConfig): DriveClient {
       const token = await getToken();
       const q = encodeURIComponent(`'${folderId}' in parents and trashed=false`);
       const res = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=100`,
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,thumbnailLink)&supportsAllDrives=true&includeItemsFromAllDrives=true&pageSize=200`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (!res.ok) throw new Error(`Drive list failed (${res.status})`);
-      const j = (await res.json()) as { files?: Array<{ id: string; name: string; mimeType: string }> };
+      const j = (await res.json()) as { files?: Array<{ id: string; name: string; mimeType: string; thumbnailLink?: string }> };
       return j.files ?? [];
     },
 

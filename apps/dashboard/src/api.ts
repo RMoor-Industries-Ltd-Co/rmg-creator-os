@@ -306,9 +306,22 @@ export interface Asset {
   createdAt: string;
 }
 
+export interface LibraryFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  thumbnailLink?: string;
+}
+
 export const assets = {
   list: (productionId: string) => req<Asset[]>(`/productions/${productionId}/assets`),
   rawUrl: (assetId: string) => `${API}/assets/${assetId}/raw`,
+  library: () => req<LibraryFile[]>('/assets/library'),
+  attach: (productionId: string, file: LibraryFile) =>
+    req<Asset>(`/productions/${productionId}/assets/attach`, {
+      method: 'POST',
+      body: JSON.stringify({ driveFileId: file.id, fileName: file.name, mimeType: file.mimeType })
+    }),
   async upload(productionId: string, files: FileList | File[]): Promise<Asset[]> {
     startLoad();
     try {
