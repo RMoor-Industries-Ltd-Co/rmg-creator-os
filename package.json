@@ -8,7 +8,11 @@
     "dev:dashboard": "pnpm --filter @rmg-creator-os/dashboard dev",
     "build": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/integrations build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present build",
     "typecheck": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/integrations build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present typecheck",
-    "lint": "pnpm -r --if-present lint"
+    "lint": "pnpm -r --if-present lint",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
   },
   "pnpm": {
     "overrides": {
