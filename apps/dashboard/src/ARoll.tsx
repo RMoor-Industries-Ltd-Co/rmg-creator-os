@@ -22,6 +22,8 @@ export function ARoll({ p }: { p: Production }) {
   const [error, setError] = useState<string | null>(null);
   const voiceFileRef = useRef<HTMLInputElement>(null);
   const polls = useRef<Record<string, number>>({});
+  const pollAttempts = useRef<Record<string, number>>({});
+  const MAX_POLL_ATTEMPTS = 60; // 60 × 5 s = 5 min
 
   function load() {
     assets.list(p.id).then((a) => setAudioAssets(a.filter((x) => x.kind === 'audio')));
@@ -51,13 +53,24 @@ export function ARoll({ p }: { p: Production }) {
 
   function watch(id: string) {
     if (polls.current[id]) return;
+    pollAttempts.current[id] = 0;
     polls.current[id] = window.setInterval(async () => {
+      pollAttempts.current[id] = (pollAttempts.current[id] ?? 0) + 1;
+      if (pollAttempts.current[id] > MAX_POLL_ATTEMPTS) {
+        window.clearInterval(polls.current[id]);
+        delete polls.current[id];
+        delete pollAttempts.current[id];
+        setTakes((rows) => rows.map((r) => r.id === id ? { ...r, status: 'failed' } : r));
+        setError('A-Roll timed out after 5 minutes — check HeyGen for status or try again.');
+        return;
+      }
       try {
         const v = await api.getVideo(id);
         setTakes((rows) => rows.map((r) => (r.id === id ? v : r)));
         if (!PROCESSING.has(v.status)) {
           window.clearInterval(polls.current[id]);
           delete polls.current[id];
+          delete pollAttempts.current[id];
         }
       } catch {
         /* keep polling */

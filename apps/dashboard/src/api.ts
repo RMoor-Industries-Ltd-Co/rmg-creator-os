@@ -120,6 +120,8 @@ export interface Production {
   updatedAt: string;
   thumbnailDriveId?: string | null;
   deliveryApprovals?: Record<string, string>;
+  higgsfieldScenes?: Record<string, unknown>[];
+  higgsfieldShortlist?: string[];
 }
 
 export interface EmotionProfile {
@@ -208,6 +210,8 @@ export const productions = {
   generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
+  saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
+    req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
   higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetIds?: string[]; sceneId?: string }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   compose: (
