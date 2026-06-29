@@ -523,3 +523,31 @@ export const allen = {
 };
 
 export const TERMINAL = new Set(['completed', 'failed']);
+
+export interface AdIndexCode {
+  code: string;
+  type: string;
+  product: string;
+  region: string;
+  tz: string;
+  version: number;
+  productionId: string | null;
+  status: 'draft' | 'approved' | 'published' | 'archived';
+  finalDriveId: string | null;
+  posterDriveId: string | null;
+  approvedAt: string | null;
+  publishedAt: string | null;
+  createdAt: string;
+}
+
+export const adIndex = {
+  list: (filters?: { type?: string; product?: string; region?: string; status?: string; production_id?: string }) =>
+    req<{ codes: AdIndexCode[] }>(`/ad-index?${new URLSearchParams(filters as Record<string, string>)}`),
+  get: (code: string) => req<{ code: AdIndexCode }>(`/ad-index/${code}`),
+  issue: (body: { production_id: string; type: string; product: string; region: string; tz: string }) =>
+    req<{ code: AdIndexCode }>('/ad-index/issue', { method: 'POST', body: JSON.stringify(body) }),
+  download: (productionId: string) =>
+    req<{ productionId: string; adIndexCode: string | null; assets: Record<string, unknown> | null; caption: string }>(
+      `/productions/${productionId}/final-cut/download`
+    ),
+};

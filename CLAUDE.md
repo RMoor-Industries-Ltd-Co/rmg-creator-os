@@ -69,6 +69,15 @@ cd /opt/rmg-creator-os/control-server && docker compose up -d
 - **Queue**: `production_jobs` table, claimed by `POST /worker/tick`.
 - **CI/CD**: push to `main` → CI → Publish Images (GHCR) → Deploy (auto-triggered).
 
+## UI Validation (Playwright)
+
+Run `pnpm test:e2e` from the repo root to smoke-test production.
+Tests in `e2e/` target `https://rmg-creator-os.rmasters.group` — no local server needed.
+
+For authenticated tests, set `E2E_SESSION_COOKIE=<value of rmg_sess cookie>` in the environment.
+Grab the cookie from DevTools → Application → Cookies after logging in once, then add it to the
+Claude Code web environment variables so it persists across sessions.
+
 ## Doppler Secret Gaps to Watch
 
 | Secret | Project | Status |
