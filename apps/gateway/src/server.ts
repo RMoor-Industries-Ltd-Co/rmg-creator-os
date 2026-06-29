@@ -928,6 +928,22 @@ app.get<{ Params: { model: string } }>('/higgsfield/models/:model/schema', async
   }
 });
 
+// Persist Higgsfield multi-scene compositions and asset shortlist to DB.
+app.patch<{
+  Params: { id: string };
+  Body: { scenes?: unknown[]; shortlist?: string[] };
+}>('/productions/:id/higgsfield-scenes', async (request, reply) => {
+  const { scenes, shortlist } = request.body ?? {};
+  await db.update(tables.productions)
+    .set({
+      higgsfieldScenes: (scenes ?? []) as Record<string, unknown>[],
+      higgsfieldShortlist: (shortlist ?? []) as string[],
+      updatedAt: new Date()
+    })
+    .where(eq(tables.productions.id, request.params.id));
+  return reply.send({ ok: true });
+});
+
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };

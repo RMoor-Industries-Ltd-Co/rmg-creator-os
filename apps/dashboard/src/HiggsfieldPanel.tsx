@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, assets, poster, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
 import { loadShortlist } from './Assets';
 
@@ -25,16 +25,14 @@ function newScene(index: number): Scene {
   return { id: crypto.randomUUID(), name: `Scene ${index + 1}`, prompt: '', director: {} };
 }
 
-function loadScenes(pid: string): Scene[] {
+function loadScenes(pid: string, fromDb?: Record<string, unknown>[]): Scene[] {
+  // Prefer DB data if non-empty, then fall back to localStorage for migration.
+  if (fromDb && fromDb.length > 0) return fromDb as unknown as Scene[];
   try {
     const raw = localStorage.getItem(`atelier-scenes-${pid}`);
     if (raw) return JSON.parse(raw) as Scene[];
   } catch { /* ignore */ }
   return [newScene(0)];
-}
-
-function saveScenes(pid: string, scenes: Scene[]) {
-  try { localStorage.setItem(`atelier-scenes-${pid}`, JSON.stringify(scenes)); } catch { /* ignore */ }
 }
 
 function hasKeyword(opts: string[], prompt: string): boolean {
@@ -69,14 +67,23 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [enabled, setEnabled] = useState(true);
-  const [scenes, setScenes] = useState<Scene[]>(() => loadScenes(p.id));
+  const [scenes, setScenes] = useState<Scene[]>(() => loadScenes(p.id, p.higgsfieldScenes));
   const [activeIdx, setActiveIdx] = useState(0);
   const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
   const polls = useRef<Record<string, number>>({});
+  const saveTimer = useRef<number | null>(null);
 
   const activeScene = scenes[activeIdx] ?? scenes[0];
 
-  useEffect(() => { saveScenes(p.id, scenes); }, [p.id, scenes]);
+  // Persist scenes to DB (debounced 1 s) and keep localStorage as a migration fallback.
+  const shortlistRef = useRef<string[]>(p.higgsfieldShortlist ?? []);
+  const persistScenes = useCallback((nextScenes: Scene[], shortlist: string[]) => {
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => {
+      void productions.saveScenes(p.id, nextScenes as unknown as Record<string, unknown>[], shortlist);
+    }, 1000);
+  }, [p.id]);
+  useEffect(() => { persistScenes(scenes, shortlistRef.current); }, [scenes, persistScenes]);
 
   // Batch-fetch all model schemas in the background (5 at a time).
   useEffect(() => {
@@ -127,8 +134,10 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
     productions.prompts('scene').then(setScenePrompts).catch(() => setScenePrompts([]));
     assets.list(p.id).then((a) => {
       const all = a.filter((x) => x.kind === 'image');
-      const sl = loadShortlist(p.id);
-      // Use only shortlisted images if a shortlist exists; otherwise fall back to all.
+      // Prefer DB shortlist, fall back to localStorage for migration.
+      const dbSl = p.higgsfieldShortlist ?? [];
+      const sl = dbSl.length > 0 ? dbSl : loadShortlist(p.id);
+      shortlistRef.current = sl;
       setImgAssets(sl.length > 0 ? all.filter((x) => sl.includes(x.id)) : all);
     }).catch(() => undefined);
     productions.videos(p.id).then((vs) => {
