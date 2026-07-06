@@ -488,11 +488,13 @@ export const allen = {
       endLoad();
     }
   },
-  async listen(blob: Blob): Promise<{ text: string }> {
+  // filename should carry the extension matching the blob's actual recorded format
+  // (see mediaRecording.ts) — Whisper picks its decoder from the filename extension.
+  async listen(blob: Blob, filename = 'speech.webm'): Promise<{ text: string }> {
     startLoad();
     try {
       const form = new FormData();
-      form.append('file', blob, 'speech.webm');
+      form.append('file', blob, filename);
       const res = await fetch(`${API}/allen/listen`, { method: 'POST', body: form });
       if (!res.ok) {
         const b = (await res.json().catch(() => ({}))) as { error?: string };
@@ -515,10 +517,10 @@ export const allen = {
   },
   async transcribe(
     blob: Blob,
-    opts: { title?: string; brand?: string } = {}
+    opts: { title?: string; brand?: string; filename?: string } = {}
   ): Promise<{ transcript: Transcript; highlightsSaved: number }> {
     const form = new FormData();
-    form.append('file', blob, 'meeting.webm');
+    form.append('file', blob, opts.filename ?? 'meeting.webm');
     const qs = new URLSearchParams();
     if (opts.title) qs.set('title', opts.title);
     if (opts.brand) qs.set('brand', opts.brand);

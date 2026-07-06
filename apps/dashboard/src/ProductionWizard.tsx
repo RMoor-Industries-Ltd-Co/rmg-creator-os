@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { productions, allen, type Production } from './api';
+import { extensionForMimeType, pickRecorderMimeType } from './mediaRecording';
 import { navigate } from './router';
 import { VoiceDirection } from './VoiceDirection';
 import { Assets } from './Assets';
@@ -171,17 +172,19 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
+      const preferredType = pickRecorderMimeType();
+      const rec = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
       chunksRef.current = [];
       rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         setRecording(false);
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const mimeType = rec.mimeType || preferredType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         if (blob.size < 1200) return;
         setTranscribing(true);
         try {
-          const { text } = await allen.listen(blob);
+          const { text } = await allen.listen(blob, `speech.${extensionForMimeType(mimeType)}`);
           if (text.trim()) setScriptDraft(text);
         } catch (e: unknown) {
           setError(String(e));
