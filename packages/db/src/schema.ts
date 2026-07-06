@@ -39,12 +39,18 @@ export const productions = pgTable('productions', {
   model: text('model'),
   // Voice Direction (Emotion Director) — set on the wizard's Voice step.
   voiceBrand: text('voice_brand'), // brand whose inflection/energy was applied
-  taggedScript: text('tagged_script'), // script annotated with eleven_v3 audio tags
+  taggedScript: text('tagged_script'), // script annotated with eleven_v3 (bracket tags + caps)
+  taggedScriptV2: text('tagged_script_v2'), // script annotated for eleven v2 (caps + punctuation only)
   stabilityMode: text('stability_mode'), // creative | natural | robust
   stability: real('stability'), // 0.0 / 0.5 / 1.0
   audioTagPalette: text('audio_tag_palette'),
   intensity: text('intensity'),
   voiceId: text('voice_id'), // resolved ElevenLabs voice for the speaker
+  // Persistent voice takes — one asset slot per version, overwritten (pointer swap) on
+  // regenerate. References assets.id; the underlying Drive file/asset row from a prior
+  // take is left in place (not deleted), only the pointer moves.
+  voiceTakeAssetIdV2: text('voice_take_asset_id_v2'),
+  voiceTakeAssetIdV3: text('voice_take_asset_id_v3'),
   emotionLocked: boolean('emotion_locked').notNull().default(false),
   stage: text('stage').notNull().default('script'),
   status: text('status').notNull().default('active'),

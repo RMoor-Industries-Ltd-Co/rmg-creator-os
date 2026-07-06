@@ -43,9 +43,11 @@ export interface AllenDirect {
   stability_mode: string;
   stability: number;
   audio_tag_palette: string;
+  version: string;
 }
 
-// Emotion Director: annotate an approved script with eleven_v3 audio tags + emphasis.
+// Emotion Director: annotate an approved script with audio tags + emphasis, targeting
+// either ElevenLabs v3 (bracket tags + caps) or v2 (caps + punctuation only).
 export async function allenDirect(body: {
   script: string;
   brand: string;
@@ -53,6 +55,7 @@ export async function allenDirect(body: {
   intensity?: string;
   stability_mode?: string;
   brand_examples?: string[];
+  version?: 'v2' | 'v3';
 }): Promise<AllenDirect> {
   const res = await fetch(`${ALLEN_URL}/direct`, {
     method: 'POST',

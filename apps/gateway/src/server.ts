@@ -516,11 +516,18 @@ app.get('/emotion/profiles', async (_request, reply) => {
 });
 
 // Voice Direction: apply a brand's emotional register to the approved script.
-// Persists the tagged script + stability so the render can use eleven_v3.
+// Persists the tagged script + stability so the render can use ElevenLabs.
+// version: 'v3' (bracket tags + caps, default) or 'v2' (caps + punctuation only).
 // Pass { lock: true } to lock the settings in and advance the stage.
 app.post<{
   Params: { id: string };
-  Body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean };
+  Body: {
+    voiceBrand?: string;
+    intensity?: string;
+    stabilityMode?: string;
+    lock?: boolean;
+    version?: 'v2' | 'v3';
+  };
 }>('/productions/:id/direct', async (request, reply) => {
   if (!allenConfigured()) return reply.code(503).send({ error: 'ALLEN not configured (set ALLEN_URL)' });
   const [row] = await db
@@ -530,17 +537,19 @@ app.post<{
   if (!row) return reply.code(404).send({ error: 'production not found' });
   if (!row.scriptText) return reply.code(400).send({ error: 'no script to direct' });
 
-  const { voiceBrand, intensity, stabilityMode, lock } = request.body ?? {};
+  const { voiceBrand, intensity, stabilityMode, lock, version } = request.body ?? {};
   const brand = voiceBrand || row.brand;
+  const targetVersion: 'v2' | 'v3' = version === 'v2' ? 'v2' : 'v3';
+  const taggedColumn = targetVersion === 'v2' ? tables.productions.taggedScriptV2 : tables.productions.taggedScript;
 
-  // Pull previously tagged scripts for this brand as tagging style memory.
+  // Pull previously tagged scripts for this brand + version as tagging style memory.
   const taggedRows = await db
-    .select({ taggedScript: tables.productions.taggedScript })
+    .select({ taggedScript: taggedColumn })
     .from(tables.productions)
     .where(
       and(
         eq(tables.productions.brand, brand),
-        sql`${tables.productions.taggedScript} IS NOT NULL`,
+        sql`${taggedColumn} IS NOT NULL`,
         sql`${tables.productions.id} != ${request.params.id}`
       )
     )
@@ -556,7 +565,8 @@ app.post<{
       persona: row.persona ?? undefined,
       intensity: intensity ?? undefined,
       stability_mode: stabilityMode ?? undefined,
-      brand_examples: taggedExamples.length ? taggedExamples : undefined
+      brand_examples: taggedExamples.length ? taggedExamples : undefined,
+      version: targetVersion
     });
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
@@ -566,7 +576,7 @@ app.post<{
     .update(tables.productions)
     .set({
       voiceBrand: brand,
-      taggedScript: result.tagged_script,
+      ...(targetVersion === 'v2' ? { taggedScriptV2: result.tagged_script } : { taggedScript: result.tagged_script }),
       stabilityMode: result.stability_mode,
       stability: result.stability,
       audioTagPalette: result.audio_tag_palette,
@@ -580,36 +590,101 @@ app.post<{
   return updated;
 });
 
-// Hear the script in the brand voice (proxies ALLEN /speak → audio).
-// { directed: true } renders the emotion-tagged script with eleven_v3 + stability.
+// Save manual edits to a tagged (enhanced) script version, made in the RTE-lite editor.
+app.patch<{
+  Params: { id: string };
+  Body: { version: 'v2' | 'v3'; taggedScript: string };
+}>('/productions/:id/tagged-script', async (request, reply) => {
+  const { version, taggedScript } = request.body ?? ({} as { version?: string; taggedScript?: string });
+  if (version !== 'v2' && version !== 'v3') return reply.code(400).send({ error: "version must be 'v2' or 'v3'" });
+  if (typeof taggedScript !== 'string') return reply.code(400).send({ error: 'taggedScript required' });
+  const [row] = await db
+    .update(tables.productions)
+    .set({
+      ...(version === 'v2' ? { taggedScriptV2: taggedScript } : { taggedScript }),
+      updatedAt: new Date()
+    })
+    .where(eq(tables.productions.id, request.params.id))
+    .returning();
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  return row;
+});
+
+// Hear the script in the brand voice (proxies ALLEN /speak, persists the render as a
+// downloadable asset, and — when a version is given — overwrites that version's take
+// pointer so every regenerate is a new persistent "take," one slot per version).
+// { directed: true, version: 'v2' | 'v3' } renders the matching tagged script + model.
+// `text`, if given, overrides the stored tagged script — lets Generate re-process
+// whatever is currently in the editor, including unsaved edits.
 app.post<{
   Params: { id: string };
-  Body: { directed?: boolean; stabilityMode?: string };
+  Body: { directed?: boolean; stabilityMode?: string; version?: 'v2' | 'v3'; text?: string };
 }>('/productions/:id/speak', async (request, reply) => {
+  if (!drive || !GDRIVE_AUDIO_FOLDER_ID) {
+    return reply.code(503).send({ error: 'Audio storage not configured (set GDRIVE_AUDIO_FOLDER_ID)' });
+  }
   const [row] = await db
     .select()
     .from(tables.productions)
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
-  const { directed, stabilityMode } = request.body ?? {};
+  const { directed, stabilityMode, version, text: textOverride } = request.body ?? {};
 
-  const useDirected = directed && row.taggedScript;
-  const text = useDirected ? row.taggedScript! : row.scriptText;
+  const targetVersion: 'v2' | 'v3' | undefined = version === 'v2' || version === 'v3' ? version : undefined;
+  const storedTagged = targetVersion === 'v2' ? row.taggedScriptV2 : row.taggedScript;
+  const useDirected = Boolean(directed && (textOverride || storedTagged));
+  const text = textOverride ?? (useDirected ? storedTagged! : row.scriptText);
   if (!text) return reply.code(400).send({ error: 'no script to speak' });
 
   const STABILITY: Record<string, number> = { creative: 0.0, natural: 0.5, robust: 1.0 };
   const stability = useDirected
     ? (stabilityMode ? STABILITY[stabilityMode] : undefined) ?? row.stability ?? 0.5
     : undefined;
+  const modelId = useDirected ? (targetVersion === 'v2' ? 'eleven_multilingual_v2' : 'eleven_v3') : undefined;
 
   try {
     const audio = await allenSpeak(text, {
       voiceId: row.voiceId ?? undefined,
-      modelId: useDirected ? 'eleven_v3' : undefined,
+      modelId,
       stability
     });
-    reply.header('Content-Type', 'audio/mpeg');
-    return reply.send(audio);
+
+    const base = (row.title || row.topic).slice(0, 40).replace(/[^\w.-]+/g, '_');
+    const suffix = targetVersion ? `_${targetVersion}` : '';
+    const { fileId, webViewLink } = await drive.uploadBuffer({
+      bytes: audio,
+      name: `${row.id.slice(0, 8)}_${base}${suffix}.mp3`,
+      folderId: GDRIVE_AUDIO_FOLDER_ID,
+      mimeType: 'audio/mpeg'
+    });
+    const [asset] = await db
+      .insert(tables.assets)
+      .values({
+        id: crypto.randomUUID(),
+        productionId: row.id,
+        kind: 'audio',
+        role: 'generated',
+        fileName: `${base}${suffix}.mp3`,
+        mimeType: 'audio/mpeg',
+        sizeBytes: String(audio.length),
+        driveFileId: fileId,
+        driveLink: webViewLink ?? null,
+        status: 'stored',
+        createdAt: new Date()
+      })
+      .returning();
+
+    if (targetVersion) {
+      await db
+        .update(tables.productions)
+        .set({
+          ...(targetVersion === 'v2' ? { voiceTakeAssetIdV2: asset.id } : { voiceTakeAssetIdV3: asset.id }),
+          updatedAt: new Date()
+        })
+        .where(eq(tables.productions.id, row.id));
+    }
+
+    return { assetId: asset.id };
   } catch (err) {
     return reply.code(502).send({ error: `ALLEN: ${(err as Error).message}` });
   }
