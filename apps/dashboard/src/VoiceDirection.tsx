@@ -55,7 +55,8 @@ export function VoiceDirection({
       const updated = await productions.direct(p.id, {
         voiceBrand,
         intensity: intensity || undefined,
-        stabilityMode: stabilityMode || undefined
+        stabilityMode: stabilityMode || undefined,
+        version: 'v3'
       });
       onUpdate(updated);
       setStabilityMode(updated.stabilityMode ?? '');
@@ -71,7 +72,8 @@ export function VoiceDirection({
     setBusy('render');
     setError(null);
     try {
-      setAudioUrl(await productions.speak(p.id, { directed: true, stabilityMode: effMode }));
+      const { url } = await productions.speak(p.id, { directed: true, stabilityMode: effMode, version: 'v3' });
+      setAudioUrl(url);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
@@ -87,7 +89,8 @@ export function VoiceDirection({
         voiceBrand,
         intensity: intensity || undefined,
         stabilityMode: effMode,
-        lock: true
+        lock: true,
+        version: 'v3'
       });
       onUpdate(updated);
       onLocked();
@@ -214,7 +217,14 @@ export function VoiceDirection({
               {busy === 'lock' ? 'Locking…' : '✓ Generate & lock'}
             </button>
           </div>
-          {audioUrl && <audio controls src={audioUrl} style={{ width: '100%', marginTop: 10 }} />}
+          {audioUrl && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+              <audio controls src={audioUrl} style={{ flex: 1 }} />
+              <a className="btn ghost" href={audioUrl} download={`${p.id.slice(0, 8)}_v3.mp3`}>
+                ⬇ Download
+              </a>
+            </div>
+          )}
         </>
       )}
 

@@ -113,6 +113,13 @@
       "when": 1782700000000,
       "tag": "0015_higgsfield_scenes",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1783306160593,
+      "tag": "0016_script_versioning",
+      "breakpoints": true
     }
   ]
 }

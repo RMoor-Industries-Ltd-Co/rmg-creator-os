@@ -108,11 +108,14 @@ export interface Production {
   model: string | null;
   voiceBrand: string | null;
   taggedScript: string | null;
+  taggedScriptV2: string | null;
   stabilityMode: string | null;
   stability: number | null;
   audioTagPalette: string | null;
   intensity: string | null;
   voiceId: string | null;
+  voiceTakeAssetIdV2: string | null;
+  voiceTakeAssetIdV3: string | null;
   emotionLocked: boolean;
   stage: string;
   status: string;
@@ -270,16 +273,30 @@ export const productions = {
   },
   direct: (
     id: string,
-    body: { voiceBrand?: string; intensity?: string; stabilityMode?: string; lock?: boolean }
+    body: {
+      voiceBrand?: string;
+      intensity?: string;
+      stabilityMode?: string;
+      lock?: boolean;
+      version?: 'v2' | 'v3';
+    }
   ) =>
     req<Production>(`/productions/${id}/direct`, {
       method: 'POST',
       body: JSON.stringify(body)
     }),
+  saveTaggedScript: (id: string, version: 'v2' | 'v3', taggedScript: string) =>
+    req<Production>(`/productions/${id}/tagged-script`, {
+      method: 'PATCH',
+      body: JSON.stringify({ version, taggedScript })
+    }),
+  // Synthesizes and persists a take (overwriting the prior take for that version).
+  // `text` overrides the stored tagged script with whatever's currently in the RTE —
+  // so Generate always reflects unsaved edits, not just what was last saved.
   async speak(
     id: string,
-    opts: { directed?: boolean; stabilityMode?: string } = {}
-  ): Promise<string> {
+    opts: { directed?: boolean; stabilityMode?: string; version?: 'v2' | 'v3'; text?: string } = {}
+  ): Promise<{ url: string; assetId: string }> {
     startLoad();
     try {
       const res = await fetch(`${API}/productions/${id}/speak`, {
@@ -287,11 +304,9 @@ export const productions = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(opts)
       });
-      if (!res.ok) {
-        const b = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(b.error ?? `speak failed (${res.status})`);
-      }
-      return URL.createObjectURL(await res.blob());
+      const json = (await res.json().catch(() => ({}))) as { assetId?: string; error?: string };
+      if (!res.ok || !json.assetId) throw new Error(json.error ?? `speak failed (${res.status})`);
+      return { assetId: json.assetId, url: assets.rawUrl(json.assetId) };
     } finally {
       endLoad();
     }
@@ -473,11 +488,13 @@ export const allen = {
       endLoad();
     }
   },
-  async listen(blob: Blob): Promise<{ text: string }> {
+  // filename should carry the extension matching the blob's actual recorded format
+  // (see mediaRecording.ts) — Whisper picks its decoder from the filename extension.
+  async listen(blob: Blob, filename = 'speech.webm'): Promise<{ text: string }> {
     startLoad();
     try {
       const form = new FormData();
-      form.append('file', blob, 'speech.webm');
+      form.append('file', blob, filename);
       const res = await fetch(`${API}/allen/listen`, { method: 'POST', body: form });
       if (!res.ok) {
         const b = (await res.json().catch(() => ({}))) as { error?: string };
@@ -500,10 +517,10 @@ export const allen = {
   },
   async transcribe(
     blob: Blob,
-    opts: { title?: string; brand?: string } = {}
+    opts: { title?: string; brand?: string; filename?: string } = {}
   ): Promise<{ transcript: Transcript; highlightsSaved: number }> {
     const form = new FormData();
-    form.append('file', blob, 'meeting.webm');
+    form.append('file', blob, opts.filename ?? 'meeting.webm');
     const qs = new URLSearchParams();
     if (opts.title) qs.set('title', opts.title);
     if (opts.brand) qs.set('brand', opts.brand);

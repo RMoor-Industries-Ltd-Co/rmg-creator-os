@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
 import { allen, type ChatTurn, type Memory, type Transcript } from './api';
+import { extensionForMimeType, pickRecorderMimeType } from './mediaRecording';
 
 const BRAND_OPTIONS = [{ value: '', label: 'No brand voice' }].concat(
   BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }))
@@ -99,13 +100,15 @@ export function AskAllen() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
+      const preferredType = pickRecorderMimeType();
+      const rec = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
       meetChunksRef.current = [];
       rec.ondataavailable = (e) => e.data.size && meetChunksRef.current.push(e.data);
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         setMeetingRec(false);
-        const blob = new Blob(meetChunksRef.current, { type: 'audio/webm' });
+        const mimeType = rec.mimeType || preferredType || 'audio/webm';
+        const blob = new Blob(meetChunksRef.current, { type: mimeType });
         if (blob.size < 2000) return;
         if (blob.size > 24 * 1024 * 1024) {
           setError('That recording is over ~24MB (Whisper’s limit). Record meetings in shorter segments for now.');
@@ -115,7 +118,11 @@ export function AskAllen() {
         setError(null);
         try {
           const title = window.prompt('Name this meeting (optional):') || undefined;
-          const { transcript, highlightsSaved } = await allen.transcribe(blob, { title, brand: brand || undefined });
+          const { transcript, highlightsSaved } = await allen.transcribe(blob, {
+            title,
+            brand: brand || undefined,
+            filename: `meeting.${extensionForMimeType(mimeType)}`
+          });
           setTranscripts((cur) => [transcript, ...cur]);
           setOpenTr(transcript);
           setShowTr(true);
@@ -167,17 +174,19 @@ export function AskAllen() {
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
+      const preferredType = pickRecorderMimeType();
+      const rec = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
       chunksRef.current = [];
       rec.ondataavailable = (e) => e.data.size && chunksRef.current.push(e.data);
       rec.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop());
         setRecording(false);
-        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const mimeType = rec.mimeType || preferredType || 'audio/webm';
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         if (blob.size < 1200) return;
         setTranscribing(true);
         try {
-          const { text } = await allen.listen(blob);
+          const { text } = await allen.listen(blob, `speech.${extensionForMimeType(mimeType)}`);
           // Gate first (wake/halt), otherwise land the transcript in the input to edit before sending.
           routeVoiceText(text);
         } catch (e: unknown) {
