@@ -37,7 +37,7 @@ See [`docs/architecture/00-overview.md`](docs/architecture/00-overview.md) and t
 
 ## Feature contracts
 
-Each feature has a **contract** capturing its mission, inputs/outputs, scope, dependencies, and phase — so future initiatives are tracked before they're built. See [`docs/contracts/`](docs/contracts/README.md).
+Each feature has a **contract** capturing its mission, inputs/outputs, scope, dependencies, and phase — so future initiatives are tracked before they're built. Contracts now live in [`rmg-piaar-system/contracts/`](https://github.com/RMoor-Industries-Ltd-Co/rmg-piaar-system/tree/main/contracts) — read that repo first for the full system picture; [`docs/contracts/`](docs/contracts/README.md) here is a frozen, unmaintained archive.
 
 ## Status
 
