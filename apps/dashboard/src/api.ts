@@ -116,6 +116,7 @@ export interface Production {
   voiceId: string | null;
   voiceTakeAssetIdV2: string | null;
   voiceTakeAssetIdV3: string | null;
+  characterId?: string | null;
   emotionLocked: boolean;
   stage: string;
   status: string;
@@ -215,8 +216,10 @@ export const productions = {
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
   saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
     req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
-  higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetIds?: string[]; sceneId?: string }) =>
+  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
+  bindCharacter: (id: string, characterId: string | null) =>
+    req<{ ok: true }>(`/productions/${id}/character`, { method: 'POST', body: JSON.stringify({ characterId }) }),
   compose: (
     id: string,
     body: {
@@ -369,6 +372,42 @@ export const assets = {
       throw new Error(b.error ?? `delete failed (${res.status})`);
     }
   }
+};
+
+export interface HiggsSoul {
+  soulId: string;
+  name?: string;
+  status?: string;
+}
+
+/** A reusable Soul-backed Character bound to a production's Assets stage. */
+export interface Character {
+  id: string;
+  brand: string;
+  name: string;
+  soulId: string | null;
+  soulModel: string;
+  portraitAssetId: string | null;
+  referenceAssetIds: string[];
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const characters = {
+  list: (brand?: string) =>
+    req<Character[]>(`/characters${brand ? `?brand=${encodeURIComponent(brand)}` : ''}`),
+  get: (id: string) => req<Character>(`/characters/${id}`),
+  create: (body: {
+    name: string;
+    brand: string;
+    soulId?: string;
+    soulModel?: string;
+    portraitAssetId?: string;
+    referenceAssetIds?: string[];
+  }) => req<Character>('/characters', { method: 'POST', body: JSON.stringify(body) }),
+  // Trained Higgsfield Souls available on the authenticated account.
+  souls: () => req<HiggsSoul[]>('/higgsfield/souls')
 };
 
 export interface Post {

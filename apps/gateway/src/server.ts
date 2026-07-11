@@ -997,7 +997,7 @@ app.post<{
   const client = withHiggs(reply);
   if (!client) return reply;
   const { prompt, model, sourceAssetIds, sceneId } = request.body ?? {};
-  if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
+  if (!prompt) return reply.code(400).send({ error: 'prompt is required' });
 
   const MAX_SOURCE_IMAGES = 4;
   const ids = (sourceAssetIds ?? []).slice(0, MAX_SOURCE_IMAGES);
@@ -1007,6 +1007,20 @@ app.post<{
     .from(tables.productions)
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
+
+  // If a Character (Higgsfield Soul) is bound to this production, condition generation on its
+  // soul_id and default to its Soul-capable model — this is what keeps the character consistent
+  // across every scene (B-Roll) it appears in, instead of drifting loose reference images.
+  let soulId: string | undefined;
+  let character: typeof tables.characters.$inferSelect | undefined;
+  if (row.characterId) {
+    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, row.characterId));
+    soulId = character?.soulId ?? undefined;
+  }
+  const effectiveModel = model ?? character?.soulModel;
+  if (!effectiveModel) {
+    return reply.code(400).send({ error: 'model is required (or bind a Character with a soul model)' });
+  }
 
   // Pull each source image down to a temp file.
   const imagePaths: string[] = [];
@@ -1028,7 +1042,7 @@ app.post<{
   }
 
   try {
-    const { jobId } = await client.createJob({ model, prompt, imagePaths: imagePaths.length ? imagePaths : undefined });
+    const { jobId } = await client.createJob({ model: effectiveModel, prompt, imagePaths: imagePaths.length ? imagePaths : undefined, soulId });
     const now = new Date();
     const [video] = await db
       .insert(tables.videos)
@@ -1042,7 +1056,7 @@ app.post<{
         inputText: prompt.slice(0, 2000),
         title: row.title ?? null,
         brand: row.brand,
-        config: { model, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null },
+        config: { model: effectiveModel, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterId: row.characterId ?? null },
         createdAt: now,
         updatedAt: now
       })
@@ -1052,6 +1066,83 @@ app.post<{
     return reply.code(502).send({ error: `Higgsfield generate failed: ${(err as Error).message}` });
   }
 });
+
+// --- Higgsfield Souls (trained identities on the authenticated account) -------
+app.get('/higgsfield/souls', async (_request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.listSouls();
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+// --- Characters (reusable Soul-backed identities) ----------------------------
+app.get<{ Querystring: { brand?: string } }>('/characters', async (request) => {
+  const { brand } = request.query ?? {};
+  return brand
+    ? await db
+        .select()
+        .from(tables.characters)
+        .where(eq(tables.characters.brand, brand))
+        .orderBy(desc(tables.characters.createdAt))
+    : await db.select().from(tables.characters).orderBy(desc(tables.characters.createdAt));
+});
+
+app.get<{ Params: { id: string } }>('/characters/:id', async (request, reply) => {
+  const [row] = await db.select().from(tables.characters).where(eq(tables.characters.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'character not found' });
+  return row;
+});
+
+app.post<{
+  Body: {
+    name?: string;
+    brand?: string;
+    soulId?: string;
+    soulModel?: string;
+    portraitAssetId?: string;
+    referenceAssetIds?: string[];
+  };
+}>('/characters', async (request, reply) => {
+  const { name, brand, soulId, soulModel, portraitAssetId, referenceAssetIds } = request.body ?? {};
+  if (!name || !brand) return reply.code(400).send({ error: 'name and brand are required' });
+  const now = new Date();
+  const [row] = await db
+    .insert(tables.characters)
+    .values({
+      id: crypto.randomUUID(),
+      brand,
+      name,
+      soulId: soulId ?? null,
+      soulModel: soulModel ?? 'soul_2',
+      portraitAssetId: portraitAssetId ?? null,
+      referenceAssetIds: referenceAssetIds ?? [],
+      status: 'ready',
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning();
+  return reply.code(201).send(row);
+});
+
+// Bind (or clear, with characterId: null) the Character used for a production's Assets stage.
+app.post<{ Params: { id: string }; Body: { characterId?: string | null } }>(
+  '/productions/:id/character',
+  async (request, reply) => {
+    const { characterId } = request.body ?? {};
+    if (characterId) {
+      const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, characterId));
+      if (!c) return reply.code(404).send({ error: 'character not found' });
+    }
+    await db
+      .update(tables.productions)
+      .set({ characterId: characterId ?? null, updatedAt: new Date() })
+      .where(eq(tables.productions.id, request.params.id));
+    return reply.send({ ok: true });
+  }
+);
 
 // --- Custom video (operator's own images + own voice, no avatar) -------------
 // Background-renders a slideshow with ffmpeg, then marks the row completed.

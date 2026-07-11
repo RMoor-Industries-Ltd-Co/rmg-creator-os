@@ -27,11 +27,21 @@ export interface HiggsModelSchema {
   raw: unknown;
 }
 
+export interface HiggsSoul {
+  soulId: string;
+  name?: string;
+  status?: string; // ready | training | failed | ...
+}
+
 export interface HiggsfieldClient {
   account(): Promise<{ email?: string; credits?: number; plan?: string }>;
   listModels(type?: 'image' | 'video'): Promise<HiggsModel[]>;
   getModelSchema(model: string): Promise<HiggsModelSchema>;
-  createJob(opts: { model: string; prompt?: string; imagePaths?: string[] }): Promise<{ jobId: string }>;
+  // Trained Soul 2.0 identities (soul_id) available on the authenticated account.
+  listSouls(): Promise<HiggsSoul[]>;
+  // `soulId` conditions generation on a trained Soul (Soul-capable models only) for
+  // cross-scene character consistency; `imagePaths` are loose per-shot reference images.
+  createJob(opts: { model: string; prompt?: string; imagePaths?: string[]; soulId?: string }): Promise<{ jobId: string }>;
   getJob(jobId: string): Promise<HiggsJob>;
 }
 
@@ -127,9 +137,26 @@ export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
       };
     },
 
-    async createJob({ model, prompt, imagePaths }) {
+    async listSouls() {
+      // `soul-id list --json` shape varies (bare array vs {souls|data|items:[...]}).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d: any = await run(['soul-id', 'list']);
+      const items: any[] = Array.isArray(d) ? d : d.souls ?? d.data ?? d.items ?? [];
+      return items
+        .map((it) => ({
+          soulId: it.soul_id ?? it.id ?? it.soulId,
+          name: it.name ?? it.display_name,
+          status: it.status ?? it.state
+        }))
+        .filter((s: HiggsSoul) => Boolean(s.soulId)) as HiggsSoul[];
+    },
+
+    async createJob({ model, prompt, imagePaths, soulId }) {
       const args = ['generate', 'create', model];
       if (prompt) args.push('--prompt', prompt);
+      // A trained Soul is passed by id; Soul-capable models (soul_2 / soul_cinema_studio)
+      // condition every generation on it, which is what keeps a character consistent.
+      if (soulId) args.push('--soul-id', soulId);
       for (const p of imagePaths ?? []) args.push('--image', p);
       const d = await run(args);
       const jobId = findId(d);

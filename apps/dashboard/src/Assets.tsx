@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { assets, type Asset, type LibraryFile, type Production } from './api';
+import {
+  assets,
+  characters,
+  productions,
+  type Asset,
+  type Character,
+  type HiggsSoul,
+  type LibraryFile,
+  type Production
+} from './api';
 
 export const SHORTLIST_KEY = (productionId: string) => `atelier-img-shortlist-${productionId}`;
 
@@ -123,6 +132,8 @@ export function Assets({ p }: { p: Production }) {
         <strong>{p.title || p.topic}</strong>. Stored in Drive. Images + voice feed the custom
         video in Generate; images also feed Higgsfield.
       </p>
+
+      <CharacterPanel p={p} />
 
       <div className="asset-tabs">
         <button className={tab === 'upload' ? 'active' : ''} onClick={() => setTab('upload')}>
@@ -263,6 +274,122 @@ export function Assets({ p }: { p: Production }) {
 
       {rows && rows.length === 0 && !uploading && (
         <p className="muted">No assets yet — add some above or pick from the Brand Library.</p>
+      )}
+    </div>
+  );
+}
+
+function CharacterPanel({ p }: { p: Production }) {
+  const [list, setList] = useState<Character[] | null>(null);
+  const [boundId, setBoundId] = useState<string | null>(p.characterId ?? null);
+  const [err, setErr] = useState<string | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [souls, setSouls] = useState<HiggsSoul[] | null>(null);
+  const [soulsErr, setSoulsErr] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [soulId, setSoulId] = useState('');
+  const [soulModel, setSoulModel] = useState('soul_2');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    characters.list(p.brand).then(setList).catch((e: unknown) => setErr(String(e)));
+  }, [p.brand]);
+
+  async function bind(id: string | null) {
+    setErr(null);
+    try {
+      await productions.bindCharacter(p.id, id);
+      setBoundId(id);
+    } catch (e: unknown) {
+      setErr(String(e));
+    }
+  }
+
+  function openRegister() {
+    setRegistering(true);
+    if (!souls) characters.souls().then(setSouls).catch((e: unknown) => setSoulsErr(String(e)));
+  }
+
+  async function register() {
+    if (!name.trim() || !soulId) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId, soulModel });
+      setList((l) => (l ? [c, ...l] : [c]));
+      await bind(c.id);
+      setRegistering(false);
+      setName('');
+      setSoulId('');
+    } catch (e: unknown) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="character-panel">
+      <div className="asset-section-head">
+        <strong>Character</strong>
+        <span className="muted asset-section-hint">
+          Bind a Higgsfield Soul so the A-Roll portrait and B-Roll scenes stay the same person
+        </span>
+      </div>
+      {err && <p className="err">{err}</p>}
+      {list && list.length > 0 && (
+        <div className="asset-tabs">
+          {list.map((c) => (
+            <button
+              key={c.id}
+              className={boundId === c.id ? 'active' : ''}
+              onClick={() => bind(boundId === c.id ? null : c.id)}
+              title={c.soulId ? `Soul ${c.soulId} (${c.soulModel})` : 'No Soul attached'}
+            >
+              {boundId === c.id ? '✓ ' : ''}
+              {c.name}
+              {c.soulId ? '' : ' (no soul)'}
+            </button>
+          ))}
+        </div>
+      )}
+      {list && list.length === 0 && !registering && (
+        <p className="muted">No characters yet for {p.brand}. Register one from a Higgsfield Soul.</p>
+      )}
+      {!registering ? (
+        <button onClick={openRegister}>+ Register a Soul character</button>
+      ) : (
+        <div className="character-register">
+          {soulsErr && <p className="err">{soulsErr}</p>}
+          <input
+            placeholder="Character name (e.g. Rahm — VLOG)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <select value={soulId} onChange={(e) => setSoulId(e.target.value)}>
+            <option value="">{souls ? 'Select a ready Soul…' : 'Loading Souls…'}</option>
+            {(souls ?? []).map((s) => (
+              <option key={s.soulId} value={s.soulId}>
+                {s.name ?? s.soulId}
+                {s.status ? ` (${s.status})` : ''}
+              </option>
+            ))}
+          </select>
+          <select value={soulModel} onChange={(e) => setSoulModel(e.target.value)}>
+            <option value="soul_2">Soul 2.0</option>
+            <option value="soul_cinema_studio">Soul Cinema</option>
+          </select>
+          <div className="row-actions">
+            <button disabled={busy || !name.trim() || !soulId} onClick={register}>
+              {busy ? 'Saving…' : 'Register & bind'}
+            </button>
+            <button onClick={() => setRegistering(false)}>Cancel</button>
+          </div>
+          <p className="muted">
+            Souls are trained in Higgsfield (Soul 2.0). Pick your ready Rahm Soul — it drives the
+            A-Roll avatar portrait and keeps B-Roll scenes consistent.
+          </p>
+        </div>
       )}
     </div>
   );
