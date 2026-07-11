@@ -881,48 +881,18 @@ app.post<{
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
-  // Prefer the emotion-directed script (v3 audio tags); fall back to plain script.
+  // Voice: prefer the operator-approved take (never overwritten); otherwise the directed
+  // script is synthesized as a fallback (both handled by hostVoiceTrack).
   const directed = Boolean(row.taggedScript);
   const text = directed ? row.taggedScript! : row.scriptText;
-  if (!text) return reply.code(400).send({ error: 'no script to generate from' });
-  const stability = directed
-    ? (stabilityMode && STABILITY[stabilityMode] != null ? STABILITY[stabilityMode] : row.stability ?? 0.5)
-    : undefined;
+  const hasTake = Boolean(row.voiceTakeAssetIdV3 || row.voiceTakeAssetIdV2);
+  if (!text && !hasTake) return reply.code(400).send({ error: 'no script or voice take to generate from' });
 
   try {
-    // 1) Render the brand voice (directed → eleven_v3 + stability).
-    const audio = await allenSpeak(text, {
-      voiceId: row.voiceId ?? undefined,
-      modelId: directed ? 'eleven_v3' : undefined,
-      stability
-    });
-    // 2) Host it (Drive AUDIO_PRODUCTION) as an asset the gateway can serve.
-    const base = (row.title || row.topic).slice(0, 40).replace(/[^\w.-]+/g, '_');
-    const { fileId, webViewLink } = await drive.uploadBuffer({
-      bytes: audio,
-      name: `${row.id.slice(0, 8)}_${base}.mp3`,
-      folderId: GDRIVE_AUDIO_FOLDER_ID,
-      mimeType: 'audio/mpeg'
-    });
-    const [audioAsset] = await db
-      .insert(tables.assets)
-      .values({
-        id: crypto.randomUUID(),
-        productionId: row.id,
-        kind: 'audio',
-        role: 'generated',
-        fileName: `${base}.mp3`,
-        mimeType: 'audio/mpeg',
-        sizeBytes: String(audio.length),
-        driveFileId: fileId,
-        driveLink: webViewLink ?? null,
-        status: 'stored',
-        createdAt: new Date()
-      })
-      .returning();
-    const audioUrl = `${PUBLIC_API_BASE}/assets/${audioAsset.id}/raw`;
+    // 1) Resolve the voice audio URL — approved take served verbatim, else synthesized fallback.
+    const audioUrl = await hostVoiceTrack(row, undefined, stabilityMode);
 
-    // 3) Lip-sync the avatar to that audio.
+    // 2) Lip-sync the avatar to that audio.
     const dim = dimension ?? { width: 720, height: 1280 };
     return await heygenHandler(reply, async () => {
       const { videoId } = await client.generateVideo({
@@ -943,7 +913,7 @@ app.post<{
           status: 'processing',
           source: 'heygen',
           avatarId,
-          inputText: text.slice(0, 2000),
+          inputText: (text ?? '').slice(0, 2000),
           title: row.title ?? null,
           brand: row.brand,
           config: { avatarId, avatarStyle, background, dimension: dim, stabilityMode },
@@ -1302,6 +1272,16 @@ async function hostVoiceTrack(
   audioAssetId: string | undefined,
   stabilityMode: string | undefined
 ): Promise<string> {
+  // Approved voice take exists — serve it verbatim. NEVER re-synthesize: the operator
+  // approved a specific ElevenLabs v3 render in the Voice step, and v3 is non-deterministic,
+  // so a fresh synth would drift. HeyGen must lip-sync to exactly the approved audio. The take
+  // asset is already publicly served, so return its raw URL (nothing re-hosted or overwritten).
+  if (!audioAssetId && (prod.voiceTakeAssetIdV3 || prod.voiceTakeAssetIdV2)) {
+    const takeId = (prod.voiceTakeAssetIdV3 ?? prod.voiceTakeAssetIdV2)!;
+    const [take] = await db.select().from(tables.assets).where(eq(tables.assets.id, takeId));
+    if (take?.driveFileId) return `${PUBLIC_API_BASE}/assets/${take.id}/raw`;
+  }
+
   let bytes: Buffer;
   if (audioAssetId) {
     const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, audioAssetId));
