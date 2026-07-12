@@ -197,6 +197,7 @@ export const videos = pgTable('videos', {
   voiceId: text('voice_id').notNull().default(''),
   inputText: text('input_text').notNull().default(''),
   title: text('title'),
+  label: text('label'), // operator-set segment label used for downloaded filenames
   brand: text('brand'),
   videoUrl: text('video_url'),
   thumbnailUrl: text('thumbnail_url'),

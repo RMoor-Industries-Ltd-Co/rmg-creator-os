@@ -31,9 +31,20 @@ export interface VideoRow {
   driveLink: string | null;
   source: string;
   approved: boolean;
+  label?: string | null;
   config: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Clip {
+  id: string;
+  source: string;
+  kind: string;
+  label: string | null;
+  driveLink: string | null;
+  hasBytes: boolean;
+  downloadUrl: string;
 }
 
 export interface GenerateConfig {
@@ -214,6 +225,23 @@ export const productions = {
   generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
+  clips: (id: string) => req<Clip[]>(`/productions/${id}/clips`),
+  videoRawUrl: (videoId: string) => `${API}/videos/${videoId}/raw`,
+  setVideoLabel: (videoId: string, label: string) =>
+    req<VideoRow>(`/videos/${videoId}/label`, { method: 'PATCH', body: JSON.stringify({ label }) }),
+  async uploadFinalCut(id: string, file: File): Promise<{ driveUrl?: string }> {
+    startLoad();
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const res = await fetch(`${API}/productions/${id}/final-cut`, { method: 'POST', body: form });
+      const json = (await res.json().catch(() => ({}))) as { driveUrl?: string; error?: string };
+      if (!res.ok) throw new Error(json.error ?? `final-cut upload failed (${res.status})`);
+      return json;
+    } finally {
+      endLoad();
+    }
+  },
   saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
     req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
   higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string }) =>

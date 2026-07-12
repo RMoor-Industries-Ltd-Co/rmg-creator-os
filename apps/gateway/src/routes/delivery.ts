@@ -193,6 +193,23 @@ export function registerDeliveryRoutes(app: FastifyInstance, db: Database, drive
 
     const saved = await drive.upload({ name, bytes, mimeType: file.mimetype, folderId: ATELIER_FINAL_FOLDER });
 
+    // Surface the uploaded cut in Final Cut like an assembled one (source 'final').
+    await db.insert(tables.videos).values({
+      id: globalThis.crypto.randomUUID(),
+      productionId: prod.id,
+      heygenVideoId: `upload:${saved.id}`,
+      status: 'completed',
+      avatarId: '',
+      source: 'final',
+      label: 'Final cut (uploaded)',
+      title: prod.title ?? null,
+      brand: prod.brand,
+      driveFileId: saved.id,
+      driveLink: saved.webViewLink ?? null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
+
     // Update ad_index if code exists
     if (prod.adIndexCode) {
       await db.update(tables.adIndex).set({ finalDriveId: saved.id }).where(eq(tables.adIndex.code, prod.adIndexCode));

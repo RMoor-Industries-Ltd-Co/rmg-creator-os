@@ -1344,16 +1344,67 @@ app.post<{
 // Stream a stored video's bytes from Drive (custom renders live only in Drive).
 app.get<{ Params: { id: string } }>('/videos/:id/raw', async (request, reply) => {
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
-  if (!row || !row.driveFileId) return reply.code(404).send({ error: 'video not found' });
-  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  // Named download so offsite editing (CapCut/Descript) gets meaningful filenames. Serve the
+  // Drive copy when present, else proxy the provider URL (higgsfield/stock only carry videoUrl).
+  const fname = `${(row.label || row.source || 'clip').replace(/[^\w.-]+/g, '_')}-${row.id.slice(0, 8)}.mp4`;
   try {
-    const { bytes, mimeType } = await drive.download(row.driveFileId);
-    reply.header('Content-Type', mimeType || 'video/mp4');
+    let bytes: Buffer | null = null;
+    let mimeType = 'video/mp4';
+    if (row.driveFileId && drive) {
+      const dl = await drive.download(row.driveFileId);
+      bytes = dl.bytes;
+      mimeType = dl.mimeType || mimeType;
+    } else if (row.videoUrl && /^https?:/.test(row.videoUrl)) {
+      const res = await fetch(row.videoUrl);
+      if (res.ok) bytes = Buffer.from(await res.arrayBuffer());
+    }
+    if (!bytes) return reply.code(404).send({ error: 'video bytes unavailable' });
+    reply.header('Content-Type', mimeType);
+    reply.header('Content-Disposition', `attachment; filename="${fname}"`);
     reply.header('Cache-Control', 'private, max-age=3600');
     return reply.send(bytes);
   } catch (err) {
-    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
+    return reply.code(502).send({ error: `video: ${(err as Error).message}` });
   }
+});
+
+// Set an operator label on a clip (used to name its download for offsite editing).
+app.patch<{ Params: { id: string }; Body: { label?: string } }>('/videos/:id/label', async (request, reply) => {
+  const label = (request.body?.label ?? '').toString().slice(0, 120);
+  const [row] = await db
+    .update(tables.videos)
+    .set({ label: label || null, updatedAt: new Date() })
+    .where(eq(tables.videos.id, request.params.id))
+    .returning();
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  return row;
+});
+
+// Every generated clip for a production (all sources, not collapsed) — the download-all source.
+app.get<{ Params: { id: string } }>('/productions/:id/clips', async (request) => {
+  const rows = await db
+    .select()
+    .from(tables.videos)
+    .where(eq(tables.videos.productionId, request.params.id))
+    .orderBy(desc(tables.videos.createdAt));
+  const KIND: Record<string, string> = {
+    heygen: 'A-Roll',
+    higgsfield: 'Scene',
+    stock: 'Stock',
+    custom: 'Custom'
+  };
+  return rows
+    .filter((v) => v.source !== 'final' && v.status === 'completed')
+    .map((v) => ({
+      id: v.id,
+      source: v.source,
+      kind: KIND[v.source] ?? v.source,
+      label: v.label ?? null,
+      driveLink: v.driveLink ?? null,
+      hasBytes: Boolean(v.driveFileId || v.videoUrl),
+      downloadUrl: `${PUBLIC_API_BASE}/videos/${v.id}/raw`
+    }));
 });
 
 // Render the brand voice (directed if available) or read an uploaded voiceover,

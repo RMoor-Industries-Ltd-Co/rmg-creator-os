@@ -127,6 +127,13 @@
       "when": 1783392560593,
       "tag": "0017_characters",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783478960593,
+      "tag": "0018_video_label",
+      "breakpoints": true
     }
   ]
 }
