@@ -997,7 +997,10 @@ app.post<{
   const client = withHiggs(reply);
   if (!client) return reply;
   const { prompt, model, sourceAssetIds, sceneId, characterId, characterIds } = request.body ?? {};
-  if (!prompt) return reply.code(400).send({ error: 'prompt is required' });
+  // Image-only models generate from reference images with no prompt, so require prompt OR sources.
+  if (!prompt && !(sourceAssetIds && sourceAssetIds.length)) {
+    return reply.code(400).send({ error: 'a prompt or a source image is required' });
+  }
 
   const MAX_SOURCE_IMAGES = 4;
   const ids = (sourceAssetIds ?? []).slice(0, MAX_SOURCE_IMAGES);
@@ -1021,7 +1024,7 @@ app.post<{
   }
 
   let soulId: string | undefined;
-  let effectivePrompt = prompt;
+  let effectivePrompt = prompt ?? '';
   let effectiveModel = model ?? undefined;
   let label: string | null = null;
 
@@ -1045,7 +1048,8 @@ app.post<{
   } else if (chars.length === 1) {
     const c = chars[0];
     soulId = c.soulId ?? undefined;
-    effectiveModel = model ?? c.soulModel;
+    // A Soul only works with a Soul-capable model, so a bound Soul overrides the picked model.
+    effectiveModel = soulId ? c.soulModel : (model ?? c.soulModel);
     label = `${c.name} · Scene`;
   }
   if (!effectiveModel) {

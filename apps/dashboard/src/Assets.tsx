@@ -319,7 +319,7 @@ function CharacterPanel({ p }: { p: Production }) {
     setBusy(true);
     setErr(null);
     try {
-      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId, soulModel, elementId: elementId.trim() || undefined });
+      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId: soulId || undefined, soulModel, elementId: elementId.trim() || undefined });
       setList((l) => (l ? [c, ...l] : [c]));
       const next = roster.includes(c.id) ? roster : [...roster, c.id];
       setRoster(next);
