@@ -1013,7 +1013,6 @@ app.post<{
   //  • two+ characters → "two-in-a-frame" via reference Elements: a Soul is one identity per
   //    generation, so each character's Element is injected as a <<<element_id>>> placeholder in
   //    the prompt and rendered with an element-capable model (Nano Banana / Seedream / …).
-  const ELEMENT_MODELS = new Set(['nano_banana_2', 'nano_banana_flash', 'gpt_image_2', 'seedream_v4_5', 'seedream_v5_lite', 'cinematic_studio_2_5']);
   const idList = ((characterIds && characterIds.length ? characterIds : (characterId ? [characterId] : (row.characterId ? [row.characterId] : []))) ?? []).filter(Boolean);
   const chars: (typeof tables.characters.$inferSelect)[] = [];
   for (const cid of idList) {
@@ -1036,7 +1035,11 @@ app.post<{
       const re = new RegExp(`\\b${c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
       effectivePrompt = re.test(effectivePrompt) ? effectivePrompt.replace(re, ph) : `${effectivePrompt} with ${ph}`;
     }
-    if (!effectiveModel || !ELEMENT_MODELS.has(effectiveModel)) effectiveModel = 'nano_banana_2';
+    // Two-in-a-frame requires an element-capable model. Trust the operator's explicit pick
+    // (the CLI's model ids are the source of truth); don't invent one that may not exist.
+    if (!effectiveModel) {
+      return reply.code(400).send({ error: 'select an element-capable model (Nano Banana / Seedream / GPT Image / Cinema Studio) for a two-in-a-frame shot' });
+    }
     soulId = undefined; // elements ride in the prompt, not a soul
     label = `${withEl.map((c) => c.name).join(' + ')} · Scene`;
   } else if (chars.length === 1) {
