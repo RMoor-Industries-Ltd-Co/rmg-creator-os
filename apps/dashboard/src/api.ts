@@ -246,7 +246,7 @@ export const productions = {
   },
   saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
     req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
-  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string }) =>
+  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string; characterIds?: string[] }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   bindCharacter: (id: string, characterId: string | null) =>
     req<{ ok: true }>(`/productions/${id}/character`, { method: 'POST', body: JSON.stringify({ characterId }) }),
@@ -415,6 +415,12 @@ export interface HiggsSoul {
   status?: string;
 }
 
+export interface HiggsElement {
+  elementId: string;
+  name?: string;
+  category?: string;
+}
+
 /** A reusable Soul-backed Character bound to a production's Assets stage. */
 export interface Character {
   id: string;
@@ -422,6 +428,7 @@ export interface Character {
   name: string;
   soulId: string | null;
   soulModel: string;
+  elementId: string | null;
   portraitAssetId: string | null;
   referenceAssetIds: string[];
   status: string;
@@ -438,11 +445,16 @@ export const characters = {
     brand: string;
     soulId?: string;
     soulModel?: string;
+    elementId?: string;
     portraitAssetId?: string;
     referenceAssetIds?: string[];
   }) => req<Character>('/characters', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: { name?: string; soulId?: string | null; soulModel?: string; elementId?: string | null; portraitAssetId?: string | null }) =>
+    req<Character>(`/characters/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
   // Trained Higgsfield Souls available on the authenticated account.
-  souls: () => req<HiggsSoul[]>('/higgsfield/souls')
+  souls: () => req<HiggsSoul[]>('/higgsfield/souls'),
+  // Reference elements (for two-in-a-frame multi-subject shots).
+  elements: () => req<HiggsElement[]>('/higgsfield/elements')
 };
 
 export interface Post {

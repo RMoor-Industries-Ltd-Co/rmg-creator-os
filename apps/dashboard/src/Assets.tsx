@@ -289,6 +289,7 @@ function CharacterPanel({ p }: { p: Production }) {
   const [name, setName] = useState('');
   const [soulId, setSoulId] = useState('');
   const [soulModel, setSoulModel] = useState('soul_2');
+  const [elementId, setElementId] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -314,11 +315,11 @@ function CharacterPanel({ p }: { p: Production }) {
   }
 
   async function register() {
-    if (!name.trim() || !soulId) return;
+    if (!name.trim() || (!soulId && !elementId.trim())) return;
     setBusy(true);
     setErr(null);
     try {
-      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId, soulModel });
+      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId, soulModel, elementId: elementId.trim() || undefined });
       setList((l) => (l ? [c, ...l] : [c]));
       const next = roster.includes(c.id) ? roster : [...roster, c.id];
       setRoster(next);
@@ -326,6 +327,7 @@ function CharacterPanel({ p }: { p: Production }) {
       setRegistering(false);
       setName('');
       setSoulId('');
+      setElementId('');
     } catch (e: unknown) {
       setErr(String(e));
     } finally {
@@ -384,8 +386,13 @@ function CharacterPanel({ p }: { p: Production }) {
             <option value="soul_2">Soul 2.0</option>
             <option value="soul_cinema_studio">Soul Cinema</option>
           </select>
+          <input
+            placeholder="Reference element id (optional — for two-in-a-frame)"
+            value={elementId}
+            onChange={(e) => setElementId(e.target.value)}
+          />
           <div className="row-actions">
-            <button disabled={busy || !name.trim() || !soulId} onClick={register}>
+            <button disabled={busy || !name.trim() || (!soulId && !elementId.trim())} onClick={register}>
               {busy ? 'Saving…' : 'Register & bind'}
             </button>
             <button onClick={() => setRegistering(false)}>Cancel</button>

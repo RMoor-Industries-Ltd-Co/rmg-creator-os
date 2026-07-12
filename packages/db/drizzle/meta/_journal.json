@@ -148,6 +148,13 @@
       "when": 1783651760593,
       "tag": "0020_delivery_checklist",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783738160593,
+      "tag": "0021_character_element",
+      "breakpoints": true
     }
   ]
 }

@@ -33,12 +33,20 @@ export interface HiggsSoul {
   status?: string; // ready | training | failed | ...
 }
 
+export interface HiggsElement {
+  elementId: string;
+  name?: string;
+  category?: string; // character | environment | prop
+}
+
 export interface HiggsfieldClient {
   account(): Promise<{ email?: string; credits?: number; plan?: string }>;
   listModels(type?: 'image' | 'video'): Promise<HiggsModel[]>;
   getModelSchema(model: string): Promise<HiggsModelSchema>;
   // Trained Soul 2.0 identities (soul_id) available on the authenticated account.
   listSouls(): Promise<HiggsSoul[]>;
+  // Reference elements (reusable character/prop images) — embedded as <<<id>>> in prompts.
+  listElements(): Promise<HiggsElement[]>;
   // `soulId` conditions generation on a trained Soul (Soul-capable models only) for
   // cross-scene character consistency; `imagePaths` are loose per-shot reference images.
   createJob(opts: { model: string; prompt?: string; imagePaths?: string[]; soulId?: string }): Promise<{ jobId: string }>;
@@ -149,6 +157,20 @@ export function createHiggsfieldClient(bin = 'higgsfield'): HiggsfieldClient {
           status: it.status ?? it.state
         }))
         .filter((s: HiggsSoul) => Boolean(s.soulId)) as HiggsSoul[];
+    },
+
+    async listElements() {
+      // `reference-element list --json` shape varies (bare array vs {elements|data|items:[...]}).
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const d: any = await run(['reference-element', 'list']);
+      const items: any[] = Array.isArray(d) ? d : d.elements ?? d.data ?? d.items ?? [];
+      return items
+        .map((it) => ({
+          elementId: it.element_id ?? it.id ?? it.elementId,
+          name: it.name ?? it.display_name,
+          category: it.category
+        }))
+        .filter((e: HiggsElement) => Boolean(e.elementId)) as HiggsElement[];
     },
 
     async createJob({ model, prompt, imagePaths, soulId }) {

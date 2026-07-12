@@ -119,6 +119,7 @@ export const characters = pgTable('characters', {
   name: text('name').notNull(),
   soulId: text('soul_id'), // Higgsfield Soul 2.0 id (soul_id); null until a Soul is registered
   soulModel: text('soul_model').notNull().default('soul_2'), // soul_2 | soul_cinema_studio
+  elementId: text('element_id'), // Higgsfield reference-element id — enables multi-subject (two-in-a-frame) shots
   portraitAssetId: text('portrait_asset_id'), // assets.id of the Soul-rendered A-Roll still
   referenceAssetIds: jsonb('reference_asset_ids').$type<string[]>().notNull().default([]),
   status: text('status').notNull().default('ready'), // ready | training | failed

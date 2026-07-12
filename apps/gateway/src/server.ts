@@ -992,11 +992,11 @@ app.patch<{
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string; characterIds?: string[] };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetIds, sceneId, characterId } = request.body ?? {};
+  const { prompt, model, sourceAssetIds, sceneId, characterId, characterIds } = request.body ?? {};
   if (!prompt) return reply.code(400).send({ error: 'prompt is required' });
 
   const MAX_SOURCE_IMAGES = 4;
@@ -1008,19 +1008,45 @@ app.post<{
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
-  // If a Character (Higgsfield Soul) is bound to this production, condition generation on its
-  // soul_id and default to its Soul-capable model — this is what keeps the character consistent
-  // across every scene (B-Roll) it appears in, instead of drifting loose reference images.
-  let soulId: string | undefined;
-  let character: typeof tables.characters.$inferSelect | undefined;
-  const effectiveCharacterId = characterId ?? row.characterId; // per-segment override, else production default
-  if (effectiveCharacterId) {
-    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, effectiveCharacterId));
-    soulId = character?.soulId ?? undefined;
+  // Resolve the character(s) for this shot.
+  //  • one character  → condition on its Soul (single-identity consistency, soul model).
+  //  • two+ characters → "two-in-a-frame" via reference Elements: a Soul is one identity per
+  //    generation, so each character's Element is injected as a <<<element_id>>> placeholder in
+  //    the prompt and rendered with an element-capable model (Nano Banana / Seedream / …).
+  const ELEMENT_MODELS = new Set(['nano_banana_2', 'nano_banana_flash', 'gpt_image_2', 'seedream_v4_5', 'seedream_v5_lite', 'cinematic_studio_2_5']);
+  const idList = ((characterIds && characterIds.length ? characterIds : (characterId ? [characterId] : (row.characterId ? [row.characterId] : []))) ?? []).filter(Boolean);
+  const chars: (typeof tables.characters.$inferSelect)[] = [];
+  for (const cid of idList) {
+    const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, cid));
+    if (c) chars.push(c);
   }
-  const effectiveModel = model ?? character?.soulModel;
+
+  let soulId: string | undefined;
+  let effectivePrompt = prompt;
+  let effectiveModel = model ?? undefined;
+  let label: string | null = null;
+
+  if (chars.length >= 2) {
+    const withEl = chars.filter((c) => c.elementId);
+    if (withEl.length < 2) {
+      return reply.code(400).send({ error: 'two-in-a-frame needs each selected character to have a Higgsfield reference element' });
+    }
+    for (const c of withEl) {
+      const ph = `<<<${c.elementId}>>>`;
+      const re = new RegExp(`\\b${c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      effectivePrompt = re.test(effectivePrompt) ? effectivePrompt.replace(re, ph) : `${effectivePrompt} with ${ph}`;
+    }
+    if (!effectiveModel || !ELEMENT_MODELS.has(effectiveModel)) effectiveModel = 'nano_banana_2';
+    soulId = undefined; // elements ride in the prompt, not a soul
+    label = `${withEl.map((c) => c.name).join(' + ')} · Scene`;
+  } else if (chars.length === 1) {
+    const c = chars[0];
+    soulId = c.soulId ?? undefined;
+    effectiveModel = model ?? c.soulModel;
+    label = `${c.name} · Scene`;
+  }
   if (!effectiveModel) {
-    return reply.code(400).send({ error: 'model is required (or bind a Character with a soul model)' });
+    return reply.code(400).send({ error: 'model is required (or bind a Character with a soul/element model)' });
   }
 
   // Pull each source image down to a temp file.
@@ -1043,7 +1069,7 @@ app.post<{
   }
 
   try {
-    const { jobId } = await client.createJob({ model: effectiveModel, prompt, imagePaths: imagePaths.length ? imagePaths : undefined, soulId });
+    const { jobId } = await client.createJob({ model: effectiveModel, prompt: effectivePrompt, imagePaths: imagePaths.length ? imagePaths : undefined, soulId });
     const now = new Date();
     const [video] = await db
       .insert(tables.videos)
@@ -1054,11 +1080,11 @@ app.post<{
         status: 'processing',
         source: 'higgsfield',
         avatarId: '',
-        inputText: prompt.slice(0, 2000),
+        inputText: effectivePrompt.slice(0, 2000),
         title: row.title ?? null,
-        label: character ? `${character.name} · Scene` : null,
+        label,
         brand: row.brand,
-        config: { model: effectiveModel, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterId: effectiveCharacterId ?? null },
+        config: { model: effectiveModel, prompt: effectivePrompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterIds: idList },
         createdAt: now,
         updatedAt: now
       })
@@ -1075,6 +1101,16 @@ app.get('/higgsfield/souls', async (_request, reply) => {
   if (!client) return reply;
   try {
     return await client.listSouls();
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+app.get('/higgsfield/elements', async (_request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.listElements();
   } catch (err) {
     return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
   }
@@ -1104,11 +1140,12 @@ app.post<{
     brand?: string;
     soulId?: string;
     soulModel?: string;
+    elementId?: string;
     portraitAssetId?: string;
     referenceAssetIds?: string[];
   };
 }>('/characters', async (request, reply) => {
-  const { name, brand, soulId, soulModel, portraitAssetId, referenceAssetIds } = request.body ?? {};
+  const { name, brand, soulId, soulModel, elementId, portraitAssetId, referenceAssetIds } = request.body ?? {};
   if (!name || !brand) return reply.code(400).send({ error: 'name and brand are required' });
   const now = new Date();
   const [row] = await db
@@ -1119,6 +1156,7 @@ app.post<{
       name,
       soulId: soulId ?? null,
       soulModel: soulModel ?? 'soul_2',
+      elementId: elementId ?? null,
       portraitAssetId: portraitAssetId ?? null,
       referenceAssetIds: referenceAssetIds ?? [],
       status: 'ready',
@@ -1127,6 +1165,23 @@ app.post<{
     })
     .returning();
   return reply.code(201).send(row);
+});
+
+// Update a character (attach/replace a Soul, an Element, or its portrait).
+app.patch<{
+  Params: { id: string };
+  Body: { name?: string; soulId?: string | null; soulModel?: string; elementId?: string | null; portraitAssetId?: string | null };
+}>('/characters/:id', async (request, reply) => {
+  const b = request.body ?? {};
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (b.name !== undefined) patch.name = b.name;
+  if (b.soulId !== undefined) patch.soulId = b.soulId;
+  if (b.soulModel !== undefined) patch.soulModel = b.soulModel;
+  if (b.elementId !== undefined) patch.elementId = b.elementId;
+  if (b.portraitAssetId !== undefined) patch.portraitAssetId = b.portraitAssetId;
+  const [row] = await db.update(tables.characters).set(patch).where(eq(tables.characters.id, request.params.id)).returning();
+  if (!row) return reply.code(404).send({ error: 'character not found' });
+  return row;
 });
 
 // Bind (or clear, with characterId: null) the Character used for a production's Assets stage.

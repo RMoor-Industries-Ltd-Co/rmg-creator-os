@@ -71,7 +71,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [activeIdx, setActiveIdx] = useState(0);
   const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
   const [roster, setRoster] = useState<Character[]>([]);
-  const [charId, setCharId] = useState<string>('');
+  const [charIds, setCharIds] = useState<string[]>([]);
   const polls = useRef<Record<string, number>>({});
   const saveTimer = useRef<number | null>(null);
 
@@ -177,7 +177,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
       const ids = p.characterIds ?? (p.characterId ? [p.characterId] : []);
       const cast = ids.length ? cs.filter((c) => ids.includes(c.id)) : cs;
       setRoster(cast);
-      setCharId((cur) => cur || p.characterId || cast[0]?.id || '');
+      setCharIds((cur) => (cur.length ? cur : p.characterId ? [p.characterId] : cast[0] ? [cast[0].id] : []));
     }).catch(() => setRoster([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.id]);
@@ -192,7 +192,7 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         model,
         sourceAssetIds: sourceAssetIds.length ? sourceAssetIds : undefined,
         sceneId: activeScene.id,
-        characterId: charId || undefined
+        characterIds: charIds.length ? charIds : undefined
       });
       setTakes((rows) => [v, ...rows]);
       watch(v.id);
@@ -348,14 +348,28 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
 
       {roster.length > 0 && (
         <>
-          <label className="vd-label">Character (identity for this scene)</label>
+          <label className="vd-label">
+            Characters in this scene <span className="vd-label-hint"> — pick 2+ for a two-in-a-frame shot</span>
+          </label>
           <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
             {roster.map((c) => (
-              <button key={c.id} type="button" className={charId === c.id ? 'on' : ''} onClick={() => setCharId(c.id)} title={c.soulId ?? 'no soul'}>
-                {c.name}
+              <button
+                key={c.id}
+                type="button"
+                className={charIds.includes(c.id) ? 'on' : ''}
+                onClick={() => setCharIds((s) => (s.includes(c.id) ? s.filter((x) => x !== c.id) : [...s, c.id]))}
+                title={c.elementId ? `element ${c.elementId}` : c.soulId ? `soul ${c.soulId}` : 'no soul / element'}
+              >
+                {charIds.includes(c.id) ? '✓ ' : ''}{c.name}
               </button>
             ))}
           </div>
+          {charIds.length >= 2 && (
+            <p className="muted hint">
+              Two-in-a-frame: each selected character needs a Higgsfield reference element (set in Assets);
+              an element-capable model (Nano Banana / Seedream) is used automatically.
+            </p>
+          )}
         </>
       )}
 
