@@ -141,6 +141,13 @@
       "when": 1783565360593,
       "tag": "0019_character_roster",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783651760593,
+      "tag": "0020_delivery_checklist",
+      "breakpoints": true
     }
   ]
 }

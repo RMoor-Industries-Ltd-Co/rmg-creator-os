@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { assets, poster, type Post as PostRow, type PostizIntegration, type Production } from './api';
+import { assets, poster, productions, type Post as PostRow, type PostizIntegration, type Production } from './api';
 
 const PLATFORMS = [
   { key: 'tiktok', label: 'TikTok' },
@@ -32,6 +32,16 @@ const SWITCHES: Record<string, Array<{ key: string; label: string; type: 'bool' 
   linkedin: [{ key: 'visibility', label: 'Visibility', type: 'select', options: ['PUBLIC', 'CONNECTIONS'] }],
   x: [{ key: 'replySettings', label: 'Who can reply', type: 'select', options: ['everyone', 'following', 'mentioned'] }]
 };
+
+// Max caption length + max video seconds per platform (pre-post attribute checks).
+const CAPTION_LIMIT: Record<string, number> = { tiktok: 2200, instagram: 2200, x: 280, youtube: 5000, facebook: 63206, linkedin: 3000 };
+const VIDEO_MAX_SEC: Record<string, number> = { tiktok: 600, instagram: 90, x: 140, youtube: 60, facebook: 240, linkedin: 600 };
+// Manual pre-post checks the operator must confirm (can't be reliably auto-detected).
+const MANUAL_CHECKS: Array<{ key: string; label: string }> = [
+  { key: 'logoPresent', label: 'Brand logo visible in the viewport' },
+  { key: 'transitionsVerified', label: 'Transitions added / reviewed' },
+  { key: 'brandSafe', label: 'On-brand & brand-safe' }
+];
 
 interface Draft {
   title: string;
@@ -67,10 +77,55 @@ export function Post({ p }: { p: Production }) {
   const [publishMsg, setPublishMsg] = useState<string | null>(null);
   const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
   const [approvals, setApprovals] = useState<Record<string, string>>(p.deliveryApprovals ?? {});
+  const [checklist, setChecklist] = useState<Record<string, boolean>>(p.deliveryChecklist ?? {});
+  const [finalUrl, setFinalUrl] = useState<string | null>(null);
+  const [finalDuration, setFinalDuration] = useState<number | null>(null);
 
   useEffect(() => {
     poster.postizStatus().then(setPostiz).catch(() => setPostiz({ configured: false, integrations: [] }));
   }, []);
+
+  useEffect(() => {
+    productions.videos(p.id).then((vs) => {
+      const f = vs.find((v) => v.source === 'final' && v.status === 'completed');
+      setFinalUrl(f?.videoUrl ?? (f ? productions.videoRawUrl(f.id) : null));
+    }).catch(() => setFinalUrl(null));
+  }, [p.id]);
+
+  async function toggleCheck(key: string) {
+    const next = { ...checklist, [key]: !checklist[key] };
+    setChecklist(next);
+    try {
+      await productions.setChecklist(p.id, { [key]: next[key] });
+    } catch (e: unknown) {
+      setError(String(e));
+      setChecklist(checklist);
+    }
+  }
+
+  type Check = { key: string; label: string; status: 'pass' | 'warn' | 'fail'; detail?: string };
+  function computeChecks(): Check[] {
+    const platforms = active.length ? active : [tab];
+    const out: Check[] = [];
+    for (const pl of platforms) {
+      const cap = (drafts[pl]?.caption ?? '').trim();
+      const limit = CAPTION_LIMIT[pl] ?? 2200;
+      if (!cap) out.push({ key: `cap-${pl}`, label: `${pl}: caption`, status: 'fail', detail: 'empty' });
+      else if (cap.length > limit) out.push({ key: `cap-${pl}`, label: `${pl}: caption length`, status: 'fail', detail: `${cap.length}/${limit}` });
+      else out.push({ key: `cap-${pl}`, label: `${pl}: caption`, status: 'pass', detail: `${cap.length}/${limit}` });
+
+      const maxSec = VIDEO_MAX_SEC[pl];
+      if (finalDuration == null) out.push({ key: `len-${pl}`, label: `${pl}: video length`, status: 'warn', detail: finalUrl ? 'measuring…' : 'no final video' });
+      else if (maxSec && finalDuration > maxSec) out.push({ key: `len-${pl}`, label: `${pl}: video length`, status: 'fail', detail: `${Math.round(finalDuration)}s > ${maxSec}s` });
+      else out.push({ key: `len-${pl}`, label: `${pl}: video length`, status: 'pass', detail: `${Math.round(finalDuration)}s` });
+    }
+    out.push({ key: 'cover', label: 'Cover image set', status: coverDriveId ? 'pass' : 'warn', detail: coverDriveId ? undefined : 'none' });
+    out.push({ key: 'final', label: 'Final video present', status: finalUrl ? 'pass' : 'warn', detail: finalUrl ? undefined : 'upload/assemble in Final Cut' });
+    for (const m of MANUAL_CHECKS) out.push({ key: m.key, label: m.label, status: checklist[m.key] ? 'pass' : 'fail' });
+    return out;
+  }
+  const checks = computeChecks();
+  const ready = !checks.some((c) => c.status === 'fail');
 
   const brandApproved = approvals[p.brand] === 'approved';
 
@@ -236,6 +291,39 @@ export function Post({ p }: { p: Production }) {
         {!brandApproved && (
           <p className="muted hint">Approve this brand to enable publishing.</p>
         )}
+      </div>
+
+      {/* Pre-post attribute checks (My Poster validation) */}
+      <div className="prepost-checks">
+        <label className="vd-label">
+          Pre-post checks{' '}
+          <span className={`badge ${ready ? 'live' : 'err'}`}>{ready ? 'ready' : 'needs attention'}</span>
+        </label>
+        {finalUrl && (
+          <video
+            src={finalUrl}
+            style={{ display: 'none' }}
+            preload="metadata"
+            onLoadedMetadata={(e) => setFinalDuration((e.target as HTMLVideoElement).duration)}
+          />
+        )}
+        <ul className="checks">
+          {checks.map((c) => (
+            <li key={c.key} className="check-row">
+              <span className={`check-dot ${c.status}`}>{c.status === 'pass' ? '✓' : c.status === 'warn' ? '!' : '✕'}</span>
+              {MANUAL_CHECKS.some((m) => m.key === c.key) ? (
+                <label className="check-manual">
+                  <input type="checkbox" checked={!!checklist[c.key]} onChange={() => toggleCheck(c.key)} />
+                  {c.label}
+                </label>
+              ) : (
+                <span>{c.label}</span>
+              )}
+              {c.detail && <span className="muted"> · {c.detail}</span>}
+            </li>
+          ))}
+        </ul>
+        <p className="muted hint">Logo and transitions are manual confirms — auto-detection isn't reliable. Caption length &amp; video duration are checked against each active platform.</p>
       </div>
 
       <label className="vd-label">Platforms for {p.brand}</label>

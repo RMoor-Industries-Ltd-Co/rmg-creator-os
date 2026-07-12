@@ -168,6 +168,23 @@ export function registerDeliveryRoutes(app: FastifyInstance, db: Database, drive
     }
   );
 
+  // PATCH /productions/:id/checklist — set My Poster manual pre-post checks (merged).
+  app.patch<{ Params: { id: string }; Body: { checklist?: Record<string, boolean> } }>(
+    '/productions/:id/checklist',
+    async (request, reply) => {
+      const patch = request.body?.checklist ?? {};
+      const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+      if (!prod) return reply.code(404).send({ error: 'production not found' });
+      const merged = { ...((prod.deliveryChecklist ?? {}) as Record<string, boolean>), ...patch };
+      const [updated] = await db
+        .update(tables.productions)
+        .set({ deliveryChecklist: merged, updatedAt: new Date() })
+        .where(eq(tables.productions.id, request.params.id))
+        .returning();
+      return { checklist: updated.deliveryChecklist };
+    }
+  );
+
   // ── Final Cut ─────────────────────────────────────────────────────────────
 
   // POST /productions/:id/final-cut — re-upload the CapCut-edited final video

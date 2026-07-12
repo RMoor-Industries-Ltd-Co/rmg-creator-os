@@ -136,6 +136,7 @@ export interface Production {
   updatedAt: string;
   thumbnailDriveId?: string | null;
   deliveryApprovals?: Record<string, string>;
+  deliveryChecklist?: Record<string, boolean>;
   higgsfieldScenes?: Record<string, unknown>[];
   higgsfieldShortlist?: string[];
 }
@@ -251,6 +252,8 @@ export const productions = {
     req<{ ok: true }>(`/productions/${id}/character`, { method: 'POST', body: JSON.stringify({ characterId }) }),
   setCharacters: (id: string, characterIds: string[]) =>
     req<{ ok: true; characterIds: string[]; characterId: string | null }>(`/productions/${id}/characters`, { method: 'PATCH', body: JSON.stringify({ characterIds }) }),
+  setChecklist: (id: string, checklist: Record<string, boolean>) =>
+    req<{ checklist: Record<string, boolean> }>(`/productions/${id}/checklist`, { method: 'PATCH', body: JSON.stringify({ checklist }) }),
   compose: (
     id: string,
     body: {

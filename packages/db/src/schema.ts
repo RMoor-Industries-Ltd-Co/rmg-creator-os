@@ -68,6 +68,8 @@ export const productions = pgTable('productions', {
   characterIds: jsonb('character_ids').$type<string[]>().notNull().default([]),
   // My Poster approval gate (contract 06) — { [brandSlug]: 'pending' | 'approved' | 'rejected' }
   deliveryApprovals: jsonb('delivery_approvals').$type<Record<string, string>>().default({}),
+  // My Poster manual pre-post checks (logo in viewport, transitions verified, brand-safe, etc.).
+  deliveryChecklist: jsonb('delivery_checklist').$type<Record<string, boolean>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
