@@ -228,6 +228,8 @@ export const productions = {
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
   clips: (id: string) => req<Clip[]>(`/productions/${id}/clips`),
+  importClip: (id: string, body: { url: string; source?: string; label?: string }) =>
+    req<VideoRow>(`/productions/${id}/import-clip`, { method: 'POST', body: JSON.stringify(body) }),
   videoRawUrl: (videoId: string) => `${API}/videos/${videoId}/raw`,
   setVideoLabel: (videoId: string, label: string) =>
     req<VideoRow>(`/videos/${videoId}/label`, { method: 'PATCH', body: JSON.stringify({ label }) }),

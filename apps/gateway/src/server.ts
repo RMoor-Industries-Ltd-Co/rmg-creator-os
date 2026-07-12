@@ -1471,7 +1471,9 @@ app.get<{ Params: { id: string } }>('/productions/:id/clips', async (request) =>
     heygen: 'A-Roll',
     higgsfield: 'Scene',
     stock: 'Stock',
-    custom: 'Custom'
+    custom: 'Custom',
+    supercool: 'SuperCool',
+    external: 'External'
   };
   return rows
     .filter((v) => v.source !== 'final' && v.status === 'completed')
@@ -1485,6 +1487,38 @@ app.get<{ Params: { id: string } }>('/productions/:id/clips', async (request) =>
       downloadUrl: `${PUBLIC_API_BASE}/videos/${v.id}/raw`
     }));
 });
+
+// Import an externally-generated clip (SuperCool or any provider) by URL so it becomes a
+// first-class clip in the production — downloadable, labelable, and assemblable in Final Cut.
+// SuperCool is assistant/MCP-in-loop (not callable server-side), so this is how its renders enter.
+app.post<{ Params: { id: string }; Body: { url?: string; source?: string; label?: string } }>(
+  '/productions/:id/import-clip',
+  async (request, reply) => {
+    const { url, source, label } = request.body ?? {};
+    if (!url || !/^https?:\/\//.test(url)) return reply.code(400).send({ error: 'a valid http(s) url is required' });
+    const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    const now = new Date();
+    const [video] = await db
+      .insert(tables.videos)
+      .values({
+        id: crypto.randomUUID(),
+        productionId: row.id,
+        heygenVideoId: `import:${crypto.randomUUID()}`,
+        status: 'completed',
+        source: (source || 'supercool').replace(/[^a-z]/gi, '').slice(0, 20) || 'supercool',
+        avatarId: '',
+        label: label?.trim() || null,
+        title: row.title ?? null,
+        brand: row.brand,
+        videoUrl: url,
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning();
+    return reply.code(201).send(video);
+  }
+);
 
 // Render the brand voice (directed if available) or read an uploaded voiceover,
 // host it in Drive, and return a public URL HeyGen/etc. can fetch.

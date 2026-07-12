@@ -3,7 +3,7 @@ import { api, productions, type Clip, type VideoRow, type Production } from './a
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
-const LABEL: Record<string, string> = { heygen: 'A-Roll', higgsfield: 'Scene', stock: 'Stock', custom: 'Custom' };
+const LABEL: Record<string, string> = { heygen: 'A-Roll', higgsfield: 'Scene', stock: 'Stock', custom: 'Custom', supercool: 'SuperCool', external: 'External' };
 
 interface Shot {
   id: string;
@@ -29,6 +29,9 @@ export function FinalCut({ p }: { p: Production }) {
   const [clips, setClips] = useState<Clip[] | null>(null);
   const [uploadingFinal, setUploadingFinal] = useState(false);
   const finalFileRef = useRef<HTMLInputElement>(null);
+  const [importUrl, setImportUrl] = useState('');
+  const [importLabel, setImportLabel] = useState('');
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     productions.videos(p.id).then((vs) => {
@@ -143,6 +146,22 @@ export function FinalCut({ p }: { p: Production }) {
       setUploadingFinal(false);
     }
   }
+  async function importClip() {
+    if (!importUrl.trim()) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const v = await productions.importClip(p.id, { url: importUrl.trim(), source: 'supercool', label: importLabel.trim() || undefined });
+      setOrder((cur) => [...cur, { id: v.id, source: v.source, videoUrl: v.videoUrl, approved: v.approved }]);
+      productions.clips(p.id).then(setClips).catch(() => { /* optional */ });
+      setImportUrl('');
+      setImportLabel('');
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setImporting(false);
+    }
+  }
 
   return (
     <div className="stage-card">
@@ -219,6 +238,27 @@ export function FinalCut({ p }: { p: Production }) {
           <p className="muted">Everything's in Drive — pull the folder + b-roll into CapCut.</p>
         </div>
       )}
+
+      <div className="gen-row" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14, flexWrap: 'wrap' }}>
+        <input
+          className="clip-label"
+          style={{ minWidth: 220 }}
+          placeholder="SuperCool / external clip URL…"
+          value={importUrl}
+          onChange={(e) => setImportUrl(e.target.value)}
+        />
+        <input
+          className="clip-label"
+          style={{ maxWidth: 160 }}
+          placeholder="Label (optional)"
+          value={importLabel}
+          onChange={(e) => setImportLabel(e.target.value)}
+        />
+        <button className="btn ghost" onClick={importClip} disabled={importing || !importUrl.trim()}>
+          {importing ? 'Importing…' : '＋ Import clip'}
+        </button>
+        <span className="muted">Bring a SuperCool (or any external) render into this production — it becomes a downloadable, assemblable clip.</span>
+      </div>
 
       {clips && clips.length > 0 && (
         <div className="clips-panel" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
