@@ -120,6 +120,41 @@
       "when": 1783306160593,
       "tag": "0016_script_versioning",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1783392560593,
+      "tag": "0017_characters",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1783478960593,
+      "tag": "0018_video_label",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783565360593,
+      "tag": "0019_character_roster",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1783651760593,
+      "tag": "0020_delivery_checklist",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1783738160593,
+      "tag": "0021_character_element",
+      "breakpoints": true
     }
   ]
 }

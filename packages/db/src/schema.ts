@@ -62,8 +62,14 @@ export const productions = pgTable('productions', {
   brollLibrary: jsonb('broll_library').$type<Record<string, unknown>[]>().default([]),
   higgsfieldScenes: jsonb('higgsfield_scenes').$type<Record<string, unknown>[]>().notNull().default([]),
   higgsfieldShortlist: jsonb('higgsfield_shortlist').$type<string[]>().notNull().default([]),
+  // Assets stage: the reusable Character (Higgsfield Soul) bound to this production.
+  characterId: text('character_id'),
+  // Phase B: the production's character roster (Soul-backed) — the cast pickable per segment.
+  characterIds: jsonb('character_ids').$type<string[]>().notNull().default([]),
   // My Poster approval gate (contract 06) — { [brandSlug]: 'pending' | 'approved' | 'rejected' }
   deliveryApprovals: jsonb('delivery_approvals').$type<Record<string, string>>().default({}),
+  // My Poster manual pre-post checks (logo in viewport, transitions verified, brand-safe, etc.).
+  deliveryChecklist: jsonb('delivery_checklist').$type<Record<string, boolean>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
@@ -100,6 +106,25 @@ export const assets = pgTable('assets', {
   driveLink: text('drive_link'),
   status: text('status').notNull().default('stored'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull()
+});
+
+/**
+ * Reusable AI Character — a Higgsfield Soul 2.0 identity (soulId) plus a rendered portrait
+ * still. Bound to a production via productions.characterId so the same identity stays
+ * consistent across A-Roll (talking-head portrait) and B-Roll (silent Soul-conditioned scenes).
+ */
+export const characters = pgTable('characters', {
+  id: text('id').primaryKey(),
+  brand: text('brand').notNull(),
+  name: text('name').notNull(),
+  soulId: text('soul_id'), // Higgsfield Soul 2.0 id (soul_id); null until a Soul is registered
+  soulModel: text('soul_model').notNull().default('soul_2'), // soul_2 | soul_cinema_studio
+  elementId: text('element_id'), // Higgsfield reference-element id — enables multi-subject (two-in-a-frame) shots
+  portraitAssetId: text('portrait_asset_id'), // assets.id of the Soul-rendered A-Roll still
+  referenceAssetIds: jsonb('reference_asset_ids').$type<string[]>().notNull().default([]),
+  status: text('status').notNull().default('ready'), // ready | training | failed
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull()
 });
 
 /** Per-brand defaults for the My Poster cockpit (the post form's saved settings). */
@@ -177,6 +202,7 @@ export const videos = pgTable('videos', {
   voiceId: text('voice_id').notNull().default(''),
   inputText: text('input_text').notNull().default(''),
   title: text('title'),
+  label: text('label'), // operator-set segment label used for downloaded filenames
   brand: text('brand'),
   videoUrl: text('video_url'),
   thumbnailUrl: text('thumbnail_url'),

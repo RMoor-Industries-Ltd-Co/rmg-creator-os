@@ -168,6 +168,23 @@ export function registerDeliveryRoutes(app: FastifyInstance, db: Database, drive
     }
   );
 
+  // PATCH /productions/:id/checklist — set My Poster manual pre-post checks (merged).
+  app.patch<{ Params: { id: string }; Body: { checklist?: Record<string, boolean> } }>(
+    '/productions/:id/checklist',
+    async (request, reply) => {
+      const patch = request.body?.checklist ?? {};
+      const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+      if (!prod) return reply.code(404).send({ error: 'production not found' });
+      const merged = { ...((prod.deliveryChecklist ?? {}) as Record<string, boolean>), ...patch };
+      const [updated] = await db
+        .update(tables.productions)
+        .set({ deliveryChecklist: merged, updatedAt: new Date() })
+        .where(eq(tables.productions.id, request.params.id))
+        .returning();
+      return { checklist: updated.deliveryChecklist };
+    }
+  );
+
   // ── Final Cut ─────────────────────────────────────────────────────────────
 
   // POST /productions/:id/final-cut — re-upload the CapCut-edited final video
@@ -192,6 +209,23 @@ export function registerDeliveryRoutes(app: FastifyInstance, db: Database, drive
     const bytes = await file.toBuffer();
 
     const saved = await drive.upload({ name, bytes, mimeType: file.mimetype, folderId: ATELIER_FINAL_FOLDER });
+
+    // Surface the uploaded cut in Final Cut like an assembled one (source 'final').
+    await db.insert(tables.videos).values({
+      id: globalThis.crypto.randomUUID(),
+      productionId: prod.id,
+      heygenVideoId: `upload:${saved.id}`,
+      status: 'completed',
+      avatarId: '',
+      source: 'final',
+      label: 'Final cut (uploaded)',
+      title: prod.title ?? null,
+      brand: prod.brand,
+      driveFileId: saved.id,
+      driveLink: saved.webViewLink ?? null,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    });
 
     // Update ad_index if code exists
     if (prod.adIndexCode) {

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, productions, type VideoRow, type Production } from './api';
+import { api, productions, type Clip, type VideoRow, type Production } from './api';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
 const isVideoUrl = (u: string | null) => !!u && /\.(mp4|mov|webm)(\?|$)/i.test(u);
-const LABEL: Record<string, string> = { heygen: 'A-Roll', higgsfield: 'Scene', stock: 'Stock', custom: 'Custom' };
+const LABEL: Record<string, string> = { heygen: 'A-Roll', higgsfield: 'Scene', stock: 'Stock', custom: 'Custom', supercool: 'SuperCool', external: 'External' };
 
 interface Shot {
   id: string;
@@ -26,6 +26,12 @@ export function FinalCut({ p }: { p: Production }) {
   const [error, setError] = useState<string | null>(null);
   const drag = useRef<number | null>(null);
   const poll = useRef<number | null>(null);
+  const [clips, setClips] = useState<Clip[] | null>(null);
+  const [uploadingFinal, setUploadingFinal] = useState(false);
+  const finalFileRef = useRef<HTMLInputElement>(null);
+  const [importUrl, setImportUrl] = useState('');
+  const [importLabel, setImportLabel] = useState('');
+  const [importing, setImporting] = useState(false);
 
   useEffect(() => {
     productions.videos(p.id).then((vs) => {
@@ -40,6 +46,7 @@ export function FinalCut({ p }: { p: Production }) {
         if (PROCESSING.has(existing.status)) watch(existing.id);
       }
     });
+    productions.clips(p.id).then(setClips).catch(() => { /* clips optional */ });
     return () => {
       if (poll.current) window.clearInterval(poll.current);
     };
@@ -100,6 +107,59 @@ export function FinalCut({ p }: { p: Production }) {
       setError(String(e));
     } finally {
       setBusy(false);
+    }
+  }
+
+  function setLabel(id: string, label: string) {
+    setClips((cs) => (cs ? cs.map((c) => (c.id === id ? { ...c, label } : c)) : cs));
+  }
+  async function saveLabel(id: string, label: string) {
+    try {
+      await productions.setVideoLabel(id, label);
+    } catch {
+      /* label save is best-effort */
+    }
+  }
+  function downloadAll() {
+    (clips ?? []).forEach((c, i) => {
+      window.setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = productions.videoRawUrl(c.id);
+        a.download = '';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      }, i * 400);
+    });
+  }
+  async function uploadFinal(file: File) {
+    setUploadingFinal(true);
+    setError(null);
+    try {
+      await productions.uploadFinalCut(p.id, file);
+      const vs = await productions.videos(p.id);
+      const f = vs.find((v) => v.source === 'final');
+      if (f) setFinal(f);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setUploadingFinal(false);
+    }
+  }
+  async function importClip() {
+    if (!importUrl.trim()) return;
+    setImporting(true);
+    setError(null);
+    try {
+      const v = await productions.importClip(p.id, { url: importUrl.trim(), source: 'supercool', label: importLabel.trim() || undefined });
+      setOrder((cur) => [...cur, { id: v.id, source: v.source, videoUrl: v.videoUrl, approved: v.approved }]);
+      productions.clips(p.id).then(setClips).catch(() => { /* optional */ });
+      setImportUrl('');
+      setImportLabel('');
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -178,6 +238,76 @@ export function FinalCut({ p }: { p: Production }) {
           <p className="muted">Everything's in Drive — pull the folder + b-roll into CapCut.</p>
         </div>
       )}
+
+      <div className="gen-row" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14, flexWrap: 'wrap' }}>
+        <input
+          className="clip-label"
+          style={{ minWidth: 220 }}
+          placeholder="SuperCool / external clip URL…"
+          value={importUrl}
+          onChange={(e) => setImportUrl(e.target.value)}
+        />
+        <input
+          className="clip-label"
+          style={{ maxWidth: 160 }}
+          placeholder="Label (optional)"
+          value={importLabel}
+          onChange={(e) => setImportLabel(e.target.value)}
+        />
+        <button className="btn ghost" onClick={importClip} disabled={importing || !importUrl.trim()}>
+          {importing ? 'Importing…' : '＋ Import clip'}
+        </button>
+        <span className="muted">Bring a SuperCool (or any external) render into this production — it becomes a downloadable, assemblable clip.</span>
+      </div>
+
+      {clips && clips.length > 0 && (
+        <div className="clips-panel" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+          <div className="video-head">
+            <strong>Download clips</strong>
+            <span className="badge">{clips.length}</span>
+          </div>
+          <p className="muted">
+            Label each segment, then download for CapCut/Descript. Filenames use your labels.
+          </p>
+          <ul className="clip-list">
+            {clips.map((c) => (
+              <li key={c.id} className="clip-row">
+                <span className="seq-tag">{c.kind}</span>
+                <input
+                  className="clip-label"
+                  placeholder="Label this segment…"
+                  value={c.label ?? ''}
+                  onChange={(e) => setLabel(c.id, e.target.value)}
+                  onBlur={(e) => saveLabel(c.id, e.target.value)}
+                />
+                <a className="btn ghost" href={productions.videoRawUrl(c.id)} download title="Download clip">
+                  ⬇
+                </a>
+                {c.driveLink && (
+                  <a className="drive-link" href={c.driveLink} target="_blank" rel="noreferrer">Drive ↗</a>
+                )}
+              </li>
+            ))}
+          </ul>
+          <button className="btn ghost" onClick={downloadAll}>⬇ Download all</button>
+        </div>
+      )}
+
+      <div className="gen-row" style={{ marginTop: 14, borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <input
+          ref={finalFileRef}
+          type="file"
+          hidden
+          accept="video/*"
+          onChange={(e) => e.target.files?.[0] && uploadFinal(e.target.files[0])}
+        />
+        <button className="btn" onClick={() => finalFileRef.current?.click()} disabled={uploadingFinal}>
+          {uploadingFinal ? 'Uploading…' : '⬆ Upload edited final cut'}
+        </button>
+        <span className="muted">
+          Cut in CapCut/Descript, then upload here — it becomes the verified Final Cut.
+        </span>
+      </div>
 
       {final && (
         <div className="final-out">

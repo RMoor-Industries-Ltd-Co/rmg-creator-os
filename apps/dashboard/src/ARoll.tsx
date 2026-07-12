@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { api, assets, productions, type Asset, type Production, type VideoRow } from './api';
+import { api, assets, characters, productions, type Asset, type Character, type Production, type VideoRow } from './api';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown']);
 type Src = { kind: 'video' | 'asset'; id: string; url: string };
@@ -12,6 +12,8 @@ export function ARoll({ p }: { p: Production }) {
   const [stills, setStills] = useState<Src[]>([]); // cleaned stills + uploaded photos
   const [audioAssets, setAudioAssets] = useState<Asset[]>([]);
   const [src, setSrc] = useState<Src | null>(null);
+  const [roster, setRoster] = useState<Character[]>([]);
+  const [charId, setCharId] = useState<string>('');
   const [voice, setVoice] = useState<'elevenlabs' | string>('elevenlabs');
   const [portrait, setPortrait] = useState(true);
   const [prompts, setPrompts] = useState<Array<{ name: string; text: string }>>([]);
@@ -46,6 +48,12 @@ export function ARoll({ p }: { p: Production }) {
   useEffect(() => {
     load();
     productions.arollPrompts().then(setPrompts).catch(() => setPrompts([]));
+    characters.list(p.brand).then((cs) => {
+      const ids = p.characterIds ?? (p.characterId ? [p.characterId] : []);
+      const cast = ids.length ? cs.filter((c) => ids.includes(c.id)) : cs;
+      setRoster(cast);
+      setCharId((cur) => cur || p.characterId || cast[0]?.id || '');
+    }).catch(() => setRoster([]));
     const map = polls.current;
     return () => Object.values(map).forEach((t) => window.clearInterval(t));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,7 +115,8 @@ export function ARoll({ p }: { p: Production }) {
         sourceVideoId: src.kind === 'video' ? src.id : undefined,
         audioAssetId: voice === 'elevenlabs' ? undefined : voice,
         orientation: portrait ? 'portrait' : 'landscape',
-        motionPrompt: motion.trim() || undefined
+        motionPrompt: motion.trim() || undefined,
+        characterId: charId || undefined
       });
       setTakes((rows) => [v, ...rows]);
       watch(v.id);
@@ -148,6 +157,19 @@ export function ARoll({ p }: { p: Production }) {
         <span className="badge live">HeyGen Avatar IV</span>
       </div>
       <p className="muted">Pick an approved clean still, choose a motion prompt + voice, and render your standalone talking head.</p>
+
+      {roster.length > 0 && (
+        <>
+          <label className="vd-label">Character (identity for this segment)</label>
+          <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
+            {roster.map((c) => (
+              <button key={c.id} type="button" className={charId === c.id ? 'on' : ''} onClick={() => setCharId(c.id)} title={c.soulId ?? 'no soul'}>
+                {c.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       <label className="vd-label">Source still (cleaned images first)</label>
       {stills.length === 0 ? (

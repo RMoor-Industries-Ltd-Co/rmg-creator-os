@@ -881,48 +881,18 @@ app.post<{
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
-  // Prefer the emotion-directed script (v3 audio tags); fall back to plain script.
+  // Voice: prefer the operator-approved take (never overwritten); otherwise the directed
+  // script is synthesized as a fallback (both handled by hostVoiceTrack).
   const directed = Boolean(row.taggedScript);
   const text = directed ? row.taggedScript! : row.scriptText;
-  if (!text) return reply.code(400).send({ error: 'no script to generate from' });
-  const stability = directed
-    ? (stabilityMode && STABILITY[stabilityMode] != null ? STABILITY[stabilityMode] : row.stability ?? 0.5)
-    : undefined;
+  const hasTake = Boolean(row.voiceTakeAssetIdV3 || row.voiceTakeAssetIdV2);
+  if (!text && !hasTake) return reply.code(400).send({ error: 'no script or voice take to generate from' });
 
   try {
-    // 1) Render the brand voice (directed → eleven_v3 + stability).
-    const audio = await allenSpeak(text, {
-      voiceId: row.voiceId ?? undefined,
-      modelId: directed ? 'eleven_v3' : undefined,
-      stability
-    });
-    // 2) Host it (Drive AUDIO_PRODUCTION) as an asset the gateway can serve.
-    const base = (row.title || row.topic).slice(0, 40).replace(/[^\w.-]+/g, '_');
-    const { fileId, webViewLink } = await drive.uploadBuffer({
-      bytes: audio,
-      name: `${row.id.slice(0, 8)}_${base}.mp3`,
-      folderId: GDRIVE_AUDIO_FOLDER_ID,
-      mimeType: 'audio/mpeg'
-    });
-    const [audioAsset] = await db
-      .insert(tables.assets)
-      .values({
-        id: crypto.randomUUID(),
-        productionId: row.id,
-        kind: 'audio',
-        role: 'generated',
-        fileName: `${base}.mp3`,
-        mimeType: 'audio/mpeg',
-        sizeBytes: String(audio.length),
-        driveFileId: fileId,
-        driveLink: webViewLink ?? null,
-        status: 'stored',
-        createdAt: new Date()
-      })
-      .returning();
-    const audioUrl = `${PUBLIC_API_BASE}/assets/${audioAsset.id}/raw`;
+    // 1) Resolve the voice audio URL — approved take served verbatim, else synthesized fallback.
+    const audioUrl = await hostVoiceTrack(row, undefined, stabilityMode);
 
-    // 3) Lip-sync the avatar to that audio.
+    // 2) Lip-sync the avatar to that audio.
     const dim = dimension ?? { width: 720, height: 1280 };
     return await heygenHandler(reply, async () => {
       const { videoId } = await client.generateVideo({
@@ -943,7 +913,7 @@ app.post<{
           status: 'processing',
           source: 'heygen',
           avatarId,
-          inputText: text.slice(0, 2000),
+          inputText: (text ?? '').slice(0, 2000),
           title: row.title ?? null,
           brand: row.brand,
           config: { avatarId, avatarStyle, background, dimension: dim, stabilityMode },
@@ -1022,12 +992,15 @@ app.patch<{
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string; characterIds?: string[] };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetIds, sceneId } = request.body ?? {};
-  if (!prompt || !model) return reply.code(400).send({ error: 'prompt and model are required' });
+  const { prompt, model, sourceAssetIds, sceneId, characterId, characterIds } = request.body ?? {};
+  // Image-only models generate from reference images with no prompt, so require prompt OR sources.
+  if (!prompt && !(sourceAssetIds && sourceAssetIds.length)) {
+    return reply.code(400).send({ error: 'a prompt or a source image is required' });
+  }
 
   const MAX_SOURCE_IMAGES = 4;
   const ids = (sourceAssetIds ?? []).slice(0, MAX_SOURCE_IMAGES);
@@ -1037,6 +1010,51 @@ app.post<{
     .from(tables.productions)
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
+
+  // Resolve the character(s) for this shot.
+  //  • one character  → condition on its Soul (single-identity consistency, soul model).
+  //  • two+ characters → "two-in-a-frame" via reference Elements: a Soul is one identity per
+  //    generation, so each character's Element is injected as a <<<element_id>>> placeholder in
+  //    the prompt and rendered with an element-capable model (Nano Banana / Seedream / …).
+  const idList = ((characterIds && characterIds.length ? characterIds : (characterId ? [characterId] : (row.characterId ? [row.characterId] : []))) ?? []).filter(Boolean);
+  const chars: (typeof tables.characters.$inferSelect)[] = [];
+  for (const cid of idList) {
+    const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, cid));
+    if (c) chars.push(c);
+  }
+
+  let soulId: string | undefined;
+  let effectivePrompt = prompt ?? '';
+  let effectiveModel = model ?? undefined;
+  let label: string | null = null;
+
+  if (chars.length >= 2) {
+    const withEl = chars.filter((c) => c.elementId);
+    if (withEl.length < 2) {
+      return reply.code(400).send({ error: 'two-in-a-frame needs each selected character to have a Higgsfield reference element' });
+    }
+    for (const c of withEl) {
+      const ph = `<<<${c.elementId}>>>`;
+      const re = new RegExp(`\\b${c.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+      effectivePrompt = re.test(effectivePrompt) ? effectivePrompt.replace(re, ph) : `${effectivePrompt} with ${ph}`;
+    }
+    // Two-in-a-frame requires an element-capable model. Trust the operator's explicit pick
+    // (the CLI's model ids are the source of truth); don't invent one that may not exist.
+    if (!effectiveModel) {
+      return reply.code(400).send({ error: 'select an element-capable model (Nano Banana / Seedream / GPT Image / Cinema Studio) for a two-in-a-frame shot' });
+    }
+    soulId = undefined; // elements ride in the prompt, not a soul
+    label = `${withEl.map((c) => c.name).join(' + ')} · Scene`;
+  } else if (chars.length === 1) {
+    const c = chars[0];
+    soulId = c.soulId ?? undefined;
+    // A Soul only works with a Soul-capable model, so a bound Soul overrides the picked model.
+    effectiveModel = soulId ? c.soulModel : (model ?? c.soulModel);
+    label = `${c.name} · Scene`;
+  }
+  if (!effectiveModel) {
+    return reply.code(400).send({ error: 'model is required (or bind a Character with a soul/element model)' });
+  }
 
   // Pull each source image down to a temp file.
   const imagePaths: string[] = [];
@@ -1058,7 +1076,7 @@ app.post<{
   }
 
   try {
-    const { jobId } = await client.createJob({ model, prompt, imagePaths: imagePaths.length ? imagePaths : undefined });
+    const { jobId } = await client.createJob({ model: effectiveModel, prompt: effectivePrompt, imagePaths: imagePaths.length ? imagePaths : undefined, soulId });
     const now = new Date();
     const [video] = await db
       .insert(tables.videos)
@@ -1069,10 +1087,11 @@ app.post<{
         status: 'processing',
         source: 'higgsfield',
         avatarId: '',
-        inputText: prompt.slice(0, 2000),
+        inputText: effectivePrompt.slice(0, 2000),
         title: row.title ?? null,
+        label,
         brand: row.brand,
-        config: { model, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null },
+        config: { model: effectiveModel, prompt: effectivePrompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterIds: idList },
         createdAt: now,
         updatedAt: now
       })
@@ -1082,6 +1101,134 @@ app.post<{
     return reply.code(502).send({ error: `Higgsfield generate failed: ${(err as Error).message}` });
   }
 });
+
+// --- Higgsfield Souls (trained identities on the authenticated account) -------
+app.get('/higgsfield/souls', async (_request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.listSouls();
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+app.get('/higgsfield/elements', async (_request, reply) => {
+  const client = withHiggs(reply);
+  if (!client) return reply;
+  try {
+    return await client.listElements();
+  } catch (err) {
+    return reply.code(502).send({ error: `Higgsfield: ${(err as Error).message}` });
+  }
+});
+
+// --- Characters (reusable Soul-backed identities) ----------------------------
+app.get<{ Querystring: { brand?: string } }>('/characters', async (request) => {
+  const { brand } = request.query ?? {};
+  return brand
+    ? await db
+        .select()
+        .from(tables.characters)
+        .where(eq(tables.characters.brand, brand))
+        .orderBy(desc(tables.characters.createdAt))
+    : await db.select().from(tables.characters).orderBy(desc(tables.characters.createdAt));
+});
+
+app.get<{ Params: { id: string } }>('/characters/:id', async (request, reply) => {
+  const [row] = await db.select().from(tables.characters).where(eq(tables.characters.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'character not found' });
+  return row;
+});
+
+app.post<{
+  Body: {
+    name?: string;
+    brand?: string;
+    soulId?: string;
+    soulModel?: string;
+    elementId?: string;
+    portraitAssetId?: string;
+    referenceAssetIds?: string[];
+  };
+}>('/characters', async (request, reply) => {
+  const { name, brand, soulId, soulModel, elementId, portraitAssetId, referenceAssetIds } = request.body ?? {};
+  if (!name || !brand) return reply.code(400).send({ error: 'name and brand are required' });
+  const now = new Date();
+  const [row] = await db
+    .insert(tables.characters)
+    .values({
+      id: crypto.randomUUID(),
+      brand,
+      name,
+      soulId: soulId ?? null,
+      soulModel: soulModel ?? 'soul_2',
+      elementId: elementId ?? null,
+      portraitAssetId: portraitAssetId ?? null,
+      referenceAssetIds: referenceAssetIds ?? [],
+      status: 'ready',
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning();
+  return reply.code(201).send(row);
+});
+
+// Update a character (attach/replace a Soul, an Element, or its portrait).
+app.patch<{
+  Params: { id: string };
+  Body: { name?: string; soulId?: string | null; soulModel?: string; elementId?: string | null; portraitAssetId?: string | null };
+}>('/characters/:id', async (request, reply) => {
+  const b = request.body ?? {};
+  const patch: Record<string, unknown> = { updatedAt: new Date() };
+  if (b.name !== undefined) patch.name = b.name;
+  if (b.soulId !== undefined) patch.soulId = b.soulId;
+  if (b.soulModel !== undefined) patch.soulModel = b.soulModel;
+  if (b.elementId !== undefined) patch.elementId = b.elementId;
+  if (b.portraitAssetId !== undefined) patch.portraitAssetId = b.portraitAssetId;
+  const [row] = await db.update(tables.characters).set(patch).where(eq(tables.characters.id, request.params.id)).returning();
+  if (!row) return reply.code(404).send({ error: 'character not found' });
+  return row;
+});
+
+// Bind (or clear, with characterId: null) the Character used for a production's Assets stage.
+app.post<{ Params: { id: string }; Body: { characterId?: string | null } }>(
+  '/productions/:id/character',
+  async (request, reply) => {
+    const { characterId } = request.body ?? {};
+    if (characterId) {
+      const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, characterId));
+      if (!c) return reply.code(404).send({ error: 'character not found' });
+    }
+    await db
+      .update(tables.productions)
+      .set({ characterId: characterId ?? null, updatedAt: new Date() })
+      .where(eq(tables.productions.id, request.params.id));
+    return reply.send({ ok: true });
+  }
+);
+
+// Set the production's character roster (Phase B). Keeps characterId as the default —
+// sets it to the first roster member when it isn't already one of them.
+app.patch<{ Params: { id: string }; Body: { characterIds?: string[] } }>(
+  '/productions/:id/characters',
+  async (request, reply) => {
+    const ids = Array.isArray(request.body?.characterIds) ? request.body!.characterIds! : [];
+    // Validate each exists.
+    for (const cid of ids) {
+      const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, cid));
+      if (!c) return reply.code(404).send({ error: `character not found: ${cid}` });
+    }
+    const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    const primary = row.characterId && ids.includes(row.characterId) ? row.characterId : ids[0] ?? null;
+    await db
+      .update(tables.productions)
+      .set({ characterIds: ids, characterId: primary, updatedAt: new Date() })
+      .where(eq(tables.productions.id, request.params.id));
+    return reply.send({ ok: true, characterIds: ids, characterId: primary });
+  }
+);
 
 // --- Custom video (operator's own images + own voice, no avatar) -------------
 // Background-renders a slideshow with ffmpeg, then marks the row completed.
@@ -1283,17 +1430,102 @@ app.post<{
 // Stream a stored video's bytes from Drive (custom renders live only in Drive).
 app.get<{ Params: { id: string } }>('/videos/:id/raw', async (request, reply) => {
   const [row] = await db.select().from(tables.videos).where(eq(tables.videos.id, request.params.id));
-  if (!row || !row.driveFileId) return reply.code(404).send({ error: 'video not found' });
-  if (!drive) return reply.code(503).send({ error: 'Drive not configured' });
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  // Named download so offsite editing (CapCut/Descript) gets meaningful filenames. Serve the
+  // Drive copy when present, else proxy the provider URL (higgsfield/stock only carry videoUrl).
+  const fname = `${(row.label || row.source || 'clip').replace(/[^\w.-]+/g, '_')}-${row.id.slice(0, 8)}.mp4`;
   try {
-    const { bytes, mimeType } = await drive.download(row.driveFileId);
-    reply.header('Content-Type', mimeType || 'video/mp4');
+    let bytes: Buffer | null = null;
+    let mimeType = 'video/mp4';
+    if (row.driveFileId && drive) {
+      const dl = await drive.download(row.driveFileId);
+      bytes = dl.bytes;
+      mimeType = dl.mimeType || mimeType;
+    } else if (row.videoUrl && /^https?:/.test(row.videoUrl)) {
+      const res = await fetch(row.videoUrl);
+      if (res.ok) bytes = Buffer.from(await res.arrayBuffer());
+    }
+    if (!bytes) return reply.code(404).send({ error: 'video bytes unavailable' });
+    reply.header('Content-Type', mimeType);
+    reply.header('Content-Disposition', `attachment; filename="${fname}"`);
     reply.header('Cache-Control', 'private, max-age=3600');
     return reply.send(bytes);
   } catch (err) {
-    return reply.code(502).send({ error: `Drive: ${(err as Error).message}` });
+    return reply.code(502).send({ error: `video: ${(err as Error).message}` });
   }
 });
+
+// Set an operator label on a clip (used to name its download for offsite editing).
+app.patch<{ Params: { id: string }; Body: { label?: string } }>('/videos/:id/label', async (request, reply) => {
+  const label = (request.body?.label ?? '').toString().slice(0, 120);
+  const [row] = await db
+    .update(tables.videos)
+    .set({ label: label || null, updatedAt: new Date() })
+    .where(eq(tables.videos.id, request.params.id))
+    .returning();
+  if (!row) return reply.code(404).send({ error: 'video not found' });
+  return row;
+});
+
+// Every generated clip for a production (all sources, not collapsed) — the download-all source.
+app.get<{ Params: { id: string } }>('/productions/:id/clips', async (request) => {
+  const rows = await db
+    .select()
+    .from(tables.videos)
+    .where(eq(tables.videos.productionId, request.params.id))
+    .orderBy(desc(tables.videos.createdAt));
+  const KIND: Record<string, string> = {
+    heygen: 'A-Roll',
+    higgsfield: 'Scene',
+    stock: 'Stock',
+    custom: 'Custom',
+    supercool: 'SuperCool',
+    external: 'External'
+  };
+  return rows
+    .filter((v) => v.source !== 'final' && v.status === 'completed')
+    .map((v) => ({
+      id: v.id,
+      source: v.source,
+      kind: KIND[v.source] ?? v.source,
+      label: v.label ?? null,
+      driveLink: v.driveLink ?? null,
+      hasBytes: Boolean(v.driveFileId || v.videoUrl),
+      downloadUrl: `${PUBLIC_API_BASE}/videos/${v.id}/raw`
+    }));
+});
+
+// Import an externally-generated clip (SuperCool or any provider) by URL so it becomes a
+// first-class clip in the production — downloadable, labelable, and assemblable in Final Cut.
+// SuperCool is assistant/MCP-in-loop (not callable server-side), so this is how its renders enter.
+app.post<{ Params: { id: string }; Body: { url?: string; source?: string; label?: string } }>(
+  '/productions/:id/import-clip',
+  async (request, reply) => {
+    const { url, source, label } = request.body ?? {};
+    if (!url || !/^https?:\/\//.test(url)) return reply.code(400).send({ error: 'a valid http(s) url is required' });
+    const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    const now = new Date();
+    const [video] = await db
+      .insert(tables.videos)
+      .values({
+        id: crypto.randomUUID(),
+        productionId: row.id,
+        heygenVideoId: `import:${crypto.randomUUID()}`,
+        status: 'completed',
+        source: (source || 'supercool').replace(/[^a-z]/gi, '').slice(0, 20) || 'supercool',
+        avatarId: '',
+        label: label?.trim() || null,
+        title: row.title ?? null,
+        brand: row.brand,
+        videoUrl: url,
+        createdAt: now,
+        updatedAt: now
+      })
+      .returning();
+    return reply.code(201).send(video);
+  }
+);
 
 // Render the brand voice (directed if available) or read an uploaded voiceover,
 // host it in Drive, and return a public URL HeyGen/etc. can fetch.
@@ -1302,6 +1534,16 @@ async function hostVoiceTrack(
   audioAssetId: string | undefined,
   stabilityMode: string | undefined
 ): Promise<string> {
+  // Approved voice take exists — serve it verbatim. NEVER re-synthesize: the operator
+  // approved a specific ElevenLabs v3 render in the Voice step, and v3 is non-deterministic,
+  // so a fresh synth would drift. HeyGen must lip-sync to exactly the approved audio. The take
+  // asset is already publicly served, so return its raw URL (nothing re-hosted or overwritten).
+  if (!audioAssetId && (prod.voiceTakeAssetIdV3 || prod.voiceTakeAssetIdV2)) {
+    const takeId = (prod.voiceTakeAssetIdV3 ?? prod.voiceTakeAssetIdV2)!;
+    const [take] = await db.select().from(tables.assets).where(eq(tables.assets.id, takeId));
+    if (take?.driveFileId) return `${PUBLIC_API_BASE}/assets/${take.id}/raw`;
+  }
+
   let bytes: Buffer;
   if (audioAssetId) {
     const [a] = await db.select().from(tables.assets).where(eq(tables.assets.id, audioAssetId));
@@ -1634,6 +1876,7 @@ app.post<{
     orientation?: 'portrait' | 'landscape';
     stabilityMode?: string;
     motionPrompt?: string;
+    characterId?: string;
   };
 }>('/productions/:id/aroll', async (request, reply) => {
   const client = withHeyGen(reply);
@@ -1641,19 +1884,28 @@ app.post<{
   if (!drive || !GDRIVE_AUDIO_FOLDER_ID || !PUBLIC_API_BASE) {
     return reply.code(503).send({ error: 'Audio hosting not configured (Drive + GDRIVE_AUDIO_FOLDER_ID + PUBLIC_API_BASE)' });
   }
-  const { imageAssetId, sourceVideoId, audioAssetId, orientation, stabilityMode, motionPrompt } = request.body ?? {};
-  if (!imageAssetId && !sourceVideoId) {
-    return reply.code(400).send({ error: 'imageAssetId or sourceVideoId (your cleaned still) is required' });
-  }
+  const { imageAssetId, sourceVideoId, audioAssetId, orientation, stabilityMode, motionPrompt, characterId } = request.body ?? {};
 
   const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
+  // Per-segment character (Phase B): tag the take with its identity and fall back to the
+  // character's Soul-rendered portrait as the still when the operator didn't pick one.
+  let character: typeof tables.characters.$inferSelect | undefined;
+  const effectiveCharacterId = characterId ?? row.characterId;
+  if (effectiveCharacterId) {
+    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, effectiveCharacterId));
+  }
+  const stillAssetId = imageAssetId ?? (!sourceVideoId ? character?.portraitAssetId ?? undefined : undefined);
+  if (!stillAssetId && !sourceVideoId) {
+    return reply.code(400).send({ error: 'imageAssetId or sourceVideoId (a cleaned still) is required — or pick a character with a portrait' });
+  }
+
   // Source still: an uploaded image asset, or an approved cleaned still (Higgsfield video row).
   let imgBytes: Buffer | null = null;
   let imgMime = 'image/jpeg';
-  if (imageAssetId) {
-    const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, imageAssetId));
+  if (stillAssetId) {
+    const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, stillAssetId));
     if (!img?.driveFileId) return reply.code(404).send({ error: 'image asset not found' });
     imgBytes = (await drive.download(img.driveFileId)).bytes;
     imgMime = img.mimeType || 'image/jpeg';
@@ -1692,8 +1944,9 @@ app.post<{
           avatarId: '',
           inputText: (row.title || row.topic).slice(0, 200),
           title: row.title ?? null,
+          label: character ? `${character.name} · A-Roll` : null,
           brand: row.brand,
-          config: { aroll: true, imageAssetId: imageAssetId ?? sourceVideoId, motionPrompt: motionPrompt ?? null, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
+          config: { aroll: true, imageAssetId: stillAssetId ?? sourceVideoId, characterId: effectiveCharacterId ?? null, motionPrompt: motionPrompt ?? null, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
           createdAt: now,
           updatedAt: now
         })

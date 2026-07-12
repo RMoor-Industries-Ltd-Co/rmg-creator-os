@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { assets, type Asset, type LibraryFile, type Production } from './api';
+import {
+  assets,
+  characters,
+  productions,
+  type Asset,
+  type Character,
+  type HiggsSoul,
+  type LibraryFile,
+  type Production
+} from './api';
 
 export const SHORTLIST_KEY = (productionId: string) => `atelier-img-shortlist-${productionId}`;
 
@@ -123,6 +132,8 @@ export function Assets({ p }: { p: Production }) {
         <strong>{p.title || p.topic}</strong>. Stored in Drive. Images + voice feed the custom
         video in Generate; images also feed Higgsfield.
       </p>
+
+      <CharacterPanel p={p} />
 
       <div className="asset-tabs">
         <button className={tab === 'upload' ? 'active' : ''} onClick={() => setTab('upload')}>
@@ -263,6 +274,134 @@ export function Assets({ p }: { p: Production }) {
 
       {rows && rows.length === 0 && !uploading && (
         <p className="muted">No assets yet — add some above or pick from the Brand Library.</p>
+      )}
+    </div>
+  );
+}
+
+function CharacterPanel({ p }: { p: Production }) {
+  const [list, setList] = useState<Character[] | null>(null);
+  const [roster, setRoster] = useState<string[]>(p.characterIds ?? (p.characterId ? [p.characterId] : []));
+  const [err, setErr] = useState<string | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [souls, setSouls] = useState<HiggsSoul[] | null>(null);
+  const [soulsErr, setSoulsErr] = useState<string | null>(null);
+  const [name, setName] = useState('');
+  const [soulId, setSoulId] = useState('');
+  const [soulModel, setSoulModel] = useState('soul_2');
+  const [elementId, setElementId] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    characters.list(p.brand).then(setList).catch((e: unknown) => setErr(String(e)));
+  }, [p.brand]);
+
+  async function toggle(id: string) {
+    const next = roster.includes(id) ? roster.filter((x) => x !== id) : [...roster, id];
+    const prev = roster;
+    setRoster(next);
+    setErr(null);
+    try {
+      await productions.setCharacters(p.id, next);
+    } catch (e: unknown) {
+      setErr(String(e));
+      setRoster(prev); // revert on failure
+    }
+  }
+
+  function openRegister() {
+    setRegistering(true);
+    if (!souls) characters.souls().then(setSouls).catch((e: unknown) => setSoulsErr(String(e)));
+  }
+
+  async function register() {
+    if (!name.trim() || (!soulId && !elementId.trim())) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const c = await characters.create({ name: name.trim(), brand: p.brand, soulId: soulId || undefined, soulModel, elementId: elementId.trim() || undefined });
+      setList((l) => (l ? [c, ...l] : [c]));
+      const next = roster.includes(c.id) ? roster : [...roster, c.id];
+      setRoster(next);
+      await productions.setCharacters(p.id, next);
+      setRegistering(false);
+      setName('');
+      setSoulId('');
+      setElementId('');
+    } catch (e: unknown) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="character-panel">
+      <div className="asset-section-head">
+        <strong>Character</strong>
+        <span className="muted asset-section-hint">
+          Add the Higgsfield Souls in this production's cast — pick which one each A-Roll segment and scene uses
+        </span>
+      </div>
+      {err && <p className="err">{err}</p>}
+      {list && list.length > 0 && (
+        <div className="asset-tabs">
+          {list.map((c) => (
+            <button
+              key={c.id}
+              className={roster.includes(c.id) ? 'active' : ''}
+              onClick={() => toggle(c.id)}
+              title={c.soulId ? `Soul ${c.soulId} (${c.soulModel})` : 'No Soul attached'}
+            >
+              {roster.includes(c.id) ? '✓ ' : ''}
+              {c.name}
+              {c.soulId ? '' : ' (no soul)'}
+            </button>
+          ))}
+        </div>
+      )}
+      {list && list.length === 0 && !registering && (
+        <p className="muted">No characters yet for {p.brand}. Register one from a Higgsfield Soul.</p>
+      )}
+      {!registering ? (
+        <button onClick={openRegister}>+ Register a Soul character</button>
+      ) : (
+        <div className="character-register">
+          {soulsErr && <p className="err">{soulsErr}</p>}
+          <input
+            placeholder="Character name (e.g. Rahm — VLOG)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <select value={soulId} onChange={(e) => setSoulId(e.target.value)}>
+            <option value="">{souls ? 'Select a ready Soul…' : 'Loading Souls…'}</option>
+            {(souls ?? []).map((s) => (
+              <option key={s.soulId} value={s.soulId}>
+                {s.name ?? s.soulId}
+                {s.status ? ` (${s.status})` : ''}
+              </option>
+            ))}
+          </select>
+          <select value={soulModel} onChange={(e) => setSoulModel(e.target.value)}>
+            <option value="soul_2">Soul 2.0</option>
+            <option value="soul_cinema_studio">Soul Cinema</option>
+          </select>
+          <input
+            placeholder="Reference element id (optional — for two-in-a-frame)"
+            value={elementId}
+            onChange={(e) => setElementId(e.target.value)}
+          />
+          <div className="row-actions">
+            <button disabled={busy || !name.trim() || (!soulId && !elementId.trim())} onClick={register}>
+              {busy ? 'Saving…' : 'Register & bind'}
+            </button>
+            <button onClick={() => setRegistering(false)}>Cancel</button>
+          </div>
+          <p className="muted">
+            Souls are trained in Higgsfield (Soul 2.0). Pick your ready Rahm Soul — it drives the
+            A-Roll avatar portrait and keeps B-Roll scenes consistent.
+          </p>
+        </div>
       )}
     </div>
   );

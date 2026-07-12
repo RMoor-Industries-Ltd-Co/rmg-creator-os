@@ -31,9 +31,20 @@ export interface VideoRow {
   driveLink: string | null;
   source: string;
   approved: boolean;
+  label?: string | null;
   config: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Clip {
+  id: string;
+  source: string;
+  kind: string;
+  label: string | null;
+  driveLink: string | null;
+  hasBytes: boolean;
+  downloadUrl: string;
 }
 
 export interface GenerateConfig {
@@ -116,6 +127,8 @@ export interface Production {
   voiceId: string | null;
   voiceTakeAssetIdV2: string | null;
   voiceTakeAssetIdV3: string | null;
+  characterId?: string | null;
+  characterIds?: string[];
   emotionLocked: boolean;
   stage: string;
   status: string;
@@ -123,6 +136,7 @@ export interface Production {
   updatedAt: string;
   thumbnailDriveId?: string | null;
   deliveryApprovals?: Record<string, string>;
+  deliveryChecklist?: Record<string, boolean>;
   higgsfieldScenes?: Record<string, unknown>[];
   higgsfieldShortlist?: string[];
 }
@@ -213,10 +227,35 @@ export const productions = {
   generate: (id: string, body: GenerateConfig) =>
     req<VideoRow>(`/productions/${id}/generate`, { method: 'POST', body: JSON.stringify(body) }),
   videos: (id: string) => req<VideoRow[]>(`/productions/${id}/videos`),
+  clips: (id: string) => req<Clip[]>(`/productions/${id}/clips`),
+  importClip: (id: string, body: { url: string; source?: string; label?: string }) =>
+    req<VideoRow>(`/productions/${id}/import-clip`, { method: 'POST', body: JSON.stringify(body) }),
+  videoRawUrl: (videoId: string) => `${API}/videos/${videoId}/raw`,
+  setVideoLabel: (videoId: string, label: string) =>
+    req<VideoRow>(`/videos/${videoId}/label`, { method: 'PATCH', body: JSON.stringify({ label }) }),
+  async uploadFinalCut(id: string, file: File): Promise<{ driveUrl?: string }> {
+    startLoad();
+    try {
+      const form = new FormData();
+      form.append('file', file, file.name);
+      const res = await fetch(`${API}/productions/${id}/final-cut`, { method: 'POST', body: form });
+      const json = (await res.json().catch(() => ({}))) as { driveUrl?: string; error?: string };
+      if (!res.ok) throw new Error(json.error ?? `final-cut upload failed (${res.status})`);
+      return json;
+    } finally {
+      endLoad();
+    }
+  },
   saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
     req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
-  higgsfield: (id: string, body: { prompt: string; model: string; sourceAssetIds?: string[]; sceneId?: string }) =>
+  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string; characterIds?: string[] }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
+  bindCharacter: (id: string, characterId: string | null) =>
+    req<{ ok: true }>(`/productions/${id}/character`, { method: 'POST', body: JSON.stringify({ characterId }) }),
+  setCharacters: (id: string, characterIds: string[]) =>
+    req<{ ok: true; characterIds: string[]; characterId: string | null }>(`/productions/${id}/characters`, { method: 'PATCH', body: JSON.stringify({ characterIds }) }),
+  setChecklist: (id: string, checklist: Record<string, boolean>) =>
+    req<{ checklist: Record<string, boolean> }>(`/productions/${id}/checklist`, { method: 'PATCH', body: JSON.stringify({ checklist }) }),
   compose: (
     id: string,
     body: {
@@ -238,6 +277,7 @@ export const productions = {
       orientation?: 'portrait' | 'landscape';
       stabilityMode?: string;
       motionPrompt?: string;
+      characterId?: string;
     }
   ) => req<VideoRow>(`/productions/${id}/aroll`, { method: 'POST', body: JSON.stringify(body) }),
   arollPrompts: () => req<Array<{ name: string; text: string }>>('/aroll/prompts'),
@@ -369,6 +409,54 @@ export const assets = {
       throw new Error(b.error ?? `delete failed (${res.status})`);
     }
   }
+};
+
+export interface HiggsSoul {
+  soulId: string;
+  name?: string;
+  status?: string;
+}
+
+export interface HiggsElement {
+  elementId: string;
+  name?: string;
+  category?: string;
+}
+
+/** A reusable Soul-backed Character bound to a production's Assets stage. */
+export interface Character {
+  id: string;
+  brand: string;
+  name: string;
+  soulId: string | null;
+  soulModel: string;
+  elementId: string | null;
+  portraitAssetId: string | null;
+  referenceAssetIds: string[];
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const characters = {
+  list: (brand?: string) =>
+    req<Character[]>(`/characters${brand ? `?brand=${encodeURIComponent(brand)}` : ''}`),
+  get: (id: string) => req<Character>(`/characters/${id}`),
+  create: (body: {
+    name: string;
+    brand: string;
+    soulId?: string;
+    soulModel?: string;
+    elementId?: string;
+    portraitAssetId?: string;
+    referenceAssetIds?: string[];
+  }) => req<Character>('/characters', { method: 'POST', body: JSON.stringify(body) }),
+  update: (id: string, body: { name?: string; soulId?: string | null; soulModel?: string; elementId?: string | null; portraitAssetId?: string | null }) =>
+    req<Character>(`/characters/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  // Trained Higgsfield Souls available on the authenticated account.
+  souls: () => req<HiggsSoul[]>('/higgsfield/souls'),
+  // Reference elements (for two-in-a-frame multi-subject shots).
+  elements: () => req<HiggsElement[]>('/higgsfield/elements')
 };
 
 export interface Post {
