@@ -134,6 +134,13 @@
       "when": 1783478960593,
       "tag": "0018_video_label",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1783565360593,
+      "tag": "0019_character_roster",
+      "breakpoints": true
     }
   ]
 }

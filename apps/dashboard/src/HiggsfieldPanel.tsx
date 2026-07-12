@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, assets, poster, productions, type Asset, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
+import { api, assets, characters, poster, productions, type Asset, type Character, type HiggsModel, type HiggsModelSchema, type Production, type VideoRow } from './api';
 import { loadShortlist } from './Assets';
 
 const PROCESSING = new Set(['processing', 'pending', 'waiting', 'unknown', 'queued', 'in_progress']);
@@ -70,6 +70,8 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const [scenes, setScenes] = useState<Scene[]>(() => loadScenes(p.id, p.higgsfieldScenes));
   const [activeIdx, setActiveIdx] = useState(0);
   const [coverDriveId, setCoverDriveId] = useState<string | null>(p.thumbnailDriveId ?? null);
+  const [roster, setRoster] = useState<Character[]>([]);
+  const [charId, setCharId] = useState<string>('');
   const polls = useRef<Record<string, number>>({});
   const saveTimer = useRef<number | null>(null);
 
@@ -170,6 +172,16 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
   const imageOnly = schemaLoaded && modelSchema != null && !modelSchema.supportsPrompt && modelSchema.supportsImages;
   const canGenerate = imageOnly ? sourceAssetIds.length > 0 : !!activeScene.prompt.trim();
 
+  useEffect(() => {
+    characters.list(p.brand).then((cs) => {
+      const ids = p.characterIds ?? (p.characterId ? [p.characterId] : []);
+      const cast = ids.length ? cs.filter((c) => ids.includes(c.id)) : cs;
+      setRoster(cast);
+      setCharId((cur) => cur || p.characterId || cast[0]?.id || '');
+    }).catch(() => setRoster([]));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p.id]);
+
   async function generate() {
     if (!model || !canGenerate) return;
     setBusy('generate');
@@ -179,7 +191,8 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         prompt: imageOnly ? '' : activeScene.prompt.trim(),
         model,
         sourceAssetIds: sourceAssetIds.length ? sourceAssetIds : undefined,
-        sceneId: activeScene.id
+        sceneId: activeScene.id,
+        characterId: charId || undefined
       });
       setTakes((rows) => [v, ...rows]);
       watch(v.id);
@@ -332,6 +345,19 @@ export function HiggsfieldPanel({ p }: { p: Production }) {
         onChange={(e) => updateScene(activeIdx, { name: e.target.value })}
         placeholder="Scene name…"
       />
+
+      {roster.length > 0 && (
+        <>
+          <label className="vd-label">Character (identity for this scene)</label>
+          <div className="vd-segment" style={{ flexWrap: 'wrap' }}>
+            {roster.map((c) => (
+              <button key={c.id} type="button" className={charId === c.id ? 'on' : ''} onClick={() => setCharId(c.id)} title={c.soulId ?? 'no soul'}>
+                {c.name}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
 
       {/* Custom model picker */}
       <label className="vd-label">

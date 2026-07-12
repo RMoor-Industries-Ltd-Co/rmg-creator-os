@@ -128,6 +128,7 @@ export interface Production {
   voiceTakeAssetIdV2: string | null;
   voiceTakeAssetIdV3: string | null;
   characterId?: string | null;
+  characterIds?: string[];
   emotionLocked: boolean;
   stage: string;
   status: string;
@@ -244,10 +245,12 @@ export const productions = {
   },
   saveScenes: (id: string, scenes: Record<string, unknown>[], shortlist: string[]) =>
     req<{ ok: true }>(`/productions/${id}/higgsfield-scenes`, { method: 'PATCH', body: JSON.stringify({ scenes, shortlist }) }),
-  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string }) =>
+  higgsfield: (id: string, body: { prompt: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string }) =>
     req<VideoRow>(`/productions/${id}/higgsfield`, { method: 'POST', body: JSON.stringify(body) }),
   bindCharacter: (id: string, characterId: string | null) =>
     req<{ ok: true }>(`/productions/${id}/character`, { method: 'POST', body: JSON.stringify({ characterId }) }),
+  setCharacters: (id: string, characterIds: string[]) =>
+    req<{ ok: true; characterIds: string[]; characterId: string | null }>(`/productions/${id}/characters`, { method: 'PATCH', body: JSON.stringify({ characterIds }) }),
   compose: (
     id: string,
     body: {
@@ -269,6 +272,7 @@ export const productions = {
       orientation?: 'portrait' | 'landscape';
       stabilityMode?: string;
       motionPrompt?: string;
+      characterId?: string;
     }
   ) => req<VideoRow>(`/productions/${id}/aroll`, { method: 'POST', body: JSON.stringify(body) }),
   arollPrompts: () => req<Array<{ name: string; text: string }>>('/aroll/prompts'),

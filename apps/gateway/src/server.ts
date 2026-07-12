@@ -992,11 +992,11 @@ app.patch<{
 // Generate imagery for a production (optionally from an uploaded source image).
 app.post<{
   Params: { id: string };
-  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string };
+  Body: { prompt?: string; model?: string; sourceAssetIds?: string[]; sceneId?: string; characterId?: string };
 }>('/productions/:id/higgsfield', async (request, reply) => {
   const client = withHiggs(reply);
   if (!client) return reply;
-  const { prompt, model, sourceAssetIds, sceneId } = request.body ?? {};
+  const { prompt, model, sourceAssetIds, sceneId, characterId } = request.body ?? {};
   if (!prompt) return reply.code(400).send({ error: 'prompt is required' });
 
   const MAX_SOURCE_IMAGES = 4;
@@ -1013,8 +1013,9 @@ app.post<{
   // across every scene (B-Roll) it appears in, instead of drifting loose reference images.
   let soulId: string | undefined;
   let character: typeof tables.characters.$inferSelect | undefined;
-  if (row.characterId) {
-    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, row.characterId));
+  const effectiveCharacterId = characterId ?? row.characterId; // per-segment override, else production default
+  if (effectiveCharacterId) {
+    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, effectiveCharacterId));
     soulId = character?.soulId ?? undefined;
   }
   const effectiveModel = model ?? character?.soulModel;
@@ -1055,8 +1056,9 @@ app.post<{
         avatarId: '',
         inputText: prompt.slice(0, 2000),
         title: row.title ?? null,
+        label: character ? `${character.name} · Scene` : null,
         brand: row.brand,
-        config: { model: effectiveModel, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterId: row.characterId ?? null },
+        config: { model: effectiveModel, prompt, sourceAssetIds: ids, sceneId: sceneId ?? null, soulId: soulId ?? null, characterId: effectiveCharacterId ?? null },
         createdAt: now,
         updatedAt: now
       })
@@ -1141,6 +1143,28 @@ app.post<{ Params: { id: string }; Body: { characterId?: string | null } }>(
       .set({ characterId: characterId ?? null, updatedAt: new Date() })
       .where(eq(tables.productions.id, request.params.id));
     return reply.send({ ok: true });
+  }
+);
+
+// Set the production's character roster (Phase B). Keeps characterId as the default —
+// sets it to the first roster member when it isn't already one of them.
+app.patch<{ Params: { id: string }; Body: { characterIds?: string[] } }>(
+  '/productions/:id/characters',
+  async (request, reply) => {
+    const ids = Array.isArray(request.body?.characterIds) ? request.body!.characterIds! : [];
+    // Validate each exists.
+    for (const cid of ids) {
+      const [c] = await db.select().from(tables.characters).where(eq(tables.characters.id, cid));
+      if (!c) return reply.code(404).send({ error: `character not found: ${cid}` });
+    }
+    const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!row) return reply.code(404).send({ error: 'production not found' });
+    const primary = row.characterId && ids.includes(row.characterId) ? row.characterId : ids[0] ?? null;
+    await db
+      .update(tables.productions)
+      .set({ characterIds: ids, characterId: primary, updatedAt: new Date() })
+      .where(eq(tables.productions.id, request.params.id));
+    return reply.send({ ok: true, characterIds: ids, characterId: primary });
   }
 );
 
@@ -1756,6 +1780,7 @@ app.post<{
     orientation?: 'portrait' | 'landscape';
     stabilityMode?: string;
     motionPrompt?: string;
+    characterId?: string;
   };
 }>('/productions/:id/aroll', async (request, reply) => {
   const client = withHeyGen(reply);
@@ -1763,19 +1788,28 @@ app.post<{
   if (!drive || !GDRIVE_AUDIO_FOLDER_ID || !PUBLIC_API_BASE) {
     return reply.code(503).send({ error: 'Audio hosting not configured (Drive + GDRIVE_AUDIO_FOLDER_ID + PUBLIC_API_BASE)' });
   }
-  const { imageAssetId, sourceVideoId, audioAssetId, orientation, stabilityMode, motionPrompt } = request.body ?? {};
-  if (!imageAssetId && !sourceVideoId) {
-    return reply.code(400).send({ error: 'imageAssetId or sourceVideoId (your cleaned still) is required' });
-  }
+  const { imageAssetId, sourceVideoId, audioAssetId, orientation, stabilityMode, motionPrompt, characterId } = request.body ?? {};
 
   const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
 
+  // Per-segment character (Phase B): tag the take with its identity and fall back to the
+  // character's Soul-rendered portrait as the still when the operator didn't pick one.
+  let character: typeof tables.characters.$inferSelect | undefined;
+  const effectiveCharacterId = characterId ?? row.characterId;
+  if (effectiveCharacterId) {
+    [character] = await db.select().from(tables.characters).where(eq(tables.characters.id, effectiveCharacterId));
+  }
+  const stillAssetId = imageAssetId ?? (!sourceVideoId ? character?.portraitAssetId ?? undefined : undefined);
+  if (!stillAssetId && !sourceVideoId) {
+    return reply.code(400).send({ error: 'imageAssetId or sourceVideoId (a cleaned still) is required — or pick a character with a portrait' });
+  }
+
   // Source still: an uploaded image asset, or an approved cleaned still (Higgsfield video row).
   let imgBytes: Buffer | null = null;
   let imgMime = 'image/jpeg';
-  if (imageAssetId) {
-    const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, imageAssetId));
+  if (stillAssetId) {
+    const [img] = await db.select().from(tables.assets).where(eq(tables.assets.id, stillAssetId));
     if (!img?.driveFileId) return reply.code(404).send({ error: 'image asset not found' });
     imgBytes = (await drive.download(img.driveFileId)).bytes;
     imgMime = img.mimeType || 'image/jpeg';
@@ -1814,8 +1848,9 @@ app.post<{
           avatarId: '',
           inputText: (row.title || row.topic).slice(0, 200),
           title: row.title ?? null,
+          label: character ? `${character.name} · A-Roll` : null,
           brand: row.brand,
-          config: { aroll: true, imageAssetId: imageAssetId ?? sourceVideoId, motionPrompt: motionPrompt ?? null, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
+          config: { aroll: true, imageAssetId: stillAssetId ?? sourceVideoId, characterId: effectiveCharacterId ?? null, motionPrompt: motionPrompt ?? null, voice: audioAssetId ? 'upload' : 'elevenlabs', orientation: portrait ? 'portrait' : 'landscape' },
           createdAt: now,
           updatedAt: now
         })

@@ -64,6 +64,8 @@ export const productions = pgTable('productions', {
   higgsfieldShortlist: jsonb('higgsfield_shortlist').$type<string[]>().notNull().default([]),
   // Assets stage: the reusable Character (Higgsfield Soul) bound to this production.
   characterId: text('character_id'),
+  // Phase B: the production's character roster (Soul-backed) — the cast pickable per segment.
+  characterIds: jsonb('character_ids').$type<string[]>().notNull().default([]),
   // My Poster approval gate (contract 06) — { [brandSlug]: 'pending' | 'approved' | 'rejected' }
   deliveryApprovals: jsonb('delivery_approvals').$type<Record<string, string>>().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),

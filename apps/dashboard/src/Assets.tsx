@@ -281,7 +281,7 @@ export function Assets({ p }: { p: Production }) {
 
 function CharacterPanel({ p }: { p: Production }) {
   const [list, setList] = useState<Character[] | null>(null);
-  const [boundId, setBoundId] = useState<string | null>(p.characterId ?? null);
+  const [roster, setRoster] = useState<string[]>(p.characterIds ?? (p.characterId ? [p.characterId] : []));
   const [err, setErr] = useState<string | null>(null);
   const [registering, setRegistering] = useState(false);
   const [souls, setSouls] = useState<HiggsSoul[] | null>(null);
@@ -295,13 +295,16 @@ function CharacterPanel({ p }: { p: Production }) {
     characters.list(p.brand).then(setList).catch((e: unknown) => setErr(String(e)));
   }, [p.brand]);
 
-  async function bind(id: string | null) {
+  async function toggle(id: string) {
+    const next = roster.includes(id) ? roster.filter((x) => x !== id) : [...roster, id];
+    const prev = roster;
+    setRoster(next);
     setErr(null);
     try {
-      await productions.bindCharacter(p.id, id);
-      setBoundId(id);
+      await productions.setCharacters(p.id, next);
     } catch (e: unknown) {
       setErr(String(e));
+      setRoster(prev); // revert on failure
     }
   }
 
@@ -317,7 +320,9 @@ function CharacterPanel({ p }: { p: Production }) {
     try {
       const c = await characters.create({ name: name.trim(), brand: p.brand, soulId, soulModel });
       setList((l) => (l ? [c, ...l] : [c]));
-      await bind(c.id);
+      const next = roster.includes(c.id) ? roster : [...roster, c.id];
+      setRoster(next);
+      await productions.setCharacters(p.id, next);
       setRegistering(false);
       setName('');
       setSoulId('');
@@ -333,7 +338,7 @@ function CharacterPanel({ p }: { p: Production }) {
       <div className="asset-section-head">
         <strong>Character</strong>
         <span className="muted asset-section-hint">
-          Bind a Higgsfield Soul so the A-Roll portrait and B-Roll scenes stay the same person
+          Add the Higgsfield Souls in this production's cast — pick which one each A-Roll segment and scene uses
         </span>
       </div>
       {err && <p className="err">{err}</p>}
@@ -342,11 +347,11 @@ function CharacterPanel({ p }: { p: Production }) {
           {list.map((c) => (
             <button
               key={c.id}
-              className={boundId === c.id ? 'active' : ''}
-              onClick={() => bind(boundId === c.id ? null : c.id)}
+              className={roster.includes(c.id) ? 'active' : ''}
+              onClick={() => toggle(c.id)}
               title={c.soulId ? `Soul ${c.soulId} (${c.soulModel})` : 'No Soul attached'}
             >
-              {boundId === c.id ? '✓ ' : ''}
+              {roster.includes(c.id) ? '✓ ' : ''}
               {c.name}
               {c.soulId ? '' : ' (no soul)'}
             </button>
