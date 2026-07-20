@@ -35,6 +35,11 @@ Server IP: `45.33.96.135`. SSH as `root`.
   (a GitHub Actions secret) to inject everything before `docker compose up -d`.
 - **Manual restarts on the server** do NOT have Doppler available — use the
   `--env-file` approach below instead.
+- `ANTHROPIC_API_KEY` is rmg-creator-os's own dedicated key — the `ALLIE` workspace/key
+  in the "RMoor Industries Ltd Co." Anthropic Console org (login
+  `rahmind.consulting@rmoorind.com`). Not shared with any other PIAAR repo, and distinct
+  from Rahm's personal Claude.ai Max plan login. See `rmg-piaar-system/CLAUDE.md` for the
+  full per-project key mapping.
 
 ## Manual Gateway Restart (no Doppler on server)
 
