@@ -1,0 +1,9 @@
+# Pre-commit hooks — run `pre-commit install` once per clone.
+# The gitleaks hook scans staged changes and blocks the commit if it finds a
+# credential pattern, so a secret never leaves your machine. See
+# governance/policies/secrets-protection.md for the full policy.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
