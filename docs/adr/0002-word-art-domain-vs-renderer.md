@@ -1,7 +1,7 @@
 # ADR 0002 — Word Art: Master Atelier owns the domain; renderers are implementations
 
 - **Status:** Accepted (architecture; feature is Phase 0 / spec)
-- **Date:** 2026-08-24
+- **Date:** 2026-08-28
 - **Deciders:** Rahm Moore
 - **Related:** [`../architecture/01-word-art.md`](../architecture/01-word-art.md);
   canonical contract `rmg-piaar-system/contracts/29-word-art.md` (+ `contracts/word-art/`)
