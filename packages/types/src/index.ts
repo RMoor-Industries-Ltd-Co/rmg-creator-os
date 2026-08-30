@@ -147,5 +147,7 @@ export const SERVICE_IDS: ServiceId[] = [
 // See ./wordArt.js for the full set and its per-field contract mapping.
 export * from './wordArt.js';
 
-// Sprint 2 PR 2 — Gate 2 (deterministic contract validation). See ./wordArt.validate.js.
-export * from './wordArt.validate.js';
+// Sprint 2 PR 2 — Gate 2 (deterministic contract validation) deliberately does NOT re-export
+// here: it is zod-backed, and this main barrel is imported by browser consumers (e.g. the
+// dashboard) that only need the plain domain types above. Import it from the dedicated
+// subpath instead: `@rmg-creator-os/types/wordArt.validate`. See ./wordArt.validate.js.
