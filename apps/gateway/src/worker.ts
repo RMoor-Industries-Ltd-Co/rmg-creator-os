@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, sql } from '@rmg-creator-os/db';
 import { tables } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
+import { createDefaultRendererRegistry, type RendererRegistry } from '@rmg-creator-os/integrations';
 
 const WORKER_SECRET = process.env.WORKER_SECRET ?? '';
 
@@ -15,7 +16,17 @@ type WorkerClients = {
   drive: { uploadBuffer: (opts: { bytes: Buffer; name: string; folderId: string; mimeType: string }) => Promise<{ fileId: string; webViewLink?: string }> } | null;
 };
 
-async function dispatch(job: ProductionJob, clients: WorkerClients): Promise<{ resultId: string }> {
+// Formalized (capability, provider) dispatch (Sprint 1 PR 4 — see packages/integrations/src/
+// renderer.ts and docs/atelier/renderer-boundary.md). HeyGen's `aroll` path stays a direct
+// client call, unchanged — only the previously ad-hoc broll/audio/thumbnail/default stubs are
+// now routed through a Renderer (NullRenderer), which reproduces their exact prior output.
+// Exported only for the dispatch-behavior tests (apps/gateway/test/worker.test.ts) — not a
+// new public surface for other modules to call.
+export async function dispatch(
+  job: ProductionJob,
+  clients: WorkerClients,
+  renderers: RendererRegistry
+): Promise<{ resultId: string }> {
   const { capability, provider, payload } = job;
 
   if (capability === 'aroll' && provider === 'heygen') {
@@ -41,28 +52,23 @@ async function dispatch(job: ProductionJob, clients: WorkerClients): Promise<{ r
     return { resultId: videoId };
   }
 
-  if (capability === 'broll') {
-    // B-Roll jobs are dispatched to Higgsfield/SuperCool externally and tracked
-    // via the scene's take records. The worker logs the job for observability.
-    console.log(`[worker] broll job ${job.id} provider=${provider} — dispatch via external API`);
-    return { resultId: `broll-${job.id}` };
+  const renderer = renderers.resolve(capability, provider);
+  if (renderer) {
+    return renderer.render({ id: job.id, capability, provider, payload });
   }
 
-  if (capability === 'audio') {
-    console.log(`[worker] audio job ${job.id} provider=${provider}`);
-    return { resultId: `audio-${job.id}` };
-  }
-
-  if (capability === 'thumbnail') {
-    console.log(`[worker] thumbnail job ${job.id} provider=${provider}`);
-    return { resultId: `thumbnail-${job.id}` };
-  }
-
+  // Defensive fallback — createDefaultRendererRegistry() always sets a NullRenderer fallback,
+  // so this path is unreachable in practice; kept to match the prior code's total behavior.
   console.log(`[worker] dispatching job ${job.id} capability=${capability} provider=${provider}`);
   return { resultId: `stub-${job.id}` };
 }
 
-export function registerWorkerRoutes(app: FastifyInstance, db: Database, clients: WorkerClients = { heygen: null, drive: null }) {
+export function registerWorkerRoutes(
+  app: FastifyInstance,
+  db: Database,
+  clients: WorkerClients = { heygen: null, drive: null },
+  renderers: RendererRegistry = createDefaultRendererRegistry()
+) {
   // POST /worker/tick — claim and execute the next queued job.
   app.post('/worker/tick', async (request, reply) => {
     const secret = (request.headers['x-worker-secret'] as string | undefined) ?? '';
@@ -94,7 +100,7 @@ export function registerWorkerRoutes(app: FastifyInstance, db: Database, clients
       .where(eq(tables.productionJobs.id, job.id));
 
     try {
-      const { resultId } = await dispatch(job, clients);
+      const { resultId } = await dispatch(job, clients, renderers);
       await db
         .update(tables.productionJobs)
         .set({ status: 'done', resultId, completedAt: new Date() })
