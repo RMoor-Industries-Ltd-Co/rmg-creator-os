@@ -23,6 +23,26 @@ colliding with `packages/integrations`'s existing, much simpler `RenderJob`/`Ren
 (Sprint 1 PR 4) — the two live at different levels (domain vs. renderer-boundary) but share a
 workspace.
 
+**Sprint 2 PR 2** added Gate 2 (deterministic contract validation) beside those types, in
+`packages/types/src/wordArt.validate.ts` (`WordArtEventSchema`/`WordArtPlanSchema` — zod,
+same parse-not-cast pattern as `apps/gateway/src/allen.schemas.ts`'s `parseAllen`, see
+[`../atelier/ai-boundary-validation.md`](../atelier/ai-boundary-validation.md) — plus
+`validateWordArtEvent`/`validateWordArtPlan`, which layer the timing/density rules the zod
+schema alone can't express: `durationMs >= minReadableMs`, strict event ordering/non-overlap,
+and the minimum-spacing density rule between cinematic events). This validates a candidate
+`WordArtEvent`/`WordArtPlan` shape, range, and timing — it does **not** resolve `primitive`/
+`motionProfile`/`brandProfile` against a live config allow-list (no such config exists yet;
+tracked as a known limitation, not silently assumed done), and it still adds no routes, DB
+migrations, worker/dispatch wiring, renderer/registry changes, or a `wordart` capability enum.
+
+**Placement decision (approved):** the validator lives in `packages/types`, not a new
+`packages/wordart` or `packages/integrations` — this slice is deterministic validation of the
+domain types themselves, not renderer integration or full plan/scoring orchestration. Extract
+into a dedicated `packages/wordart` only once scope grows into Gate 1 density/composition
+logic, scoring formulas, config-versioned threshold tables, transcript-to-plan orchestration,
+or fixture-corpus management — i.e. domain lifecycle work that outgrows "shared vocabulary
+plus its validation."
+
 ## The one principle, in this repo's terms
 
 *AI proposes creative meaning; deterministic code owns production correctness; the boundary
