@@ -1,5 +1,12 @@
 // Thin client for the isolated ALLEN service (PIAAR/rmg-ai), reached at ALLEN_URL.
 
+import {
+  AllenDirectSchema,
+  AllenDraftSchema,
+  AllenMetadataSchema,
+  parseAllen
+} from './allen.schemas.js';
+
 const ALLEN_URL = process.env.ALLEN_URL ?? '';
 const ALLEN_API_KEY = process.env.ALLEN_API_KEY ?? '';
 
@@ -33,9 +40,9 @@ export async function allenDraft(body: {
     headers: allenHeaders(),
     body: JSON.stringify(body)
   });
-  const json = (await res.json().catch(() => ({}))) as AllenDraft & { detail?: string };
+  const json = (await res.json().catch(() => ({}))) as { detail?: string };
   if (!res.ok) throw new Error(json.detail ?? `ALLEN draft failed (${res.status})`);
-  return json;
+  return parseAllen(AllenDraftSchema, json, 'draft');
 }
 
 export interface AllenDirect {
@@ -62,9 +69,9 @@ export async function allenDirect(body: {
     headers: allenHeaders(),
     body: JSON.stringify(body)
   });
-  const json = (await res.json().catch(() => ({}))) as AllenDirect & { detail?: string };
+  const json = (await res.json().catch(() => ({}))) as { detail?: string };
   if (!res.ok) throw new Error(json.detail ?? `ALLEN direct failed (${res.status})`);
-  return json;
+  return parseAllen(AllenDirectSchema, json, 'direct');
 }
 
 export interface AllenEmotionProfile {
@@ -190,9 +197,9 @@ export async function allenMetadata(body: {
     headers: allenHeaders(),
     body: JSON.stringify(body)
   });
-  const json = (await res.json().catch(() => ({}))) as AllenMetadata & { detail?: string };
+  const json = (await res.json().catch(() => ({}))) as { detail?: string };
   if (!res.ok) throw new Error(json.detail ?? `ALLEN metadata failed (${res.status})`);
-  return json;
+  return parseAllen(AllenMetadataSchema, json, 'metadata');
 }
 
 export async function allenSpeak(
