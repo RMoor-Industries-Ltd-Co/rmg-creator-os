@@ -13,6 +13,10 @@
     "./wordArt.validate": {
       "types": "./dist/wordArt.validate.d.ts",
       "default": "./dist/wordArt.validate.js"
+    },
+    "./wordArt.compile": {
+      "types": "./dist/wordArt.compile.d.ts",
+      "default": "./dist/wordArt.compile.js"
     }
   },
   "files": ["dist"],
@@ -24,6 +28,7 @@
     "zod": "^4.5.4"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.0.0"
   }
 }

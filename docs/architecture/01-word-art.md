@@ -43,6 +43,25 @@ logic, scoring formulas, config-versioned threshold tables, transcript-to-plan o
 or fixture-corpus management — i.e. domain lifecycle work that outgrows "shared vocabulary
 plus its validation."
 
+**Sprint 2 PR 3** added the headless exercise path proving `validated WordArtEvent →
+WordArtRenderRequest → synthetic WordArtRenderResult`, in
+`packages/types/src/wordArt.compile.ts` (`compileWordArtRenderRequest`,
+`computeMotionParameters`, `buildSyntheticWordArtRenderResult`). Package-level only: proven by
+a vitest suite in `packages/types/test/wordArt.compile.test.ts`, with no worker, route, DB, or
+live renderer involved. Not exported from the main barrel — same reasoning as PR 2's
+`wordArt.validate` fix — only via `@rmg-creator-os/types/wordArt.compile`, so it never reaches
+the dashboard bundle. Deliberately not a `packages/integrations` `Renderer`: that interface's
+`RenderJob`/`RenderResult` are the simpler Sprint 1 PR 4 shapes, and forcing the richer
+domain-level request/result through them would be lossy — see the compile module's own header
+comment. `wordart` remains **out** of `productionJobCapability`, and `WordArtNullRenderer`
+remains undeferred, pending a real persisted-job/runtime route (Phase 2+).
+
+**Contract ambiguity found:** `word-art-event.md`'s schema nests `composition: {anchor,
+safeZone}` directly on the event, but the `textBox` rectangle `WordArtRenderRequest.composition`
+actually needs lives in `composition-context.md`'s richer `CompositionContext` — neither spec
+wires the two together explicitly. `compileWordArtRenderRequest` takes the resolved `textBox`
+as an explicit caller-supplied option rather than guessing at a mapping.
+
 ## The one principle, in this repo's terms
 
 *AI proposes creative meaning; deterministic code owns production correctness; the boundary
