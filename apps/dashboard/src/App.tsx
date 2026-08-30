@@ -23,6 +23,7 @@ export function App() {
   const [auth, setAuth] = useState<'loading' | 'ok' | 'login'>('loading');
   const [clientId, setClientId] = useState('');
   const [expired, setExpired] = useState(false);
+  const [authedEmail, setAuthedEmail] = useState<string | null>(null);
 
   // A session 401 from any API call (e.g. an expired cookie mid-session) routes the
   // whole app to the sign-in screen with a clear message, instead of leaving a raw
@@ -30,6 +31,7 @@ export function App() {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       setExpired(true);
+      setAuthedEmail(null);
       setAuth('login');
     });
     return () => setUnauthorizedHandler(null);
@@ -44,7 +46,13 @@ export function App() {
       .then((cfg) => {
         if (!cfg.enabled) return setAuth('ok');
         setClientId(cfg.clientId);
-        return fetch(`${API}/auth/me`).then((r) => setAuth(r.ok ? 'ok' : 'login'));
+        return fetch(`${API}/auth/me`).then((r) => {
+          if (!r.ok) return setAuth('login');
+          return r.json().then((d: { email?: string }) => {
+            setAuthedEmail(d.email ?? null);
+            setAuth('ok');
+          });
+        });
       })
       .catch(() => setAuth('ok')); // never lock the UI if the gateway is unreachable
   }, []);
@@ -72,6 +80,7 @@ export function App() {
           <h1>Master Atelier</h1>
           <p className="tagline">Content production &amp; publishing, crafted.</p>
         </div>
+        {authedEmail && <p className="muted session-indicator">Signed in as {authedEmail}</p>}
       </header>
 
       <nav className="tabs">
