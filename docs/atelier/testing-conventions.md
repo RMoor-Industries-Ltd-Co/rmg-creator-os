@@ -70,6 +70,7 @@ work in later PRs.)
 
 ## CI
 
-A `pnpm test` gate is **not** wired into CI in PR 1 (kept as a pure, reversible harness
-addition). It is added to `.github/workflows/ci.yml` — after Typecheck, before Build — in the
-Sprint 1 CI-enforcement PR (PR 5), once the suite has proven itself locally.
+`pnpm test` is a required step in `.github/workflows/ci.yml`'s `validate` job — run after
+Typecheck (fail fast on logic before the slower Build) and before Build. Wired in Sprint 1 PR 5
+("CI Enforcement + Release Hygiene"), once the suite had proven itself locally across PR 1–4
+with zero flakes. `validate` now runs, in order: frozen install → typecheck → test → build.
