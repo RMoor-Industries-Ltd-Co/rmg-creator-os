@@ -10,7 +10,7 @@ declare global {
   }
 }
 
-export function Login({ clientId }: { clientId: string }) {
+export function Login({ clientId, expired = false }: { clientId: string; expired?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const errRef = useRef<HTMLParagraphElement>(null);
 
@@ -53,6 +53,7 @@ export function Login({ clientId }: { clientId: string }) {
     <main className="wrap login-gate">
       <img src="/logo-full.png" alt="Master Atelier" className="login-logo" />
       <div className="login-card">
+        {expired && <p className="notice">Your session expired. Please sign in again.</p>}
         <div ref={ref} />
         <p ref={errRef} className="err" />
         <p className="muted">Authorized accounts only · proprietary in-house ecosystem</p>

@@ -29,6 +29,14 @@ import {
 } from './postiz.js';
 import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
+  assertCookieSecret,
+  isEmailAllowed,
+  isPublicRoute,
+  NOT_ALLOWLISTED_CODE,
+  parseAllowedEmails,
+  SESSION_REQUIRED_CODE
+} from './auth.js';
+import {
   createDriveClient,
   createHeyGenClient,
   createHiggsfieldClient,
@@ -88,29 +96,23 @@ await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } }); // 50
 // --- Auth (single-user Google sign-in; env-gated, off until configured) ------
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID ?? '';
-const AUTH_ALLOWED_EMAIL = (process.env.AUTH_ALLOWED_EMAIL ?? '').toLowerCase();
+// Env-configured allowlist: comma-separated AUTH_ALLOWED_EMAILS, with the legacy
+// single-value AUTH_ALLOWED_EMAIL honored as a fallback. Emails never live in source.
+const ALLOWED_EMAILS = parseAllowedEmails(process.env.AUTH_ALLOWED_EMAILS, process.env.AUTH_ALLOWED_EMAIL);
 const COOKIE_SECRET = process.env.COOKIE_SECRET ?? 'rmg-dev-secret-change-me';
 const SESSION_COOKIE = 'rmg_sess';
+// Fail closed: production + auth-on must supply a strong, non-default COOKIE_SECRET.
+assertCookieSecret(COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
 await app.register(cookie, { secret: COOKIE_SECRET });
 
-// Routes that must stay public even when auth is on: health, the auth flow itself,
-// and the media proxies that HeyGen/SuperCool fetch by unguessable UUID.
-function isPublicRoute(method: string, url: string): boolean {
-  const path = url.split('?')[0];
-  if (method === 'OPTIONS') return true;
-  if (path === '/health' || path.startsWith('/auth/')) return true;
-  if (/^\/(assets|videos)\/[^/]+\/raw$/.test(path)) return true;
-  if (path.startsWith('/assets/drive-thumb/')) return true;
-  return false;
-}
-
+// isPublicRoute + the allowlist/cookie-secret helpers live in ./auth.ts (unit-tested).
 if (AUTH_ENABLED) {
   app.addHook('onRequest', async (request, reply) => {
     if (isPublicRoute(request.method, request.url)) return;
     const raw = request.cookies?.[SESSION_COOKIE];
     const un = raw ? request.unsignCookie(raw) : null;
-    if (!un?.valid || un.value.toLowerCase() !== AUTH_ALLOWED_EMAIL) {
-      return reply.code(401).send({ error: 'unauthorized' });
+    if (!un?.valid || !isEmailAllowed(un.value, ALLOWED_EMAILS)) {
+      return reply.code(401).send({ error: 'unauthorized', code: SESSION_REQUIRED_CODE });
     }
   });
 }
@@ -131,7 +133,7 @@ app.post<{ Body: { credential?: string } }>('/auth/google', async (request, repl
     const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string };
     if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
     if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
-    if (t.email.toLowerCase() !== AUTH_ALLOWED_EMAIL) return reply.code(403).send({ error: 'not authorized' });
+    if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
     reply.setCookie(SESSION_COOKIE, t.email.toLowerCase(), {
       signed: true,
       httpOnly: true,
@@ -149,7 +151,7 @@ app.post<{ Body: { credential?: string } }>('/auth/google', async (request, repl
 app.get('/auth/me', async (request, reply) => {
   const raw = request.cookies?.[SESSION_COOKIE];
   const un = raw ? request.unsignCookie(raw) : null;
-  if (!un?.valid) return reply.code(401).send({ error: 'unauthorized' });
+  if (!un?.valid) return reply.code(401).send({ error: 'unauthorized', code: SESSION_REQUIRED_CODE });
   return { email: un.value };
 });
 
