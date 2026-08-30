@@ -1,6 +1,12 @@
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 
 import { startLoad, endLoad } from './loading';
+import {
+  isSessionExpired,
+  notifyUnauthorized,
+  SESSION_EXPIRED_MESSAGE,
+  type ApiErrorBody
+} from './authClient';
 
 export interface HeyGenAvatar {
   avatar_id: string;
@@ -63,6 +69,12 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
     });
     const body = (await res.json().catch(() => ({}))) as unknown;
+    if (isSessionExpired(res.status, body as ApiErrorBody)) {
+      // Session missing/expired: route the whole app to sign-in and surface a
+      // friendly message instead of a raw "unauthorized".
+      notifyUnauthorized();
+      throw new Error(SESSION_EXPIRED_MESSAGE);
+    }
     if (!res.ok) {
       const msg = (body as { error?: string }).error ?? `Request failed (${res.status})`;
       throw new Error(msg);

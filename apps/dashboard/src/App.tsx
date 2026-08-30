@@ -8,6 +8,7 @@ import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 import { AdIndex } from './AdIndex';
 import { Login } from './Login';
+import { setUnauthorizedHandler } from './authClient';
 import { useLoadingBar } from './loading';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
@@ -21,6 +22,18 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [auth, setAuth] = useState<'loading' | 'ok' | 'login'>('loading');
   const [clientId, setClientId] = useState('');
+  const [expired, setExpired] = useState(false);
+
+  // A session 401 from any API call (e.g. an expired cookie mid-session) routes the
+  // whole app to the sign-in screen with a clear message, instead of leaving a raw
+  // "unauthorized" error in a card.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      setExpired(true);
+      setAuth('login');
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
   const path = usePath();
   const loading = useLoadingBar();
 
@@ -49,7 +62,7 @@ export function App() {
   }, []);
 
   if (auth === 'loading') return <main className="wrap"><p className="muted">Loading…</p></main>;
-  if (auth === 'login') return <Login clientId={clientId} />;
+  if (auth === 'login') return <Login clientId={clientId} expired={expired} />;
 
   return (
     <main className="wrap">
