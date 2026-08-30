@@ -9,10 +9,13 @@
     "build": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/integrations build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present build",
     "typecheck": "pnpm --filter @rmg-creator-os/types build && pnpm --filter @rmg-creator-os/integrations build && pnpm --filter @rmg-creator-os/db build && pnpm -r --if-present typecheck",
     "lint": "pnpm -r --if-present lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.0"
+    "@playwright/test": "^1.49.0",
+    "vitest": "^4.1.11"
   },
   "pnpm": {
     "overrides": {
