@@ -16,3 +16,8 @@ with per-concern child schemas under
 Its creator-os implementation architecture and the domain-vs-renderer decision live in this
 repo at [`../architecture/01-word-art.md`](../architecture/01-word-art.md) and
 [`../adr/0002-word-art-domain-vs-renderer.md`](../adr/0002-word-art-domain-vs-renderer.md).
+
+**Reminder (Sprint 1 PR 5):** this directory's frozen status is a standing rule, not a one-time
+note — see [`../atelier/release-boundary-checklist.md`](../atelier/release-boundary-checklist.md)
+for the release-time check. Any new contract, canonical or otherwise, belongs in
+`rmg-piaar-system/contracts/`.
