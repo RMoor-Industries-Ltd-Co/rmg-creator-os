@@ -8,8 +8,20 @@ The load-bearing decision is recorded in [`../adr/0002-word-art-domain-vs-render
 This document is the creator-os-specific mapping — it does **not** restate the contract; read
 that first.
 
-Status: **Phase 0 (spec)**. No engine code exists yet; nothing here is applied. This is the
-plan a future engineer follows.
+Status: **Phase 0 (spec)**, with one exception: **Sprint 2 PR 1** landed the domain types only
+— `packages/types/src/wordArt.ts` (exported via the package barrel) transcribes all 11 child
+specs into TypeScript interfaces (`WordArtEvent`, `WordArtPlan`, `TypographyProfile`,
+`MotionProfile`, `WordArtBrandProfile`, `CompositionContext`, `VisualAnalysis`,
+`WordArtRenderRequest`, `WordArtRenderResult`, `QaResult`, `ApprovalDecision`). This is
+**types only** — no runtime validation, no routes, no DB migrations, no `wordart` capability
+enum, no worker/dispatch changes, no renderer registry or `WordArtNullRenderer`. Everything
+else below remains the plan a future engineer follows, not yet applied.
+
+Note: the render request/result types are named `WordArtRenderRequest`/`WordArtRenderResult`
+(not the bare `RenderRequest`/`RenderResult` the table below uses informally) to avoid
+colliding with `packages/integrations`'s existing, much simpler `RenderJob`/`RenderResult`
+(Sprint 1 PR 4) — the two live at different levels (domain vs. renderer-boundary) but share a
+workspace.
 
 ## The one principle, in this repo's terms
 

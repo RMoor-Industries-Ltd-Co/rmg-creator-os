@@ -141,3 +141,8 @@ export const SERVICE_IDS: ServiceId[] = [
   'allie',
   'my-poster'
 ];
+
+// --- Word Art domain types -----------------------------------------------------
+// Sprint 2 PR 1 — types-only transcription of rmg-piaar-system's contracts/word-art/*.
+// See ./wordArt.js for the full set and its per-field contract mapping.
+export * from './wordArt.js';
