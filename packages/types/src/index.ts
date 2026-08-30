@@ -146,3 +146,6 @@ export const SERVICE_IDS: ServiceId[] = [
 // Sprint 2 PR 1 — types-only transcription of rmg-piaar-system's contracts/word-art/*.
 // See ./wordArt.js for the full set and its per-field contract mapping.
 export * from './wordArt.js';
+
+// Sprint 2 PR 2 — Gate 2 (deterministic contract validation). See ./wordArt.validate.js.
+export * from './wordArt.validate.js';
