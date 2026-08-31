@@ -1,0 +1,39 @@
+{
+  "name": "@rmg-creator-os/wordart",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist/wordArt.js",
+  "types": "dist/wordArt.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/wordArt.d.ts",
+      "default": "./dist/wordArt.js"
+    },
+    "./validate": {
+      "types": "./dist/wordArt.validate.d.ts",
+      "default": "./dist/wordArt.validate.js"
+    },
+    "./compile": {
+      "types": "./dist/wordArt.compile.d.ts",
+      "default": "./dist/wordArt.compile.js"
+    },
+    "./plan": {
+      "types": "./dist/wordArt.plan.d.ts",
+      "default": "./dist/wordArt.plan.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@rmg-creator-os/types": "workspace:*",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}

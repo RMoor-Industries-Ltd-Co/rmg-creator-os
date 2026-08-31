@@ -11,7 +11,7 @@
 // `string` rather than closed literal unions: the contracts explicitly require these to stay
 // allow-list-extensible via config, not fixed at the type level.
 
-import type { BrandKey, StoreKey } from './index.js';
+import type { BrandKey, StoreKey } from '@rmg-creator-os/types';
 
 /** Normalized `[0,1]` rectangle, origin top-left (word-art-plan/composition-context convention). */
 export interface WordArtBox {
