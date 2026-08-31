@@ -1,0 +1,14 @@
+[
+  {
+    "id": "seg_standard_1",
+    "text": "So this week we're going to walk through the quarterly numbers together and see where things stand.",
+    "startMs": 0,
+    "durationMs": 5200
+  },
+  {
+    "id": "seg_standard_2",
+    "text": "It's mostly steady, nothing dramatic, just the usual month over month drift we've seen before.",
+    "startMs": 5400,
+    "durationMs": 5000
+  }
+]

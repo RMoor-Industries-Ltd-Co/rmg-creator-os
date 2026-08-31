@@ -1,0 +1,20 @@
+[
+  {
+    "id": "seg_declaration_1",
+    "text": "So here's the plan for today.",
+    "startMs": 0,
+    "durationMs": 2000
+  },
+  {
+    "id": "seg_declaration_2",
+    "text": "Build the system first!",
+    "startMs": 4000,
+    "durationMs": 2200
+  },
+  {
+    "id": "seg_declaration_3",
+    "text": "And then we scale it, one deliberate step at a time.",
+    "startMs": 8000,
+    "durationMs": 3000
+  }
+]
