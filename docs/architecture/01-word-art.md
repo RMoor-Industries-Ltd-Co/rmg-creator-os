@@ -62,6 +62,30 @@ actually needs lives in `composition-context.md`'s richer `CompositionContext` �
 wires the two together explicitly. `compileWordArtRenderRequest` takes the resolved `textBox`
 as an explicit caller-supplied option rather than guessing at a mapping.
 
+**Sprint 2 PR 4** closes the contract's own Phase 1 "gate of done" (`contracts/29-word-art.md`,
+"Implementation phases": *"A fixture transcript → validated plan, no AI, no Adobe"*), which PRs
+1–3 had not yet reached — they proved the mechanics starting from a hand-authored event, not
+from a transcript. `packages/types/src/wordArt.plan.ts` adds `buildWordArtPlanFromSegments`
+(plus its PROVISIONAL scoring heuristic, `scoreSegment`), which deterministically turns
+`TranscriptSegment[]` + a caller-supplied `WordArtPlanBuilderConfig` into a `WordArtPlan` +
+`WordArtEvent[]` — no AI, no ALLEN, no network calls. Proven end-to-end by
+`packages/types/test/wordArt.plan.test.ts` against three fixture transcripts
+(`test/fixtures/word-art/`: a declaration scenario that produces a Word Art event, a plain
+non-Word-Art caption scenario that correctly produces zero events, and a low-confidence
+scenario — a keyword present but not enough alone — that also correctly produces zero) chained
+through Gate 2 validation (PR 2) and the compile/synthetic-result path (PR 3). Not exported
+from the main barrel — only via `@rmg-creator-os/types/wordArt.plan`. The scoring heuristic
+(keyword/exclamation/word-count) is explicitly a fixture-level stand-in for the contract's real
+`W = f(S,E,P,B,C,T)` model — PROVISIONAL, not a creative strategy decision.
+
+**With this PR, Sprint 2: Word Art Phase 1 — Plan Before Render is complete** against the
+contract's own stated gate. `wordart` remains out of `productionJobCapability`; no DB, routes,
+worker dispatch, `RendererRegistry`, `WordArtNullRenderer`, Adobe/Resolve, or AI work exists
+anywhere in the repo. Sprint 3 decides whether the next slice is fixture-corpus expansion, the
+`packages/wordart` extraction (now closer to warranted, per PR 2's own extraction trigger:
+transcript-to-plan orchestration exists), AI-assisted planning (Phase 2), or runtime job
+integration.
+
 ## The one principle, in this repo's terms
 
 *AI proposes creative meaning; deterministic code owns production correctness; the boundary
