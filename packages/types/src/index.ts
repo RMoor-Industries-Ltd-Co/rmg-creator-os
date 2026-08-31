@@ -142,12 +142,6 @@ export const SERVICE_IDS: ServiceId[] = [
   'my-poster'
 ];
 
-// --- Word Art domain types -----------------------------------------------------
-// Sprint 2 PR 1 — types-only transcription of rmg-piaar-system's contracts/word-art/*.
-// See ./wordArt.js for the full set and its per-field contract mapping.
-export * from './wordArt.js';
-
-// Sprint 2 PR 2 — Gate 2 (deterministic contract validation) deliberately does NOT re-export
-// here: it is zod-backed, and this main barrel is imported by browser consumers (e.g. the
-// dashboard) that only need the plain domain types above. Import it from the dedicated
-// subpath instead: `@rmg-creator-os/types/wordArt.validate`. See ./wordArt.validate.js.
+// Word Art domain types/validation/compilation/planning moved to the dedicated
+// `@rmg-creator-os/wordart` package (Sprint 3 PR 1) — this package is shared vocabulary only.
+// See docs/architecture/01-word-art.md.

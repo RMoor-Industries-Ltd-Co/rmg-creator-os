@@ -81,10 +81,26 @@ from the main barrel — only via `@rmg-creator-os/types/wordArt.plan`. The scor
 **With this PR, Sprint 2: Word Art Phase 1 — Plan Before Render is complete** against the
 contract's own stated gate. `wordart` remains out of `productionJobCapability`; no DB, routes,
 worker dispatch, `RendererRegistry`, `WordArtNullRenderer`, Adobe/Resolve, or AI work exists
-anywhere in the repo. Sprint 3 decides whether the next slice is fixture-corpus expansion, the
-`packages/wordart` extraction (now closer to warranted, per PR 2's own extraction trigger:
-transcript-to-plan orchestration exists), AI-assisted planning (Phase 2), or runtime job
-integration.
+anywhere in the repo.
+
+**Sprint 3 PR 1 — Word Art Domain Boundary Extraction.** All Word Art source and tests moved
+from `packages/types` into a dedicated `packages/wordart` package: `wordArt.ts` (domain types),
+`wordArt.validate.ts` (Gate 2), `wordArt.compile.ts` (compile + synthetic result), and
+`wordArt.plan.ts` (fixture plan builder), plus their tests and fixtures. This is the PR 2
+extraction trigger firing (transcript-to-plan orchestration now exists) — `packages/types` is
+restored to shared vocabulary only, with zero Word Art surface area and zero runtime
+dependencies (`zod`/`@types/node` moved with the code that needed them). Purely mechanical: no
+behavior changed, all 83 tests pass unchanged, dashboard bundle unchanged at baseline.
+`@rmg-creator-os/wordart`'s main export is types-only (mirroring `packages/types`'s own
+barrel discipline); Gate 2, the compiler, and the plan builder are each their own subpath
+(`./validate`, `./compile`, `./plan`) — never the main entry — so no consumer of the bare
+package import can pull in zod or `node:crypto` by accident. The one import fix this required:
+`wordArt.ts`'s `BrandKey`/`StoreKey` reference now resolves via `@rmg-creator-os/types` (a real
+cross-package import) instead of the local `./index.js` it could rely on while co-located.
+
+Sprint 4 decides whether the next slice is fixture-corpus expansion, AI-assisted planning
+(Phase 2), or runtime job integration — all now landing inside `@rmg-creator-os/wordart`
+rather than reopening the packaging question.
 
 ## The one principle, in this repo's terms
 
@@ -98,7 +114,7 @@ trusts AI JSON as-is (`allen.ts` casts responses with no runtime check). See ADR
 
 | Layer | Where | What Word Art adds |
 |---|---|---|
-| **Domain types** | `packages/types/src/index.ts` | `WordArtEvent`, `WordArtPlan`, `TypographyProfile`, `MotionProfile`, `WordArtBrandProfile`, `CompositionContext`, `VisualAnalysis`, `RenderRequest`, `RenderResult`, `QaResult`, `ApprovalDecision` — TS interfaces mirroring the child specs (the repo's "types mirror `docs/contracts`" convention). |
+| **Domain types + Gate 2 + compile + planning** | `packages/wordart/src/` (Sprint 3 PR 1 — moved out of `packages/types`) | `WordArtEvent`, `WordArtPlan`, `TypographyProfile`, `MotionProfile`, `WordArtBrandProfile`, `CompositionContext`, `VisualAnalysis`, `WordArtRenderRequest`, `WordArtRenderResult`, `QaResult`, `ApprovalDecision` (types, main export) + Gate-2 validation (`./validate`) + render-request compile/synthetic result (`./compile`) + fixture plan builder (`./plan`). `packages/types` stays shared vocabulary only. |
 | **Brand model** | `packages/types` `BrandKey`/`BrandProfile` | Word Art *references* existing `BrandKey`/`StoreKey`; a `WordArtBrandProfile` layers typography/motion rules on top. `COACH_RAHM→'mstr-rahm'`, `RMG→'rmg'`; HVN/AMG scope OPEN. **No second brand registry.** |
 | **Renderer adapters** | `packages/integrations/src/` | `wordart/` adapters mirroring the `HiggsfieldClient` interface shape: `AdobeRenderer`, `ResolveRenderer`, `NullRenderer`, all satisfying one `WordArtRenderer` interface that advertises `RendererCapabilities`. |
 | **DB** | `packages/db/src/schema.ts` + `drizzle/` | New tables `word_art_plans`, `word_art_events`, `word_art_renders`, `word_art_config`; new `productions` columns (`word_art_plan_id`, `word_art_status`, `word_art_autonomy`, `word_art_config_id`). Defensive migration (`IF NOT EXISTS`, `--> statement-breakpoint`), registered in `drizzle/meta/_journal.json`, auto-run by `runMigrations`. |

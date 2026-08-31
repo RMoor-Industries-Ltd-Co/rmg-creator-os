@@ -5,34 +5,12 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./wordArt.validate": {
-      "types": "./dist/wordArt.validate.d.ts",
-      "default": "./dist/wordArt.validate.js"
-    },
-    "./wordArt.compile": {
-      "types": "./dist/wordArt.compile.d.ts",
-      "default": "./dist/wordArt.compile.js"
-    },
-    "./wordArt.plan": {
-      "types": "./dist/wordArt.plan.d.ts",
-      "default": "./dist/wordArt.plan.js"
-    }
-  },
   "files": ["dist"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
-  "dependencies": {
-    "zod": "^4.5.4"
-  },
   "devDependencies": {
-    "@types/node": "^22.0.0",
     "typescript": "^5.0.0"
   }
 }
