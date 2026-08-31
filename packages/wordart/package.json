@@ -21,6 +21,10 @@
     "./plan": {
       "types": "./dist/wordArt.plan.d.ts",
       "default": "./dist/wordArt.plan.js"
+    },
+    "./annotate": {
+      "types": "./dist/wordArt.annotate.d.ts",
+      "default": "./dist/wordArt.annotate.js"
     }
   },
   "files": ["dist"],

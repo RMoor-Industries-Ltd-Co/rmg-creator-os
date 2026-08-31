@@ -98,9 +98,19 @@ package import can pull in zod or `node:crypto` by accident. The one import fix 
 `wordArt.ts`'s `BrandKey`/`StoreKey` reference now resolves via `@rmg-creator-os/types` (a real
 cross-package import) instead of the local `./index.js` it could rely on while co-located.
 
-Sprint 4 decides whether the next slice is fixture-corpus expansion, AI-assisted planning
-(Phase 2), or runtime job integration — all now landing inside `@rmg-creator-os/wordart`
-rather than reopening the packaging question.
+**Sprint 4 PR 1 — Word Art AI Candidate Domain.** `wordArt.annotate.ts` defines
+`SegmentSemanticAnnotation` — the narrow evidence shape an AI (e.g. ALLEN) may propose about a
+transcript segment (rhetorical-role hint, emphasis hints, a hero-score hint, confidence, reason
+code, provenance) — and `foldAnnotationScore`, the deterministic function that blends that
+evidence into the existing heuristic score. Below a confidence floor an annotation is ignored
+outright; at or above it, the blended score still has to clear `heroScoreThreshold` and pass
+Gate 2 like any other candidate — a confident annotation cannot itself produce or approve an
+event. `buildWordArtPlanFromSegments` gained an optional `annotations` parameter wired through
+this fold; omitting it is identical to Sprint 2 PR 4's pure-heuristic behavior. No live ALLEN
+call, no `apps/gateway` change, no route, no DB, no Gate 1 — package/test-level only, exported
+via `@rmg-creator-os/wordart/annotate`. Sprint 4 PR 2 (not yet started) adds the `apps/gateway`
+side: an ALLEN response schema + client function that parses raw (mocked, in tests) ALLEN
+output into this same `SegmentSemanticAnnotation` shape.
 
 ## The one principle, in this repo's terms
 

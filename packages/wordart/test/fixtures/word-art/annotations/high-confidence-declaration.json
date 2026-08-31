@@ -1,0 +1,13 @@
+{
+  "contractVersion": "1.0.0",
+  "segmentId": "seg_low_heuristic",
+  "rhetoricalRoleHint": "declaration",
+  "emphasisTokenHints": [0],
+  "heroScoreHint": 1.0,
+  "emotionalIntensityHint": 0.7,
+  "confidence": 0.9,
+  "reasonCode": "HIGH_RHETORICAL_SIGNIFICANCE",
+  "provider": "allen",
+  "model": "mocked-fixture",
+  "configVersion": "score-2026.08.1"
+}
