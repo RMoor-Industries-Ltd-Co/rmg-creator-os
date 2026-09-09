@@ -74,6 +74,18 @@ The missing layers are primarily:
 
 The implementation order below is designed to add those layers without replacing the existing working spine.
 
+## Parallel, dated maintenance track — HeyGen A-Roll
+
+**Added 2026-09-09.** One repository item is time-critical and does not belong to any phase's
+scope: `packages/integrations/src/heygen.ts` calls `/v2/video/generate`, which HeyGen shuts down
+on **2026-10-31**. A-Roll is the only client-backed renderer in the dispatch path, so following
+A1–A4 and then B–E in order can leave it broken at a fixed date while this plan claims to
+protect the working spine.
+
+It runs as an explicitly parallel track with that deadline, scoped in
+[issue #53](https://github.com/RMoor-Industries-Ltd-Co/rmg-creator-os/issues/53) — plan first,
+deliberately not folded into the Phase A pull request, which stays narrow.
+
 ---
 
 # Phase A — Stabilize the Existing Execution Lane
@@ -99,6 +111,46 @@ Acceptance conditions:
 - claim includes a lease/lock expiration;
 - concurrent claim test proves no duplicate dispatch;
 - paid provider jobs cannot be duplicated through a claim race.
+
+### A1b. A dispatcher, and a machine-usable way to reach it
+
+**Added 2026-09-09.** A1's acceptance conditions describe a queue that is safe when workers
+contend for it, and say nothing about whether any worker runs. In the deployed system, none
+did: a repository-wide search for `/worker/tick` found only the route declaration, and
+`infra/control-server/docker-compose.yml` defines neither a worker process nor a scheduler that
+invokes it. The only crontab entry in `infra/` is the 03:30 database backup. Phase A could
+therefore have passed its exit gate with queued work never dispatched.
+
+The route was also unreachable *and* unprotected at once: the global session-cookie hook guards
+it before its own `x-worker-secret` check, so a headless caller receives `401`; and that check
+read `if (WORKER_SECRET && secret !== WORKER_SECRET)` while `WORKER_SECRET` was set nowhere in
+`infra/` or `.github/`, making it a no-op.
+
+Acceptance conditions:
+
+- a dispatcher exists that survives normal container restarts, using an existing infrastructure
+  primitive rather than a new service, broker, or repository;
+- worker execution authenticates on a **machine** credential that fails closed when
+  unconfigured, without weakening session authentication or making the routes public;
+- the machine credential is distinct from any future agent/MCP credential — worker execution
+  authority and agent authority stay separate surfaces;
+- enabling execution of paid work is an explicit deployment decision, not a side effect of
+  deploying the build.
+
+### A1c. Cancellation is an atomic transition too
+
+**Added 2026-09-09.** A1's conditions covered worker-versus-worker claims only. `DELETE
+/queue/:id` read the job and then updated it by id with no status predicate, so a cancel racing
+a claim could have both succeed — the caller told "cancelled" while the worker dispatched paid
+work and wrote `done` — and the same path could rewrite an already-completed job to `cancelled`.
+
+Acceptance conditions:
+
+- cancellation is one conditional statement, not read-then-write;
+- `queued -> cancelled` and `running-with-expired-lease -> cancelled` are the only transitions it
+  may make; a live lease is refused;
+- a terminal job (`done`, `failed`) can never be rewritten to `cancelled`;
+- concurrency tests cover cancel-versus-claim, not only claim-versus-claim.
 
 ### A2. Lease and recovery / reaper
 
@@ -217,8 +269,15 @@ Allow authorized machine principals to supervise and advance Creator OS workflow
 
 Final paths may vary, but provide equivalents of:
 
-- `POST /api/agent` — authenticated command/request entry
-- `GET /api/agent/report` — operational/status report
+- `POST /agent` — authenticated command/request entry; external URL `/api/agent`
+- `GET /agent/report` — operational/status report; external URL `/api/agent/report`
+
+**Paths are gateway-relative.** Caddy fronts the control server with `handle_path /api/*`, which
+**strips** the `/api` prefix before forwarding, which is why every existing gateway route is
+registered without it. Registering `/api/agent` in Fastify would make a client request to
+`/api/agent` arrive as `/agent` and 404; only `/api/api/agent` would reach it. Register the
+gateway-relative path and treat `/api/...` as the external URL, or change the proxy contract
+deliberately.
 - approvals read surface
 - attributed transition/action endpoint
 
@@ -425,6 +484,12 @@ Evaluate publishing architecture only after the governed content pipeline reache
 ## Current disposition
 
 Social publishing is not required for Phases A–E.
+
+**This defers choosing a publishing architecture. It does not defer A4.** Hardening the existing
+Postiz-backed `POST /productions/:id/publish` path — reading the authoritative delivery approval
+record and failing closed — is mandatory Phase A work and gates Phase C agent access, exactly as
+A4 and the Phase A exit gate state. Nothing in this phase permits that to slip to Phase F; a
+publish path that is live today and unenforced is the more urgent of the two problems.
 
 The 2026-09-08 audit established:
 
