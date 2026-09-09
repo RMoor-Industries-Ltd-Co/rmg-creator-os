@@ -30,7 +30,11 @@ A proprietary, in-house content ecosystem for marketing & sales.
 - **Monorepo**, TypeScript-first. Each service is independently deployable (**microservices**).
 - **Control Linode** runs the stack behind **Caddy** (auto-TLS) on `rmg-creator-os.rmasters.group`.
 - **Render Linode** (the former Story Director box) is a dedicated render worker.
-- Nodes are joined privately over **Tailscale**; **Redis + BullMQ** is the job backbone; **Postgres** is shared state.
+- Nodes are joined privately over **Tailscale**; **Postgres** is both shared state and the
+  **job backbone** — the durable `production_jobs` queue, claimed atomically by
+  `POST /worker/tick` (see [`docs/atelier/queue-execution-semantics.md`](docs/atelier/queue-execution-semantics.md)).
+  Redis is present for caching and the `/health` probe; it does **not** back the queue, and
+  BullMQ is not a dependency of any package (ratified as decision D-B, 2026-09-09).
 - **Google Drive** stores media assets; **Google Docs** holds creative writing.
 
 See [`docs/architecture/00-overview.md`](docs/architecture/00-overview.md) and the decision record in [`docs/adr/0001-ecosystem-architecture.md`](docs/adr/0001-ecosystem-architecture.md).

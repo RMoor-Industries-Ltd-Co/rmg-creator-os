@@ -1,13 +1,22 @@
 // apps/gateway/src/worker.ts
 // Worker tick — claims and executes the next queued production job.
 
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { and, eq, sql } from '@rmg-creator-os/db';
-import { tables } from '@rmg-creator-os/db';
+import { eq } from '@rmg-creator-os/db';
+import { tables, claimNextJob, recoverStaleJobs, findCompletedByIdempotencyKey, DEFAULT_LEASE_SECONDS } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
 import { createDefaultRendererRegistry, type RendererRegistry } from '@rmg-creator-os/integrations';
 
 const WORKER_SECRET = process.env.WORKER_SECRET ?? '';
+
+/** Lease length for a claim. Overridable per-deployment; a render that legitimately runs
+ *  longer than this would be recovered mid-flight, so it is generous by default. */
+const LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS ?? DEFAULT_LEASE_SECONDS);
+
+/** Identity written onto every claim. Stable per process so a stranded job names the worker
+ *  that held it — `worker_id` was previously declared in the schema and never written. */
+const WORKER_ID = process.env.WORKER_ID ?? `gateway-${process.pid}-${randomUUID().slice(0, 8)}`;
 
 type ProductionJob = typeof tables.productionJobs.$inferSelect;
 
@@ -69,6 +78,17 @@ export function registerWorkerRoutes(
   clients: WorkerClients = { heygen: null, drive: null },
   renderers: RendererRegistry = createDefaultRendererRegistry()
 ) {
+  // POST /worker/recover — sweep abandoned jobs (running rows whose lease expired).
+  // Exposed separately so an operator can run recovery without also claiming work.
+  app.post('/worker/recover', async (request, reply) => {
+    const secret = (request.headers['x-worker-secret'] as string | undefined) ?? '';
+    if (WORKER_SECRET && secret !== WORKER_SECRET) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+    const recovered = await recoverStaleJobs(db);
+    return { recovered };
+  });
+
   // POST /worker/tick — claim and execute the next queued job.
   app.post('/worker/tick', async (request, reply) => {
     const secret = (request.headers['x-worker-secret'] as string | undefined) ?? '';
@@ -76,55 +96,57 @@ export function registerWorkerRoutes(
       return reply.code(401).send({ error: 'unauthorized' });
     }
 
-    // Claim the next queued job (lowest priority, then oldest enqueued_at).
-    const [job] = await db
-      .select()
-      .from(tables.productionJobs)
-      .where(
-        and(
-          eq(tables.productionJobs.status, 'queued'),
-          sql`(${tables.productionJobs.lockedUntil} IS NULL OR ${tables.productionJobs.lockedUntil} < now())`
-        )
-      )
-      .orderBy(tables.productionJobs.priority, tables.productionJobs.enqueuedAt)
-      .limit(1);
+    // Sweep abandoned work first, so a job stranded by a crashed worker becomes runnable (or
+    // visibly failed) instead of sitting in `running` forever with nothing to move it.
+    const recovered = await recoverStaleJobs(db);
 
+    // Atomic claim: one statement, FOR UPDATE SKIP LOCKED. Two concurrent ticks cannot both
+    // receive this row — which is what previously allowed a duplicated paid render.
+    const job = await claimNextJob(db, WORKER_ID, LEASE_SECONDS);
     if (!job) {
-      return { claimed: false };
+      return { claimed: false, recovered };
     }
 
-    // Mark running.
-    await db
-      .update(tables.productionJobs)
-      .set({ status: 'running', startedAt: new Date() })
-      .where(eq(tables.productionJobs.id, job.id));
-
     try {
+      // Idempotency: if this key already produced a completed result, reuse it rather than
+      // repeating the work. This is what makes a recovery re-queue safe.
+      if (job.idempotencyKey) {
+        const done = await findCompletedByIdempotencyKey(db, job.idempotencyKey, job.id);
+        if (done?.resultId) {
+          await db
+            .update(tables.productionJobs)
+            .set({ status: 'done', resultId: done.resultId, completedAt: new Date(), lockedUntil: null })
+            .where(eq(tables.productionJobs.id, job.id));
+          return { claimed: true, jobId: job.id, status: 'done', resultId: done.resultId, deduplicated: true, recovered };
+        }
+      }
+
       const { resultId } = await dispatch(job, clients, renderers);
       await db
         .update(tables.productionJobs)
-        .set({ status: 'done', resultId, completedAt: new Date() })
+        .set({ status: 'done', resultId, completedAt: new Date(), lockedUntil: null })
         .where(eq(tables.productionJobs.id, job.id));
-      return { claimed: true, jobId: job.id, status: 'done', resultId };
+      return { claimed: true, jobId: job.id, status: 'done', resultId, recovered };
     } catch (err) {
       const nextAttempt = (job.attempt ?? 0) + 1;
       const maxAttempts = job.maxAttempts ?? 2;
       if (nextAttempt < maxAttempts) {
+        // Unchanged backoff semantics: re-queue with locked_until in the future, which the
+        // claim query already respects. Clearing worker_id keeps the lease honest.
         const backoffSecs = nextAttempt * 30;
         const lockedUntil = new Date(Date.now() + backoffSecs * 1000);
         await db
           .update(tables.productionJobs)
-          .set({ status: 'queued', attempt: nextAttempt, lockedUntil })
+          .set({ status: 'queued', attempt: nextAttempt, lockedUntil, workerId: null })
           .where(eq(tables.productionJobs.id, job.id));
-        return { claimed: true, jobId: job.id, status: 'requeued', attempt: nextAttempt };
-      } else {
-        const error = (err as Error).message;
-        await db
-          .update(tables.productionJobs)
-          .set({ status: 'failed', error, completedAt: new Date() })
-          .where(eq(tables.productionJobs.id, job.id));
-        return { claimed: true, jobId: job.id, status: 'failed', error };
+        return { claimed: true, jobId: job.id, status: 'requeued', attempt: nextAttempt, recovered };
       }
+      const error = (err as Error).message;
+      await db
+        .update(tables.productionJobs)
+        .set({ status: 'failed', attempt: nextAttempt, error, completedAt: new Date(), lockedUntil: null })
+        .where(eq(tables.productionJobs.id, job.id));
+      return { claimed: true, jobId: job.id, status: 'failed', error, recovered };
     }
   });
 }

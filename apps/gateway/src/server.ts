@@ -27,6 +27,7 @@ import {
   uploadFromUrl as postizUploadFromUrl,
   type PostizPostInput
 } from './postiz.js';
+import { checkDeliveryApproval } from './approval.js';
 import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
   assertCookieSecret,
@@ -1961,6 +1962,10 @@ app.post<{
         provider: 'heygen',
         payload: { videoId, talkingPhotoId, audioUrl, dimension: dim, motionPrompt: motionPrompt ?? null, videoRowId: video.id },
         priority: 5,
+        // One queue row per video row. The paid HeyGen call already happened above, so this
+        // key cannot suppress real work — it only prevents a duplicate tracking row, and
+        // makes an abandoned job safely re-runnable rather than operator-gated.
+        idempotencyKey: `aroll:${video.id}`,
       }).catch(() => undefined); // non-fatal — the video row is the source of truth
       reply.code(201);
       return video;
@@ -2200,6 +2205,20 @@ app.post<{ Params: { id: string }; Body: { platforms?: string[]; type?: 'draft' 
     const { id } = request.params;
     const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, id));
     if (!prod) return reply.code(404).send({ error: 'production not found' });
+
+    // Phase A — enforce the delivery-approval gate that already exists on the record.
+    //
+    // This endpoint previously checked only that SOME completed render existed, falling back
+    // to any completed row. A completed render is not an approval: it meant the per-brand My
+    // Poster gate was rendered in the UI but unenforced on the path that actually publishes
+    // to live channels. Fail closed — an absent, pending or rejected approval blocks.
+    //
+    // Phase B adds approver identity and role semantics; Phase A only enforces the mechanism
+    // already present.
+    const approvalCheck = checkDeliveryApproval(prod.brand, prod.deliveryApprovals);
+    if (!approvalCheck.ok) {
+      return reply.code(403).send({ error: approvalCheck.reason, code: 'delivery_not_approved' });
+    }
 
     // The final video for this production (the rendered cut), public for Postiz to fetch.
     const vids = await db.select().from(tables.videos).where(eq(tables.videos.productionId, id));

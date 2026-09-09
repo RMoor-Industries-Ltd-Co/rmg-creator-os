@@ -247,8 +247,16 @@ export const productionJobs = pgTable('production_jobs', {
   maxAttempts: integer('max_attempts').notNull().default(2),
   resultId: text('result_id'),
   error: text('error'),
+  /** Lease expiry. Set on claim (now + lease) and on retry backoff (now + backoff). A
+   *  `running` row whose lease has passed is presumed abandoned — see `recoverStaleJobs`. */
   lockedUntil: timestamp('locked_until', { withTimezone: true, mode: 'date' }),
+  /** Identity of the worker holding the lease. Written on claim; the audit trail for who ran
+   *  a job, and what to name when a lease expires. */
   workerId: text('worker_id'),
+  /** Caller-supplied dedupe identity. NULL (the default, and every pre-Phase-A row) means no
+   *  dedupe requested. A non-NULL value is UNIQUE across the table via a partial index, so a
+   *  duplicate submission returns the original job instead of enqueuing paid work twice. */
+  idempotencyKey: text('idempotency_key'),
   enqueuedAt: timestamp('enqueued_at', { withTimezone: true, mode: 'date' }).defaultNow().notNull(),
   startedAt: timestamp('started_at', { withTimezone: true, mode: 'date' }),
   completedAt: timestamp('completed_at', { withTimezone: true, mode: 'date' })

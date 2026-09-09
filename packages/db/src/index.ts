@@ -4,5 +4,11 @@ export { runMigrations } from './migrate.js';
 export * as tables from './schema.js';
 // Re-export common query helpers so services don't depend on drizzle-orm directly.
 export { and, asc, desc, eq, or, sql } from 'drizzle-orm';
-export { enqueueJob } from './queue.js';
-export type { EnqueueJobInput } from './queue.js';
+export {
+  enqueueJob,
+  claimNextJob,
+  recoverStaleJobs,
+  findCompletedByIdempotencyKey,
+  DEFAULT_LEASE_SECONDS
+} from './queue.js';
+export type { EnqueueJobInput, EnqueueResult, StaleRecovery } from './queue.js';

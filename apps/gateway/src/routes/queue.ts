@@ -77,8 +77,13 @@ export function registerQueueRoutes(app: FastifyInstance, db: Database) {
       .from(tables.productionJobs)
       .where(eq(tables.productionJobs.id, request.params.id));
     if (!job) return reply.code(404).send({ error: 'job not found' });
-    if (job.status === 'running') {
-      return reply.code(409).send({ error: 'cannot cancel a running job' });
+    // A live-leased running job still belongs to a worker — refuse, as before. But a running
+    // job whose lease has EXPIRED is abandoned, and previously had no in-product control at
+    // all: cancel refused it and retry accepts only failed/cancelled, so clearing one required
+    // direct SQL. Allowing cancel here completes the gate/signal/control triad.
+    const leaseLive = job.status === 'running' && job.lockedUntil !== null && job.lockedUntil > new Date();
+    if (leaseLive) {
+      return reply.code(409).send({ error: 'cannot cancel a running job while its lease is live' });
     }
     await db
       .update(tables.productionJobs)
