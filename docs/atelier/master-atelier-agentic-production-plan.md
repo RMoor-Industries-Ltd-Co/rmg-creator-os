@@ -269,7 +269,9 @@ Ratify the boundary:
 
 ### D4. MCP policy clarification
 
-Contract 14 currently distinguishes headless-safe integrations from assistant-in-loop MCP. Clarify policy so authenticated machine-principal MCP consumption is explicitly governed rather than accidentally forbidden or implicitly allowed.
+**Narrowed 2026-09-09.** Half of what this item once implied is already settled and needed no clarification. Contract 14's ⚠️ "MCP + OAuth = assistant-in-loop only" row carries an explicit callout limiting it to PIAAR *consuming* somebody else's MCP server; PIAAR *publishing* its own tools as a machine-authenticated MCP server is stated to be headless-safe, is contract 26, and is already live in `rmg-ai`. Nothing forbids the Accord MCP this plan proposes. (The audit's decision **D-A**, which claimed the opposite, is withdrawn — see `docs/atelier/audits/08-open-decisions.md`.)
+
+What genuinely remains open is narrower: **machine-principal *consumption* of an external MCP server.** The ⚠️ row still binds where it applies — a headless stage must not borrow a person's OAuth session to reach SuperCool, ClickUp or Google Docs. Clarify policy so that an authenticated machine principal consuming an external MCP server, where one is available on machine credentials, is explicitly governed rather than implicitly allowed.
 
 ## Reference-run constraint
 
