@@ -1,13 +1,23 @@
 // apps/gateway/src/worker.ts
 // Worker tick — claims and executes the next queued production job.
 
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import { and, eq, sql } from '@rmg-creator-os/db';
-import { tables } from '@rmg-creator-os/db';
+import { checkWorkerSecret, WORKER_AUTH_REQUIRED_CODE } from './workerAuth.js';
+import { eq } from '@rmg-creator-os/db';
+import { tables, claimNextJob, recoverStaleJobs, findCompletedByIdempotencyKey, DEFAULT_LEASE_SECONDS } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
 import { createDefaultRendererRegistry, type RendererRegistry } from '@rmg-creator-os/integrations';
 
 const WORKER_SECRET = process.env.WORKER_SECRET ?? '';
+
+/** Lease length for a claim. Overridable per-deployment; a render that legitimately runs
+ *  longer than this would be recovered mid-flight, so it is generous by default. */
+const LEASE_SECONDS = Number(process.env.WORKER_LEASE_SECONDS ?? DEFAULT_LEASE_SECONDS);
+
+/** Identity written onto every claim. Stable per process so a stranded job names the worker
+ *  that held it — `worker_id` was previously declared in the schema and never written. */
+const WORKER_ID = process.env.WORKER_ID ?? `gateway-${process.pid}-${randomUUID().slice(0, 8)}`;
 
 type ProductionJob = typeof tables.productionJobs.$inferSelect;
 
@@ -63,68 +73,215 @@ export async function dispatch(
   return { resultId: `stub-${job.id}` };
 }
 
+/** Outcome of one recovery sweep. */
+export type RecoverResult = { recovered: Awaited<ReturnType<typeof recoverStaleJobs>> };
+
+/** Outcome of one tick. `claimed: false` means the queue had nothing runnable. */
+export type TickResult =
+  | { claimed: false; recovered: RecoverResult['recovered'] }
+  | {
+      claimed: true;
+      jobId: string;
+      status: 'done' | 'requeued' | 'failed';
+      resultId?: string;
+      deduplicated?: boolean;
+      attempt?: number;
+      error?: string;
+      recovered: RecoverResult['recovered'];
+    };
+
+/** Sweep abandoned work (running rows whose lease expired). */
+export async function runWorkerRecover(db: Database): Promise<RecoverResult> {
+  return { recovered: await recoverStaleJobs(db) };
+}
+
+/**
+ * One unit of worker work: recover, claim, execute, record.
+ *
+ * Extracted from the HTTP handler so the in-process ticker can call it directly rather than
+ * issuing an authenticated HTTP request to itself — a self-call would need the machine
+ * credential in its own process and would add a second, needless way into the execution lane.
+ * The HTTP route remains, for an operator or an external scheduler.
+ */
+export async function runWorkerTick(
+  db: Database,
+  clients: WorkerClients,
+  renderers: RendererRegistry,
+  opts: { workerId?: string; leaseSeconds?: number } = {}
+): Promise<TickResult> {
+  const workerId = opts.workerId ?? WORKER_ID;
+  const leaseSeconds = opts.leaseSeconds ?? LEASE_SECONDS;
+
+  // Sweep abandoned work first, so a job stranded by a crashed worker becomes runnable (or
+  // visibly failed) instead of sitting in `running` forever with nothing to move it.
+  const recovered = await recoverStaleJobs(db);
+
+  // Atomic claim: one statement, FOR UPDATE SKIP LOCKED. Two concurrent ticks cannot both
+  // receive this row — which is what previously allowed a duplicated paid render.
+  const job = await claimNextJob(db, workerId, leaseSeconds);
+  if (!job) {
+    return { claimed: false, recovered };
+  }
+
+  try {
+    // Idempotency: if this key already produced a completed result, reuse it rather than
+    // repeating the work. This is what makes a recovery re-queue safe.
+    if (job.idempotencyKey) {
+      const done = await findCompletedByIdempotencyKey(db, job.idempotencyKey, job.id);
+      if (done?.resultId) {
+        await db
+          .update(tables.productionJobs)
+          .set({ status: 'done', resultId: done.resultId, completedAt: new Date(), lockedUntil: null })
+          .where(eq(tables.productionJobs.id, job.id));
+        return { claimed: true, jobId: job.id, status: 'done', resultId: done.resultId, deduplicated: true, recovered };
+      }
+    }
+
+    const { resultId } = await dispatch(job, clients, renderers);
+    await db
+      .update(tables.productionJobs)
+      .set({ status: 'done', resultId, completedAt: new Date(), lockedUntil: null })
+      .where(eq(tables.productionJobs.id, job.id));
+    return { claimed: true, jobId: job.id, status: 'done', resultId, recovered };
+  } catch (err) {
+    const nextAttempt = (job.attempt ?? 0) + 1;
+    const maxAttempts = job.maxAttempts ?? 2;
+    if (nextAttempt < maxAttempts) {
+      // Unchanged backoff semantics: re-queue with locked_until in the future, which the
+      // claim query already respects. Clearing worker_id keeps the lease honest.
+      const backoffSecs = nextAttempt * 30;
+      const lockedUntil = new Date(Date.now() + backoffSecs * 1000);
+      await db
+        .update(tables.productionJobs)
+        .set({ status: 'queued', attempt: nextAttempt, lockedUntil, workerId: null })
+        .where(eq(tables.productionJobs.id, job.id));
+      return { claimed: true, jobId: job.id, status: 'requeued', attempt: nextAttempt, recovered };
+    }
+    const error = (err as Error).message;
+    await db
+      .update(tables.productionJobs)
+      .set({ status: 'failed', attempt: nextAttempt, error, completedAt: new Date(), lockedUntil: null })
+      .where(eq(tables.productionJobs.id, job.id));
+    return { claimed: true, jobId: job.id, status: 'failed', error, recovered };
+  }
+}
+
 export function registerWorkerRoutes(
   app: FastifyInstance,
   db: Database,
   clients: WorkerClients = { heygen: null, drive: null },
   renderers: RendererRegistry = createDefaultRendererRegistry()
 ) {
-  // POST /worker/tick — claim and execute the next queued job.
-  app.post('/worker/tick', async (request, reply) => {
-    const secret = (request.headers['x-worker-secret'] as string | undefined) ?? '';
-    if (WORKER_SECRET && secret !== WORKER_SECRET) {
-      return reply.code(401).send({ error: 'unauthorized' });
-    }
+  // Encapsulated scope: the machine-auth hook applies to EVERY route registered inside it,
+  // so a worker route added later cannot forget its own check. server.ts's session guard
+  // skips these paths (isWorkerRoute) — they are machine-authenticated, not public.
+  void app.register(async (worker) => {
+    worker.addHook('onRequest', async (request, reply) => {
+      const result = checkWorkerSecret(
+        request.headers['x-worker-secret'] as string | undefined,
+        WORKER_SECRET
+      );
+      if (!result.authorized) {
+        request.log.warn(
+          { path: request.url, reason: result.reason },
+          '[worker] rejected unauthenticated worker request'
+        );
+        return reply.code(401).send({ error: 'unauthorized', code: WORKER_AUTH_REQUIRED_CODE });
+      }
+    });
 
-    // Claim the next queued job (lowest priority, then oldest enqueued_at).
-    const [job] = await db
-      .select()
-      .from(tables.productionJobs)
-      .where(
-        and(
-          eq(tables.productionJobs.status, 'queued'),
-          sql`(${tables.productionJobs.lockedUntil} IS NULL OR ${tables.productionJobs.lockedUntil} < now())`
-        )
-      )
-      .orderBy(tables.productionJobs.priority, tables.productionJobs.enqueuedAt)
-      .limit(1);
+    // POST /worker/recover — sweep abandoned jobs (running rows whose lease expired).
+    // Exposed separately so an operator can run recovery without also claiming work.
+    worker.post('/worker/recover', async () => runWorkerRecover(db));
 
-    if (!job) {
-      return { claimed: false };
-    }
+    // POST /worker/tick — claim and execute the next queued job.
+    worker.post('/worker/tick', async () => runWorkerTick(db, clients, renderers));
+  });
+}
 
-    // Mark running.
-    await db
-      .update(tables.productionJobs)
-      .set({ status: 'running', startedAt: new Date() })
-      .where(eq(tables.productionJobs.id, job.id));
+// --- In-process dispatcher ---------------------------------------------------------------
+//
+// Phase A.1 §3. Before this, nothing dispatched: no worker service in compose, no cron entry
+// for the worker, no dashboard call, no CI job. Queued jobs sat queued.
+//
+// This is the smallest mechanism consistent with the existing deployment: a `setInterval` in
+// the gateway process, which is already a long-running container that restarts under compose's
+// restart policy. It introduces no new service, image, queue, broker or repository. It calls
+// `runWorkerTick` in-process — no self-HTTP, so it needs no credential and widens no auth
+// surface. Concurrency is already safe: the Phase A claim is atomic (FOR UPDATE SKIP LOCKED),
+// so even several gateway replicas ticking at once cannot claim the same job.
+//
+// OFF BY DEFAULT. Enabling it starts executing queued work, some of which is paid external
+// rendering, so the switch is a deliberate deploy-time act (`WORKER_TICK_ENABLED=true`), not
+// something a merge turns on.
 
-    try {
-      const { resultId } = await dispatch(job, clients, renderers);
-      await db
-        .update(tables.productionJobs)
-        .set({ status: 'done', resultId, completedAt: new Date() })
-        .where(eq(tables.productionJobs.id, job.id));
-      return { claimed: true, jobId: job.id, status: 'done', resultId };
-    } catch (err) {
-      const nextAttempt = (job.attempt ?? 0) + 1;
-      const maxAttempts = job.maxAttempts ?? 2;
-      if (nextAttempt < maxAttempts) {
-        const backoffSecs = nextAttempt * 30;
-        const lockedUntil = new Date(Date.now() + backoffSecs * 1000);
-        await db
-          .update(tables.productionJobs)
-          .set({ status: 'queued', attempt: nextAttempt, lockedUntil })
-          .where(eq(tables.productionJobs.id, job.id));
-        return { claimed: true, jobId: job.id, status: 'requeued', attempt: nextAttempt };
-      } else {
-        const error = (err as Error).message;
-        await db
-          .update(tables.productionJobs)
-          .set({ status: 'failed', error, completedAt: new Date() })
-          .where(eq(tables.productionJobs.id, job.id));
-        return { claimed: true, jobId: job.id, status: 'failed', error };
+/** Default gap between ticks. Short enough to feel responsive, long enough that an idle
+ *  queue costs one trivial indexed query per interval. */
+export const DEFAULT_TICK_INTERVAL_MS = 15_000;
+
+export type WorkerTicker = { stop: () => void };
+
+export type TickLogger = {
+  info: (o: unknown, m?: string) => void;
+  error: (o: unknown, m?: string) => void;
+};
+
+/**
+ * Wrap a tick in the two properties an interval-driven worker needs, and nothing else:
+ *
+ *  - **No overlap.** A tick that outruns the interval must not stack. Skipping is correct
+ *    rather than queueing — the next interval picks the work up, and the row's lease protects
+ *    it in the meantime.
+ *  - **No throw.** A failing tick must never reach the interval callback, where an unhandled
+ *    rejection could take the gateway process down. The dispatcher outliving a bad job is the
+ *    whole point of running it in-process.
+ *
+ * Extracted so both properties are unit-testable without a timer or a database.
+ */
+export function createNonOverlappingRunner(
+  run: () => Promise<{ claimed: boolean; jobId?: string; status?: string }>,
+  log: TickLogger
+): { tick: () => Promise<void>; isRunning: () => boolean } {
+  let inFlight = false;
+  return {
+    isRunning: () => inFlight,
+    tick: async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const result = await run();
+        if (result.claimed) {
+          log.info({ jobId: result.jobId, status: result.status }, '[worker] tick executed job');
+        }
+      } catch (err) {
+        log.error({ err: (err as Error).message }, '[worker] tick failed');
+      } finally {
+        inFlight = false;
       }
     }
-  });
+  };
+}
+
+export function startWorkerTicker(opts: {
+  db: Database;
+  clients?: WorkerClients;
+  renderers?: RendererRegistry;
+  intervalMs?: number;
+  log?: TickLogger;
+}): WorkerTicker | null {
+  if (process.env.WORKER_TICK_ENABLED !== 'true') return null;
+
+  const intervalMs = opts.intervalMs ?? Number(process.env.WORKER_TICK_INTERVAL_MS ?? DEFAULT_TICK_INTERVAL_MS);
+  const clients = opts.clients ?? { heygen: null, drive: null };
+  const renderers = opts.renderers ?? createDefaultRendererRegistry();
+  const log = opts.log ?? console;
+
+  const { tick } = createNonOverlappingRunner(() => runWorkerTick(opts.db, clients, renderers), log);
+
+  const handle = setInterval(() => void tick(), intervalMs);
+  // Do not hold the event loop open on this alone.
+  if (typeof handle.unref === 'function') handle.unref();
+  log.info({ intervalMs, workerId: WORKER_ID }, '[worker] in-process ticker started');
+
+  return { stop: () => clearInterval(handle) };
 }

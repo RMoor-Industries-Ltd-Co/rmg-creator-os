@@ -27,6 +27,7 @@ import {
   uploadFromUrl as postizUploadFromUrl,
   type PostizPostInput
 } from './postiz.js';
+import { checkDeliveryApproval } from './approval.js';
 import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
   assertCookieSecret,
@@ -50,7 +51,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSequence, type Segment } from './compose.js';
-import { registerWorkerRoutes } from './worker.js';
+import { registerWorkerRoutes, startWorkerTicker } from './worker.js';
+import { isWorkerRoute } from './workerAuth.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerDeliveryRoutes } from './routes/delivery.js';
 import { registerAtelierBrollRoutes } from './routes/atelier_broll.js';
@@ -109,6 +111,10 @@ await app.register(cookie, { secret: COOKIE_SECRET });
 if (AUTH_ENABLED) {
   app.addHook('onRequest', async (request, reply) => {
     if (isPublicRoute(request.method, request.url)) return;
+    // Worker routes are machine-authenticated (x-worker-secret, fail-closed) by their own
+    // encapsulated hook in registerWorkerRoutes — NOT public. Skipping the session guard here
+    // is what makes them reachable by a headless caller; it does not make them unauthenticated.
+    if (isWorkerRoute(request.method, request.url)) return;
     const raw = request.cookies?.[SESSION_COOKIE];
     const un = raw ? request.unsignCookie(raw) : null;
     if (!un?.valid || !isEmailAllowed(un.value, ALLOWED_EMAILS)) {
@@ -1961,6 +1967,10 @@ app.post<{
         provider: 'heygen',
         payload: { videoId, talkingPhotoId, audioUrl, dimension: dim, motionPrompt: motionPrompt ?? null, videoRowId: video.id },
         priority: 5,
+        // One queue row per video row. The paid HeyGen call already happened above, so this
+        // key cannot suppress real work — it only prevents a duplicate tracking row, and
+        // makes an abandoned job safely re-runnable rather than operator-gated.
+        idempotencyKey: `aroll:${video.id}`,
       }).catch(() => undefined); // non-fatal — the video row is the source of truth
       reply.code(201);
       return video;
@@ -2200,6 +2210,20 @@ app.post<{ Params: { id: string }; Body: { platforms?: string[]; type?: 'draft' 
     const { id } = request.params;
     const [prod] = await db.select().from(tables.productions).where(eq(tables.productions.id, id));
     if (!prod) return reply.code(404).send({ error: 'production not found' });
+
+    // Phase A — enforce the delivery-approval gate that already exists on the record.
+    //
+    // This endpoint previously checked only that SOME completed render existed, falling back
+    // to any completed row. A completed render is not an approval: it meant the per-brand My
+    // Poster gate was rendered in the UI but unenforced on the path that actually publishes
+    // to live channels. Fail closed — an absent, pending or rejected approval blocks.
+    //
+    // Phase B adds approver identity and role semantics; Phase A only enforces the mechanism
+    // already present.
+    const approvalCheck = checkDeliveryApproval(prod.brand, prod.deliveryApprovals);
+    if (!approvalCheck.ok) {
+      return reply.code(403).send({ error: approvalCheck.reason, code: 'delivery_not_approved' });
+    }
 
     // The final video for this production (the rendered cut), public for Postiz to fetch.
     const vids = await db.select().from(tables.videos).where(eq(tables.videos.productionId, id));
@@ -2656,6 +2680,13 @@ app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/
 
 // Production Queue — worker tick and queue management endpoints.
 registerWorkerRoutes(app, db, { heygen, drive });
+// In-process dispatcher (Phase A.1 §3). Off unless WORKER_TICK_ENABLED=true — nothing
+// dispatched the queue before this, and turning it on starts paid rendering, so it is an
+// explicit deploy-time decision rather than a consequence of deploying this build.
+const workerTicker = startWorkerTicker({ db, clients: { heygen, drive }, log: app.log });
+if (workerTicker) {
+  app.addHook('onClose', async () => workerTicker.stop());
+}
 registerQueueRoutes(app, db);
 // Atelier delivery — Ad Index, My Poster approval, Final Cut re-upload, download package.
 registerDeliveryRoutes(app, db, drive as Parameters<typeof registerDeliveryRoutes>[2]);

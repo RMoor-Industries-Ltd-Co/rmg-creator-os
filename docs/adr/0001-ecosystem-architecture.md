@@ -53,3 +53,22 @@ A.L.L.E.N, A.L.L.I.E, My Poster, and a personal Life OS utility.
 - Auth/identity provider for the dashboard.
 - Hosting model for LLM inference (A.L.L.E.N brain).
 - Whether render stays single-node or scales to a pool.
+
+---
+
+## Superseded in part — queue technology (2026-09-09, decision D-B)
+
+This ADR names **Redis + BullMQ** as the job-queue backbone. That was never implemented:
+`bullmq` is not a dependency of any workspace package, Redis serves caching and the `/health`
+probe only, and the durable queue is the Postgres `production_jobs` table claimed by
+`POST /worker/tick`.
+
+**D-B ratifies the implementation as built.** Creator OS retains and hardens its
+Postgres-backed queue as the authoritative job backbone for the Master Atelier initiative.
+BullMQ is not introduced merely to conform to this document. Any future migration to BullMQ,
+a Redis-backed queue, or another queue technology requires a separate architectural decision
+based on demonstrated need.
+
+The rest of this ADR is unchanged. Current execution semantics — atomic claim, leases,
+stale-job recovery and idempotency — are documented in
+[`../atelier/queue-execution-semantics.md`](../atelier/queue-execution-semantics.md).

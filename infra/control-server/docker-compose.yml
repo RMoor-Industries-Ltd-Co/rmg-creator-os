@@ -88,6 +88,19 @@ services:
       POSTIZ_API_URL: ${POSTIZ_API_URL:-https://social.rmasters.group/api/public/v1}
       POSTIZ_API_KEY: ${POSTIZ_API_KEY:-}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      # --- Worker execution lane (Phase A.1) -----------------------------------
+      # WORKER_SECRET is the machine credential for POST /worker/tick and
+      # /worker/recover. It is REQUIRED: with it unset the routes fail closed and
+      # the execution lane stays shut (previously an unset value silently disabled
+      # the check instead). Compose only forwards a variable it names here, so a
+      # value present in Doppler but absent from this block never reaches the
+      # container.
+      WORKER_SECRET: ${WORKER_SECRET:-}
+      # In-process dispatcher. OFF unless set to exactly "true". Turning it on starts
+      # executing queued jobs, including paid external renders — a deliberate act.
+      WORKER_TICK_ENABLED: ${WORKER_TICK_ENABLED:-}
+      WORKER_TICK_INTERVAL_MS: ${WORKER_TICK_INTERVAL_MS:-}
+      WORKER_LEASE_SECONDS: ${WORKER_LEASE_SECONDS:-}
     volumes:
       # Authenticated Higgsfield CLI credentials (device-flow token), read-write
       # so the CLI can refresh its lock file.

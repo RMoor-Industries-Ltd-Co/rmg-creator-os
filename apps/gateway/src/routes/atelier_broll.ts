@@ -101,7 +101,11 @@ export function registerAtelierBrollRoutes(app: FastifyInstance, db: Database) {
 
       const jobs = [];
       for (const provider of scene.providers) {
-        const job = await enqueueJob(db, {
+        // Deliberately NO idempotency key: an operator may legitimately request a second
+        // take of the same scene+provider, and a key here would silently return the first
+        // job instead of rendering a new take. Without a key, an abandoned b-roll job
+        // recovers to `failed` for an operator rather than auto-re-running paid work.
+        const { job } = await enqueueJob(db, {
           productionId: prod.id,
           capability: 'broll',
           provider,
