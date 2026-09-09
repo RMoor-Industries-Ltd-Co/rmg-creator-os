@@ -1,6 +1,6 @@
 # Phase B — Governance Primitives: Design
 
-**Status:** design for review. **No implementation.**
+**Status:** **ratified** 2026-09-09 (§14). **No implementation yet** — Phase B1 only is authorized next (§16).
 **Governing contract:** `rmg-piaar-system` [contract 36 — Approval Authority and Founder Identity](https://github.com/RMoor-Industries-Ltd-Co/rmg-piaar-system/blob/main/contracts/36-approval-authority-and-founder-identity.md) (ratified 2026-09-09, `ed4ffbd`).
 **Related:** contract 31 (Accord / HVN Pipeline MCP), contract 26 (PIAAR MCP), contract 29 (autonomy `L0–L4`).
 **Baseline:** `main` at `b9cd956` — Phase A + A.1, live in production.
@@ -35,7 +35,8 @@ So:
 
 B1 delivers real contract-36-shaped evidence — principal, role, revision digest, decision,
 timestamp, notes, provenance — for a gate that is live in production today and currently records
-none of it. B2 designs the transport and waits.
+none of it, and adds **step-up authentication** so a founder approval proves the founder was
+present, not merely that someone signed in this month (§7.1). B2 designs the transport and waits.
 
 Recommended human-principal model: **per-domain human principals** (`rahm@business`), a new
 principal *kind*, not a new identity shape. Recommended transport: **a signed domain assertion
@@ -197,15 +198,34 @@ points the old one at it, in one transaction. Nothing is destroyed — which is 
 §2.2's map lacks.
 
 `principal_kind = 'human'` is required for any row whose `asserted_role = 'founder'`. Enforce it
-as a `CHECK`, not as application logic, so no future write path can forget:
+as a `CHECK`, not only as application logic, so no future write path can forget:
 
 ```sql
 ALTER TABLE approval_evidence ADD CONSTRAINT founder_is_human
   CHECK (asserted_role <> 'founder' OR principal_kind = 'human');
 ```
 
-That single constraint is contract 36 clause 4 and clause 7 expressed where they cannot be
-argued with. A machine principal inserting a founder approval fails at the database.
+**Corrected on founder review (ratified decision 7).** An earlier revision of this document
+called this constraint "contract 36 clause 4 and clause 7 expressed where they cannot be argued
+with." **That overstated it, and the overstatement was the dangerous kind — it described a
+consistency check as if it were an authorization control.**
+
+`principal_kind` is a *value the writer supplies*. A buggy or malicious caller can label itself
+`'human'` and satisfy the constraint. What the check actually buys is narrow and worth having:
+an obviously impossible combination — a row asserting founder authority while admitting it came
+from a machine — can never be stored, by any code path, present or future.
+
+**Authorization lives upstream, in the fabric and domain boundary**, and nowhere else:
+
+| Layer | Answers | Trust |
+|---|---|---|
+| Fabric / domain (`rmg-piaar-mcps`, `hvnglobalco-com`) | *May this caller assert founder authority?* | **The authorization decision** |
+| Creator OS write path | *Was that authority proven to me before I wrote?* | Enforcement point |
+| `CHECK` constraint | *Is this row internally coherent?* | Defense in depth only |
+
+Read bottom-up, the constraint catches a mistake. Read top-down, it decides nothing. Any design
+that starts relying on it as the gate has already lost the property contract 36 exists to
+protect.
 
 ### 3.3 `workflow_transitions` — attributed, append-only
 
@@ -391,10 +411,52 @@ machine being able to forge it?"* A complete design needs one answer from each c
 2. `packages/identity` learns to construct and resolve a human principal.
 3. `packages/authz` gains grants for it, default-deny preserved.
 4. Creator OS records `un.value` (the verified email) as `principal_id` with
-   `principal_kind = 'human'`. That is the whole of B1's identity work.
+   `principal_kind = 'human'`, **plus a proof of recent authentication** — see §7.1.
 
 **Explicitly not recommended:** minting a machine credential for the founder as a stopgap.
 Contract 36's interim rule forbids it, and it is the design that ships permanently.
+
+### 7.1 Step-up authentication for approval actions (ratified decision 2)
+
+A 30-day session is adequate proof that *someone signed in this month*. It is not adequate proof
+that **the founder is at the keyboard right now**, and a final creative approval needs the
+second claim, not the first.
+
+**Ratified:** ordinary session authentication is unchanged; a founder approval additionally
+requires a **fresh authentication within a 15-minute step-up window**, with explicit
+re-authentication before a final approval.
+
+**The obstacle, stated plainly:** freshness cannot be derived from the current session, because
+`rmg_sess` carries only the email — no issued-at, no authentication time. There is nothing in
+the cookie to age.
+
+**Design.** A second, separate credential, minted only by a fresh sign-in:
+
+- `POST /auth/google/step-up` accepts a Google ID token, verifies it exactly as `/auth/google`
+  does (audience, `email_verified`, allowlist) **and additionally rejects it unless its `iat` is
+  within `STEP_UP_MAX_AGE_SECONDS` (default 900) of now.** Google's `tokeninfo` returns `iat`
+  and `exp`, so this is a real check against the issuer's claim, not a local timer we set
+  ourselves.
+- On success it issues `rmg_stepup` — signed, `httpOnly`, `secure`, `sameSite: 'lax'`,
+  `maxAge` 900 — carrying a step-up id and the authentication instant.
+- Approval write paths require a valid, unexpired `rmg_stepup` **in addition to** the session.
+  Absent, expired, or belonging to a different email than the session: **refuse**, with a
+  distinct discriminator (`step_up_required`) so the UI can prompt for re-authentication rather
+  than showing a generic error.
+- The evidence row records the proof: `authorization_ref` = the step-up id, and
+  `provenance.auth_age_seconds` = the age of the authentication at the moment of decision.
+  **How fresh the authority was is itself part of the evidence**, not a transient the record
+  forgets.
+
+**Fails closed in all four directions:** no step-up cookie, expired cookie, unverifiable
+signature, or email mismatch against the session all refuse. `STEP_UP_MAX_AGE_SECONDS` unset
+falls back to 900 — never to "no limit", which is the fail-open shape Phase A.1 already had to
+remove once from `WORKER_SECRET`.
+
+**Scope.** Step-up gates *approval* writes only — recording a founder decision. Reading, listing,
+queueing renders and every other authenticated action keep the ordinary session. Requiring
+re-authentication for routine work trains people to click through it, which costs more security
+than it buys.
 
 ---
 
@@ -432,9 +494,16 @@ avoids Phase B blocking on a contract-26 decision that is not ours to make.
 ### 8.4 The prerequisite
 
 **B2 cannot begin until `hvnglobalco-com` has an authenticated server surface with a signing key.**
-That is its own scoped piece of work — its first API route, a key in Doppler, and the
-constant-time auth pattern already used across the fleet. Until then, per contract 36's interim
-rule, Accord approvals are made and recorded outside the automated path.
+
+**Authorized on founder review (ratified decision 4), and deliberately narrow:** HVN Global gains
+the *minimum* authenticated surface required for the governed approval/evidence path — a founder
+approval route, a signing key in Doppler, and the constant-time auth pattern already used across
+the fleet. **It does not become a general API platform.** A repository that is pages today
+acquires exactly one server capability, for one governed purpose, and each future route is its
+own decision rather than a consequence of this one.
+
+Until that exists, per contract 36's interim rule, Accord approvals are made and recorded outside
+the automated path — never approximated inside it on a machine credential.
 
 ---
 
@@ -485,10 +554,13 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 8 | Two approvals race | Partial unique index on live rows |
 | 9 | A stopgap machine credential becomes permanent | Contract 36 interim rule; §7 declines it explicitly |
 | 10 | Evidence is edited after the fact | Append-only; only `superseded_by` is ever written |
-| 11 | Session cookie forged → forged founder approval | `assertCookieSecret` already fails closed in production; note that B1 **raises the value** of that cookie, which is a real consequence of B1 and argues for shortening its 30-day life |
+| 11 | Stolen/forged 30-day session → forged founder approval | **Closed by ratified decision 2:** approval writes additionally require a fresh `rmg_stepup` credential, ≤15 minutes old, verified against Google's `iat` (§7.1). A stolen session alone can no longer approve. `assertCookieSecret` continues to fail closed in production |
+| 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
-Failure 11 is the one B1 *introduces* rather than mitigates, and it should be decided
-deliberately rather than discovered.
+Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
+rather than accepted. Failure 12 is a documentation failure mode, which is a real category: a
+design document that overstates a control teaches every later implementer to under-build the
+real one.
 
 ---
 
@@ -508,6 +580,18 @@ machine founder row; concurrent approvals collide on the live index; supersessio
 test on Phase A's live queries**); the `one_parent` CHECK; `0023` applied twice against a clean
 database through the real runner, as `0022` was.
 
+**Step-up (§7.1)** — pure: token `iat` older than the window is rejected; `iat` in the future is
+rejected; email mismatch between step-up and session is rejected; missing or expired credential
+is rejected; `STEP_UP_MAX_AGE_SECONDS` unset falls back to 900 and never to unlimited. Integration:
+an approval write without a valid step-up is refused with `step_up_required`, and a successful
+one records `auth_age_seconds` in provenance.
+
+**A test for what the `CHECK` does *not* do.** One test writes a row with
+`principal_kind = 'human'` from a caller that is not a human and shows the constraint **accepts**
+it — proving the check is a coherence guard, not authorization, and that the real gate is
+enforced upstream. A test that only demonstrates the happy path would let a later reader repeat
+this document's original error.
+
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control.
 
@@ -519,41 +603,78 @@ the never. A control with no test proving it fails is not a control.
 
 1. `0023` migration + schema (nothing reads it yet).
 2. Digest projection functions + tests.
-3. `approval_evidence` write path behind `PATCH /productions/:id/approvals`, recording the session
-   email as a `human` principal; dual-write the legacy map.
-4. Widen `checkDeliveryApproval`; publish gate reads evidence.
-5. `workflow_transitions` on the transitions that already exist.
-6. Backfill legacy approvals as unbound history.
+3. Step-up credential (§7.1): `POST /auth/google/step-up`, the `rmg_stepup` cookie, and the
+   `step_up_required` refusal. Landed **before** the write path that depends on it, so the
+   evidence path is never briefly writable without it.
+4. `approval_evidence` write path behind `PATCH /productions/:id/approvals`, requiring a valid
+   step-up and recording the session email as a `human` principal, with `auth_age_seconds` in
+   provenance; dual-write the legacy map.
+5. Widen `checkDeliveryApproval`; publish gate reads evidence.
+6. `workflow_transitions` on the transitions that already exist.
+7. Backfill legacy approvals as unbound history.
 
 **B1.5 — small, sequencing-critical**
 
-7. `awaiting_approval` enum value + transition rules + the Phase A invisibility regression tests.
+8. `awaiting_approval` enum value + transition rules + the Phase A invisibility regression tests.
    Nothing uses it yet; landing it before any gate needs it keeps that PR small.
 
 **B2 — blocked on `hvnglobalco-com`**
 
-8. Registry `PrincipalKind` change (governed, `rmg-piaar-system` first, mirror second).
-9. `packages/identity` / `authz` human principal support.
-10. HVN Global's first authenticated route + signing key.
-11. Assertion verification and ingest in Creator OS.
-12. `work_items` + article-shaped production.
+9. Registry `PrincipalKind` change (governed, `rmg-piaar-system` first, mirror second).
+10. HVN Global's first authenticated route + signing key — scoped per §8.4.
+11. `packages/identity` / `authz` human principal support.
+12. Assertion verification and ingest in Creator OS.
+13. `work_items` + article-shaped production.
 
-Steps 1–7 are safe to build and merge without any of 8–12. That is the point of the split.
+Steps 1–8 are safe to build and merge without any of 9–13. That is the point of the split, and
+ratified decision 5 authorizes exactly that.
 
 ---
 
-## 14. Open founder decisions
+## 14. Ratified decisions
 
-1. **Registry shape for a human principal** — extend `SystemKind` to a `PrincipalKind` including
-   `human`, or add a separate `people` collection? §7 needs one but does not choose; it is a
-   change to the canonical registry and belongs to you.
-2. **Session lifetime.** B1 makes the `rmg_sess` cookie the proof of a founder approval. It
-   currently lives 30 days. Shorten it, require re-authentication for approval actions
-   specifically, or accept it? (Failure 11.)
-3. **Legacy approval re-consent.** §10 deliberately makes pre-Phase-B approvals non-authoritative.
-   Confirm — the alternative is grandfathering unattributed approvals into a system built to
-   prevent exactly that.
-4. **HVN Global server surface.** B2 is blocked on it. Authorize it as its own scoped piece of
-   work, or accept that Accord approvals stay outside the automated path for now?
-5. **Whether B1 may proceed alone.** It delivers real contract-36 evidence for a live gate without
-   touching the fabric or HVN. Confirm the split, or hold both halves together.
+All five open decisions were resolved by the founder on 2026-09-09, together with two additions.
+Recorded here as the design's fixed points.
+
+| # | Decision |
+|---|---|
+| 1 | **Human identities are domain-scoped.** The initial founder principal is `rahm@business`. No cross-domain human identity is created — the fabric's existing rule applies equally to humans. |
+| 2 | **Founder approval requires fresh / step-up authentication** and may not rely on the 30-day session alone. Target window 15 minutes, with explicit re-authentication before a final approval. Ordinary session auth is unchanged. → §7.1 |
+| 3 | **Legacy approvals do not become valid evidence.** Existing map entries stay visible for compatibility but do not satisfy the digest-bound gate until re-consented under the new model. → §10 |
+| 4 | **`hvnglobalco-com` is authorized** to gain the minimum authenticated server surface for founder approval and signed domain assertions — **and no more.** Not a general API platform. → §8.4 |
+| 5 | **B1 may proceed alone**, before the HVN transport exists. |
+| 6 | **Signed domain assertions are the preferred B2 transport.** → §8.2 |
+| 7 | **Database constraints are defense in depth, not authorization authority.** → §3.2 |
+
+Decision 7 corrected this document. The earlier text described the `founder_is_human` CHECK as
+contract 36's clauses "expressed where they cannot be argued with"; a caller can in fact label
+itself `human` and satisfy it. Overstating a control is how the real one ends up under-built, so
+§3.2 now states what the constraint does and does not do, and §12 adds a test proving the
+negative.
+
+## 15. Standing merge discipline
+
+Adopted for every remaining implementation PR in this initiative:
+
+> **Mark ready → let the Codex review finish → then merge.**
+
+Marking a draft ready triggers a Codex review; merging seconds later kills it mid-run. That
+happened twice in this initiative — on the Phase A code PR (#52) and on contract 36
+(`rmg-piaar-system#36`) — and in both cases the review layer was lost silently, with the PR
+still showing green. Neither loss changed an outcome, but the failure mode is repeatable and
+costs nothing to avoid.
+
+## 16. What is authorized next
+
+**Phase B1 implementation only.** B2 and `hvnglobalco-com` stay untouched until B1 is merged and
+validated.
+
+| Phase B1 — Creator OS governance primitives | Phase B2 — HVN Global approval transport |
+|---|---|
+| Actor / principal attribution | Authenticated founder action in `hvnglobalco-com` |
+| Approval evidence | Signed domain assertion |
+| `awaiting_approval` | Fabric-compatible human principal |
+| Workflow transitions | Delivery of immutable evidence into Creator OS |
+| Work-item parent | |
+| Dual-write compatibility with the legacy approvals map | |
+| Step-up authentication (§7.1) | |
