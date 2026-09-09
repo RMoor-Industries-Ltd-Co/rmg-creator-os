@@ -51,7 +51,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeSequence, type Segment } from './compose.js';
-import { registerWorkerRoutes } from './worker.js';
+import { registerWorkerRoutes, startWorkerTicker } from './worker.js';
+import { isWorkerRoute } from './workerAuth.js';
 import { registerQueueRoutes } from './routes/queue.js';
 import { registerDeliveryRoutes } from './routes/delivery.js';
 import { registerAtelierBrollRoutes } from './routes/atelier_broll.js';
@@ -110,6 +111,10 @@ await app.register(cookie, { secret: COOKIE_SECRET });
 if (AUTH_ENABLED) {
   app.addHook('onRequest', async (request, reply) => {
     if (isPublicRoute(request.method, request.url)) return;
+    // Worker routes are machine-authenticated (x-worker-secret, fail-closed) by their own
+    // encapsulated hook in registerWorkerRoutes — NOT public. Skipping the session guard here
+    // is what makes them reachable by a headless caller; it does not make them unauthenticated.
+    if (isWorkerRoute(request.method, request.url)) return;
     const raw = request.cookies?.[SESSION_COOKIE];
     const un = raw ? request.unsignCookie(raw) : null;
     if (!un?.valid || !isEmailAllowed(un.value, ALLOWED_EMAILS)) {
@@ -2675,6 +2680,13 @@ app.post<{ Params: { id: string }; Body: { platform?: string } }>('/productions/
 
 // Production Queue — worker tick and queue management endpoints.
 registerWorkerRoutes(app, db, { heygen, drive });
+// In-process dispatcher (Phase A.1 §3). Off unless WORKER_TICK_ENABLED=true — nothing
+// dispatched the queue before this, and turning it on starts paid rendering, so it is an
+// explicit deploy-time decision rather than a consequence of deploying this build.
+const workerTicker = startWorkerTicker({ db, clients: { heygen, drive }, log: app.log });
+if (workerTicker) {
+  app.addHook('onClose', async () => workerTicker.stop());
+}
 registerQueueRoutes(app, db);
 // Atelier delivery — Ad Index, My Poster approval, Final Cut re-upload, download package.
 registerDeliveryRoutes(app, db, drive as Parameters<typeof registerDeliveryRoutes>[2]);

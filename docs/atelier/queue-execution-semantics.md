@@ -165,7 +165,87 @@ Phase B** — today the record says *that* a brand was approved, not *who* appro
 |---|---|---|
 | `WORKER_LEASE_SECONDS` | `900` | Lease length on claim. A render that legitimately runs longer would be recovered mid-flight. |
 | `WORKER_ID` | `gateway-<pid>-<rand>` | Worker identity written on claim. Set it explicitly when running more than one worker process. |
-| `WORKER_SECRET` | — | Unchanged; guards `/worker/tick` and `/worker/recover`. |
+| `WORKER_SECRET` | — | **Required.** Machine credential for `/worker/tick` and `/worker/recover`. Unset means the lane is **closed**, not open (see Phase A.1 below). |
+| `WORKER_TICK_ENABLED` | unset (off) | `true` — and only that exact string — starts the in-process dispatcher. |
+| `WORKER_TICK_INTERVAL_MS` | `15000` | Gap between in-process ticks. |
+
+## Phase A.1 — dispatch reachability
+
+Phase A hardened a queue that **nothing dispatched from**. The evidence, gathered read-only:
+
+| Candidate dispatcher | Finding |
+|---|---|
+| A worker service in compose | Absent. Services are `caddy`, `db`, `redis`, `gateway`, `allen`, `dashboard`. |
+| A cron entry | Absent for the worker. The only crontab line in `infra/` is `30 3 * * *` for `backup-db.sh` — proving cron *is* used on this server, just not for this. |
+| The dashboard | No source file under `apps/dashboard/src/` references `worker`. |
+| A GitHub workflow | None of `ci.yml`, `deploy.yml`, `publish-images.yml` mentions the worker. |
+| A manual/operator call | Would have needed the credential below, which was never set. |
+
+So queued jobs stayed queued. `/worker/recover`, added in Phase A, inherited the same problem.
+
+### The credential was fail-open
+
+The route check read `if (WORKER_SECRET && secret !== WORKER_SECRET) return 401`, and
+`WORKER_SECRET` appears nowhere in `infra/` or `.github/`. With it unset the condition is
+never true — the check was a **no-op**. The only thing standing in front of `/worker/tick`
+was the browser session guard, which is also precisely what made the route unreachable to a
+headless caller: a machine has no session cookie and receives `401`.
+
+That is the full contradiction: **unreachable by a machine, and unprotected by its own
+credential.**
+
+### What replaces it
+
+`checkWorkerSecret` (`apps/gateway/src/workerAuth.ts`) is pure, constant-time, and fails
+closed on all three paths — no configured secret, no supplied header, or a mismatch. An
+unconfigured `WORKER_SECRET` now closes the lane instead of opening it.
+
+Reachability and authorization are kept as two separate statements, deliberately:
+
+- `isWorkerRoute` tells the session guard in `server.ts` to **skip** these paths.
+- An **encapsulated** `onRequest` hook inside `registerWorkerRoutes` then authenticates them
+  with the machine credential, so a worker route added later cannot forget its own check.
+
+`isPublicRoute` is untouched. Widening it would have been the easy fix and the wrong one:
+public means *no credential at all*, and the worker lane always requires one. Session
+authentication is not weakened anywhere, and no human session credential is reused for
+machine execution. This is **not** the agent credential — worker execution authority and
+future agent/MCP authority stay separate surfaces.
+
+### The dispatcher
+
+An interval in the gateway process, calling `runWorkerTick` **directly**:
+
+```
+setInterval → runWorkerTick(db, clients, renderers) → recover → claim → dispatch → record
+```
+
+Chosen because it is the smallest mechanism consistent with what already exists — no new
+service, image, broker, repository, or infrastructure primitive; no Redis queue, no BullMQ, no
+n8n; and no "someone remembers to curl it". The gateway is already a long-running container
+under compose's `restart: unless-stopped`, so the dispatcher survives restarts by construction.
+It matches the in-process scheduler pattern used across the rest of the fleet.
+
+It calls the function rather than its own HTTP route on purpose: a self-call would need the
+machine credential inside the process that owns it, and would add a second way into the
+execution lane for no benefit. The HTTP route remains for an operator or an external scheduler.
+
+Two properties, unit-tested via `createNonOverlappingRunner`:
+
+- **No overlap.** A tick still running when the next interval fires is skipped, not queued.
+- **No throw.** A failing tick is logged and swallowed; an unhandled rejection in an interval
+  callback would otherwise be able to take the gateway down.
+
+Concurrency was already safe — the Phase A claim is atomic, so even several gateway replicas
+ticking simultaneously cannot claim the same job.
+
+### Off by default
+
+`WORKER_TICK_ENABLED` is unset, and this change does not set it in `infra/`. Enabling the
+dispatcher starts executing queued work, some of which is paid external rendering, so it is a
+deliberate deploy-time decision rather than a consequence of deploying this build. Compose now
+*names* the variable — a variable compose does not name never reaches the container — but
+assigns it no value.
 
 ## Testing
 

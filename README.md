@@ -33,6 +33,8 @@ A proprietary, in-house content ecosystem for marketing & sales.
 - Nodes are joined privately over **Tailscale**; **Postgres** is both shared state and the
   **job backbone** — the durable `production_jobs` queue, claimed atomically by
   `POST /worker/tick` (see [`docs/atelier/queue-execution-semantics.md`](docs/atelier/queue-execution-semantics.md)).
+  Ticks are driven by an in-process interval in the gateway, off unless `WORKER_TICK_ENABLED=true`;
+  the HTTP route itself is machine-authenticated (`x-worker-secret`, fail-closed).
   Redis is present for caching and the `/health` probe; it does **not** back the queue, and
   BullMQ is not a dependency of any package (ratified as decision D-B, 2026-09-09).
 - **Google Drive** stores media assets; **Google Docs** holds creative writing.
