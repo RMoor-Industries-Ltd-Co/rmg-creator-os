@@ -4,9 +4,13 @@
 
 This plan converts the 2026-09-08 Creator OS audit into a dependency-aware implementation sequence for the Master Atelier Agentic Production Initiative, using the HVN Global Accord pipeline as the first governed reference workflow.
 
-The plan is intentionally conservative: preserve the working Creator OS spine, repair live execution weaknesses first, add governance primitives second, expose agent access only after control exists, then integrate the Accord/HVN MCP capability from the centralized `rmg-piaar-mcps` repository.
+The plan is intentionally conservative: preserve the working Creator OS spine, repair live execution weaknesses first, add governance primitives second, expose agent access only after control exists, then integrate the Accord/HVN MCP capability, implemented as a downstream domain MCP in `hvnglobalco-com` and reached through the `rmg-piaar-mcps` fabric.
 
-The audit evidence is captured in draft PR #50 (`docs/atelier/audits/` on branch `claude/master-atelier-agentic-production-s4bxil`). The corrected audit commit is `b9a528d`.
+The audit evidence is captured in draft PR #50 (`docs/atelier/audits/` on branch
+`claude/master-atelier-agentic-production-s4bxil`). The corrected audit commit is `b9a528d`.
+
+Governance references: the Accord/HVN Pipeline MCP is **contract 31** in `rmg-piaar-system`
+(renumbered from 30 on 2026-09-09, when the 30–35 block was reserved as one allocation).
 
 ## System boundaries
 
@@ -18,12 +22,24 @@ Company repository boundaries for this initiative are:
 |---|---|
 | `RMoor-Industries-Ltd-Co/rmg-piaar-system` | Governance, contracts, roles, cross-system architecture, initiative authority |
 | `RMoor-Industries-Ltd-Co/rmg-creator-os` | Master Atelier control plane, durable workflow state, approvals, orchestration, agent front door |
-| `RMoor-Industries-Ltd-Co/rmg-piaar-mcps` | Company MCP collection; MCP protocol surfaces, machine-principal tool exposure, domain MCP capabilities such as Accord/HVN validation |
-| `RMoor-Industries-Ltd-Co/hvnglobalco-com` | HVN Global / Accord domain source and editorial system |
+| `RMoor-Industries-Ltd-Co/rmg-piaar-mcps` | Shared MCP **fabric** — front door, principal identity, authentication, authorization, routing, audit, observability, transport. Owns **no** domain capability |
+| `RMoor-Industries-Ltd-Co/hvnglobalco-com` | HVN Global domain — Accord editorial doctrine, package validation rules, image/content rules, distinctiveness logic, and the **downstream Accord MCP implementation** |
 | `RMoor-Industries-Ltd-Co/hvnhavenry-com` | HVN Havenry domain system when applicable |
 | Social publishing implementation | Deferred until the distribution phase; not a blocker for the Accord MCP/reference run |
 
-Do not create additional repositories for the Accord MCP. Its implementation belongs inside `rmg-piaar-mcps`.
+Do not create additional repositories for the Accord MCP. Its domain implementation belongs
+inside **`hvnglobalco-com`**, which already exists — so the anti-repo-sprawl decision holds
+without weakening the fabric.
+
+`rmg-piaar-mcps` is the shared MCP fabric and, by its own governing file, *"owns no domain
+capability"* — *"Connect, do not extract."* `rmg-piaar-system`'s repository-ownership table
+agrees: the fabric owns gateways, identity, authn/authz, routing, audit, observability and
+transport, while **domain-specific capabilities and downstream MCP implementations belong to
+domain repositories**. Accord is an HVN Global domain capability, so it lives with its domain;
+Creator OS orchestrates it but does not own its editorial doctrine or domain rules.
+
+**Standing rule:** domain capability stays with the domain; the MCP fabric connects it; Creator
+OS orchestrates it.
 
 ## Governing principles
 
@@ -269,7 +285,11 @@ A representative Accord article/work item can enter Creator OS, move through the
 
 ## Objective
 
-Implement the governed Accord/HVN image-and-content pipeline capability inside `RMoor-Industries-Ltd-Co/rmg-piaar-mcps` and connect it to Creator OS through the authorized machine-principal path.
+Implement the governed Accord/HVN image-and-content pipeline capability inside
+`RMoor-Industries-Ltd-Co/hvnglobalco-com` as a downstream domain MCP, register it in
+`rmg-piaar-mcps`'s downstream configuration with its own per-principal credential reference,
+and reach it from Creator OS through the authorized machine-principal path. The fabric routes;
+it does not host the domain logic.
 
 The governing contract is maintained in `rmg-piaar-system` as **Contract 30 — Accord / HVN Image & Content Pipeline MCP**.
 
@@ -280,12 +300,19 @@ Do not create `accord-pipeline-mcp` as a separate repository.
 Conceptually:
 
 ```text
-rmg-piaar-mcps/
-  accord-pipeline/
-  ...other MCP capabilities
+hvnglobalco-com/                 domain — owns the capability
+  <accord MCP surface>           package validation, brand rules, distinctiveness
+
+rmg-piaar-mcps/                  fabric — owns the front door only
+  config/business/downstream.json    registration + credentialRef (a NAME, never a value)
+  packages/{authn,authz,routing,audit}
+
+rmg-creator-os/                  control plane — owns durable workflow state
 ```
 
-Use the actual repository conventions discovered during implementation.
+Use the actual repository conventions discovered during implementation. Note that
+`rmg-piaar-mcps` names environment variables rather than storing values, and its security
+packages carry zero runtime dependencies — a domain capability placed there would violate both.
 
 ## Ownership split
 
@@ -483,7 +510,7 @@ Do not use direct production edits to substitute for deploy parity unless an exp
 | **M-B** | Creator OS can durably represent actors, approvals, pauses and article-shaped workflow state |
 | **M-C** | Authorized machine principals can interact with Creator OS through an attributed, default-deny agent surface |
 | **M-D** | First Accord-like L0 workflow can run through Creator OS governance without the Accord MCP |
-| **M-E** | Accord MCP is implemented inside `rmg-piaar-mcps` and one L0 package reaches `PROMOTION_READY` under enforced role/validation rules |
+| **M-E** | Accord MCP is implemented inside `hvnglobalco-com`, registered as a downstream in `rmg-piaar-mcps`, and one L0 package reaches `PROMOTION_READY` under enforced role/validation rules |
 | **M-F** | Publishing architecture is deliberately selected and integrated behind a stable Master Atelier distribution contract |
 
 # Definition of success for the initiative
