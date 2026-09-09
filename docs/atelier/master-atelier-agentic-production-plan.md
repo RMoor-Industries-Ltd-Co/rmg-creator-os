@@ -319,12 +319,42 @@ Define the minimum authorized transport for an Accord package/work item to enter
 
 Do not overbuild the HVN Global application. The first transport may be deliberately narrow, but it must be explicit, authenticated and attributable.
 
-### D3. Approval authority decision
+### D3. Approval authority — ratified 2026-09-09
 
-Ratify the boundary:
+**HVN Global owns the approval decision. Creator OS owns the durable evidence and the workflow
+consequence of that decision.** This preserves the boundary already implied by contract 20/32
+and contract 31 without creating a second approval authority.
 
-- Creator OS stores durable approval evidence and workflow state.
-- The authorized principal/fabric layer determines whether a caller may execute the approval action.
+`hvnglobalco-com`:
+
+- presents the governed Accord asset/package for founder review;
+- authenticates, or receives, the authorized founder decision through the approved
+  human-principal path;
+- determines `APPROVED`, `APPROVED_WITH_NOTE`, or `REJECTED`;
+- remains the domain authority for whether the Accord creative is approved.
+
+`rmg-creator-os`:
+
+- does **not** independently approve Accord creative;
+- receives an attributed approval event/evidence from the HVN domain;
+- records the package revision/digest, decision, approving principal, role, timestamp, notes and
+  provenance;
+- advances or pauses the Master Atelier workflow based on that authoritative evidence.
+
+The distinction, stated so no implementation has to infer it:
+
+```text
+HVN domain:   "Was this creative approved?"
+Creator OS:   "An authoritative approval occurred; what does the workflow do next?"
+```
+
+**No Creator OS code path may synthesize, infer, or independently grant Accord creative
+approval.** Recording an approval and making one are different operations, and only the first
+belongs here.
+
+The authorized principal/fabric layer still determines whether a caller may execute the
+approval action; how a human founder principal is authenticated through the fabric is the
+combined D-F / D-H identity decision, which remains open.
 
 ### D4. MCP policy clarification
 
@@ -338,7 +368,11 @@ The first Accord run remains L0. No consequential gate is automatically approved
 
 ## Phase D exit gate
 
-A representative Accord article/work item can enter Creator OS, move through the generic workflow, pause for founder approval, record attributed approval/rejection, and resume without requiring the future Accord MCP to compensate for missing Creator OS governance.
+A representative Accord article/work item can enter Creator OS, move through the generic workflow, pause for the upstream founder gate, **record the authoritative approval evidence produced by the HVN domain — bound to the exact package revision — and apply the corresponding workflow transition**, then resume, without requiring the future Accord MCP to compensate for missing Creator OS governance.
+
+Creator OS **performs the workflow transition; it does not perform or decide the approval.** The
+exit gate is met by recording an upstream decision and acting on it, never by producing one.
+See D3.
 
 ---
 
