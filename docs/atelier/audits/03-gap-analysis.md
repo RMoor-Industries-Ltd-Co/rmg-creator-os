@@ -79,7 +79,7 @@ Multiple legitimate designs; founder/architecture authority must choose. Detaile
 
 | # | Decision |
 |---|---|
-| D-A | **MCP vs. contract 14's "assistant-in-loop only" rule.** The rule currently forbids headless pipeline stages from depending on MCP. The initiative requires exactly that. Amend the contract deliberately, or route MCP calls through an authorized headless bridge. |
+| ~~D-A~~ | **WITHDRAWN 2026-09-09 — my error, not a decision.** I reported that contract 14 forbids headless stages from depending on MCP. It does not: an explicit callout above that Rule limits it to *consuming* an external MCP server and states that PIAAR *publishing* machine-authenticated MCP is headless-safe. No amendment is required and nothing is blocked. See `08-open-decisions.md`. |
 | D-B | **BullMQ vs. the Postgres queue.** `README.md` and ADR-0001 name BullMQ; it is not installed. Ratify the DB queue, or adopt BullMQ. Do not leave both documented. |
 | D-C | **HVN brand identity** — `BrandKey` vs `StoreKey` (P-5). Already codified as open in `packages/types/test` and `packages/wordart`. |
 | D-D | **Where Producer job state lives** — Creator OS, or a new service. |

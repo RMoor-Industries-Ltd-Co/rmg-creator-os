@@ -231,5 +231,9 @@ Creator OS contains **no MCP client, server, or registry code**. MCP appears onl
 > **Rule:** headless pipeline stages may only depend on headless-safe integrations. MCP/OAuth
 > [is] **assistant-in-loop only**.
 
-That rule is ratified and currently **prohibits** the headless, MCP-driven production the
-initiative envisages. See [05-mcp-readiness.md](05-mcp-readiness.md).
+**Correction (2026-09-09).** An earlier revision of this section read that rule as
+**prohibiting** the headless, MCP-driven production the initiative envisages. It does not. A
+callout immediately above the Rule limits it to PIAAR *consuming* an external, per-user-OAuth
+MCP server; PIAAR *publishing* its own machine-authenticated MCP is explicitly headless-safe.
+The prohibition applies to borrowing a person's OAuth session, not to MCP as such. See
+[05-mcp-readiness.md](05-mcp-readiness.md), which records the error in full.

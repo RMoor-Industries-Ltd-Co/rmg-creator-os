@@ -6,31 +6,44 @@ Creator OS contains **no MCP client, server, or registry code**. `grep -i mcp` o
 repository returns documentation only, plus one comment in `server.ts:1502` explaining that
 SuperCool is "assistant/MCP-in-loop (not callable server-side)".
 
-## 2. The governing rule, and the collision
+## 2. The governing rule — and the collision I wrongly reported
 
-`docs/contracts/14-integration-contract.md:38-40` classifies **MCP + OAuth** as
-**"⚠️ assistant-in-loop only"** and states:
+**Correction (2026-09-09).** An earlier revision of this audit claimed contract 14 forbids
+headless pipeline stages from depending on MCP, and raised that as decision **D-A**, the
+"single most important MCP finding." **That claim was wrong, and D-A is withdrawn.**
+
+`rmg-piaar-system/contracts/14-integration-contract.md` does classify **MCP + OAuth** as
+**"⚠️ assistant-in-loop only"**, and does state:
 
 > **Rule:** headless pipeline stages may only depend on headless-safe integrations.
 
-The initiative's agentic production system is, by construction, a set of **headless pipeline
-stages that depend on MCP**. That is a direct collision with a ratified contract, and it is the
-single most important MCP finding in this audit.
+But an explicit callout sits directly above that Rule, and it settles the question:
 
-It is not a defect — the rule exists for a good reason (an OAuth/MCP session is a *person's*
-session, and a headless stage that borrows one is impersonating them). It is an
-**ARCHITECTURAL DECISION REQUIRED** (D-A), and it must be resolved deliberately rather than
-discovered mid-implementation.
+> **Direction matters (see contract 26).** The ⚠️ row below is about PIAAR *consuming*
+> somebody else's MCP server, which still needs a browser-ish OAuth session. It says nothing
+> about PIAAR *publishing* its own tools as an MCP server — that is contract 26, it is live in
+> `rmg-ai`, and it authenticates machine-to-machine with an `x-allen-key`, so it is
+> headless-safe. **Conflating the two is how the open question at the bottom of this contract
+> stays open.**
 
-Two legitimate resolutions:
+`rmg-piaar-system/CLAUDE.md` says the same thing in one line: *"Contract 14's 'MCP =
+assistant-in-loop' line is about consuming an external MCP server and is a different problem."*
 
-- **Amend contract 14** to distinguish *user-session MCP* (still assistant-in-loop) from
-  *machine-principal MCP* (headless-safe, per-principal credential, default-deny), which is
-  precisely what `rmg-piaar-mcps` already implements.
-- **Keep the rule and add a bridge**: an authorized headless service holding its own credential
-  fronts MCP for pipeline stages, so no stage borrows a human session.
+The initiative's agentic production system publishes and consumes **PIAAR-internal**,
+machine-credentialed MCP. Contract 14 already permits that. There is no collision, no contract
+amendment required, and nothing here blocks MCP work.
 
-The first is cleaner and matches the fabric that already exists. Neither should be assumed.
+I read both of those sources during discovery and then wrote the opposite. Recording the error
+rather than quietly deleting it, because a false blocker in an audit is a governance defect in
+its own right: it invents a ratification step, and it teaches the next reader to mistrust the
+document that got it right.
+
+### What the rule *does* still constrain
+
+The ⚠️ row remains binding where it actually applies — **consuming a third party's MCP server**
+that authenticates with a per-user OAuth session (SuperCool, ClickUp, Google Docs in that
+table). A headless pipeline stage may not borrow a person's session for those. That constraint
+is unchanged and is a real design boundary for any stage that wants SuperCool or Docs.
 
 ## 3. What Creator OS must EXPOSE
 

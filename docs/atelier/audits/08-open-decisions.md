@@ -3,21 +3,27 @@
 Only decisions that **cannot responsibly be made from repository evidence**. Each states what is
 known, what is genuinely undetermined, and a recommendation where the evidence supports one.
 
-## D-A — MCP for headless pipeline stages *(highest consequence)*
+## D-A — WITHDRAWN (2026-09-09): there was no collision
 
-**Known.** `docs/contracts/14-integration-contract.md:38-40` classifies MCP+OAuth as
-"assistant-in-loop only" and rules that headless pipeline stages may only depend on
-headless-safe integrations. `rmg-piaar-mcps` already implements per-principal, default-deny,
-machine-credentialed MCP — a different thing from a borrowed human OAuth session.
+**This decision should never have been raised.** It rested on my misreading of contract 14, and
+it is withdrawn rather than deleted so the correction is auditable.
 
-**Undetermined.** Whether to amend contract 14 to distinguish user-session MCP from
-machine-principal MCP, or to keep the rule and interpose an authorized headless bridge.
+**What I claimed.** That contract 14's "MCP + OAuth = assistant-in-loop only" row forbids
+headless pipeline stages from depending on MCP, putting the initiative in direct conflict with a
+ratified contract and requiring an amendment before any MCP work.
 
-**Recommendation.** Amend, distinguishing the two cases. The fabric that makes machine-principal
-MCP safe already exists; the bridge would duplicate it. But this is a contract amendment and
-belongs to governance, not to implementation.
+**What contract 14 actually says.** An explicit callout immediately above that Rule states the ⚠️
+row is about PIAAR *consuming* an external MCP server, and that PIAAR *publishing* its own tools
+as a machine-authenticated MCP server is headless-safe — naming the conflation of the two as the
+reason the contract's own open question stays open. `rmg-piaar-system/CLAUDE.md` repeats it.
+Both were available to me, and read, before I wrote the opposite.
 
-**Blocks:** all MCP work (roadmap item 18).
+**Consequence.** No contract amendment is required. Nothing in contract 14 blocks the roadmap's
+MCP work; the dependency recorded against roadmap item 18 is removed.
+
+**What remains true.** Consuming a *third party's* per-user-OAuth MCP server (SuperCool, ClickUp,
+Google Docs) from an unattended worker is still prohibited — a headless stage must not borrow a
+person's session. That is a real boundary, and it is not a decision: it is already decided.
 
 ## D-B — BullMQ vs. the Postgres queue
 

@@ -58,7 +58,7 @@ this initiative.
 | A second publishing engine alongside Postiz | Redundant while Postiz is deployed and D-E is open |
 | Multi-tenant RBAC for humans | Roles are needed for *agents*; the human allowlist is right-sized |
 | Rewriting `productions` for articles | Add a sibling record; do not migrate the working video lane |
-| Any MCP integration before D-A is decided | Contract 14 currently forbids it for headless stages |
+| ~~Any MCP integration before D-A is decided~~ | **Removed 2026-09-09.** D-A was withdrawn — contract 14 does not forbid headless PIAAR-published MCP, and I had misread it. This dependency never existed. |
 | Migrating `Social_Manager_v2.0` | Evaluate under authorized read access first |
 
 ## Sequencing note
