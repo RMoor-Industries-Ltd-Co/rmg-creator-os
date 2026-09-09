@@ -1,6 +1,6 @@
 import type { Database } from './client.js';
 import { productionJobs } from './schema.js';
-import { and, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 
 /**
  * Queue primitives for the Postgres-backed production job backbone.
@@ -213,4 +213,56 @@ export async function findCompletedByIdempotencyKey(
       )
     );
   return rows.find((r) => r.id !== excludeJobId);
+}
+
+export type CancelOutcome =
+  | { outcome: 'cancelled'; job: typeof productionJobs.$inferSelect }
+  | { outcome: 'not_found' }
+  | { outcome: 'refused'; status: string; reason: string };
+
+/**
+ * Cancel a job as ONE conditional statement.
+ *
+ * Reading the row and then updating it by id alone is not safe, even though the read looks
+ * like a guard: between the two statements a worker can atomically claim the job, so the
+ * caller is told "cancelled" while the worker goes on to dispatch **paid** work and then
+ * overwrites the row as `done`. The same unconditional update could also rewrite an already
+ * `done` or `failed` job as `cancelled`, destroying its outcome.
+ *
+ * So the allowed transitions are encoded in the WHERE clause and the database decides:
+ *
+ *  - `queued`                                  → cancelled
+ *  - `running` **with an expired lease**       → cancelled (the abandoned-job control)
+ *  - anything else                             → no row updated, and the caller is refused
+ *
+ * A racing claim flips the row to `running` with a live lease, so the predicate stops
+ * matching and zero rows come back — the cancel loses the race cleanly instead of lying.
+ */
+export async function cancelJob(db: Database, jobId: string): Promise<CancelOutcome> {
+  const [cancelled] = await db
+    .update(productionJobs)
+    .set({ status: 'cancelled', completedAt: new Date() })
+    .where(
+      and(
+        eq(productionJobs.id, jobId),
+        sql`(
+          ${productionJobs.status} = 'queued'
+          OR (${productionJobs.status} = 'running' AND ${productionJobs.lockedUntil} < now())
+        )`
+      )
+    )
+    .returning();
+
+  if (cancelled) return { outcome: 'cancelled', job: cancelled };
+
+  // Nothing was updated: either the job does not exist, or it is in a state cancel refuses.
+  // Re-read only to explain why — the decision itself was already made atomically above.
+  const [current] = await db.select().from(productionJobs).where(eq(productionJobs.id, jobId));
+  if (!current) return { outcome: 'not_found' };
+
+  const reason =
+    current.status === 'running'
+      ? 'cannot cancel a running job while its lease is live'
+      : `cannot cancel a job that is already ${current.status}`;
+  return { outcome: 'refused', status: current.status, reason };
 }

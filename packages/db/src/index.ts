@@ -9,6 +9,7 @@ export {
   claimNextJob,
   recoverStaleJobs,
   findCompletedByIdempotencyKey,
+  cancelJob,
   DEFAULT_LEASE_SECONDS
 } from './queue.js';
-export type { EnqueueJobInput, EnqueueResult, StaleRecovery } from './queue.js';
+export type { EnqueueJobInput, EnqueueResult, StaleRecovery, CancelOutcome } from './queue.js';

@@ -3,7 +3,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { and, eq, sql } from '@rmg-creator-os/db';
-import { tables } from '@rmg-creator-os/db';
+import { tables, cancelJob } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
 
 export function registerQueueRoutes(app: FastifyInstance, db: Database) {
@@ -70,25 +70,13 @@ export function registerQueueRoutes(app: FastifyInstance, db: Database) {
     return { job };
   });
 
-  // DELETE /queue/:id — cancel a queued job (error if running)
+  // DELETE /queue/:id — cancel a job. The allowed transitions are enforced by the database
+  // in one conditional statement (see cancelJob): a read-then-update by id alone loses a race
+  // with a worker claim, reporting "cancelled" while the worker still dispatches paid work.
   app.delete<{ Params: { id: string } }>('/queue/:id', async (request, reply) => {
-    const [job] = await db
-      .select()
-      .from(tables.productionJobs)
-      .where(eq(tables.productionJobs.id, request.params.id));
-    if (!job) return reply.code(404).send({ error: 'job not found' });
-    // A live-leased running job still belongs to a worker — refuse, as before. But a running
-    // job whose lease has EXPIRED is abandoned, and previously had no in-product control at
-    // all: cancel refused it and retry accepts only failed/cancelled, so clearing one required
-    // direct SQL. Allowing cancel here completes the gate/signal/control triad.
-    const leaseLive = job.status === 'running' && job.lockedUntil !== null && job.lockedUntil > new Date();
-    if (leaseLive) {
-      return reply.code(409).send({ error: 'cannot cancel a running job while its lease is live' });
-    }
-    await db
-      .update(tables.productionJobs)
-      .set({ status: 'cancelled', completedAt: new Date() })
-      .where(eq(tables.productionJobs.id, request.params.id));
+    const res = await cancelJob(db, request.params.id);
+    if (res.outcome === 'not_found') return reply.code(404).send({ error: 'job not found' });
+    if (res.outcome === 'refused') return reply.code(409).send({ error: res.reason });
     return reply.code(204).send();
   });
 

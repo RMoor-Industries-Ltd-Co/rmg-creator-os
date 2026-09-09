@@ -79,7 +79,7 @@ Every condition that can stop work needs all three. Two out of three is a silent
 |---|---|
 | **Gate** | The job stops — `failed`, or `requeued` with a bounded attempt count. |
 | **Signal** | Visible in `GET /queue`, in words, naming the worker and why it was not re-run. |
-| **Control** | `POST /queue/:id/retry` clears a `failed` job. `DELETE /queue/:id` now also cancels a `running` job **whose lease has expired**. |
+| **Control** | `POST /queue/:id/retry` clears a `failed` job. `DELETE /queue/:id` now also cancels a `running` job **whose lease has expired** — see *Cancellation* below. |
 
 > **Why this mattered.** Before Phase A nothing ever moved a job out of `running`: the claim
 > query matched only `queued`, cancel returned `409` for anything running, and retry accepted
@@ -88,6 +88,25 @@ Every condition that can stop work needs all three. Two out of three is a silent
 
 A **live** lease is still protected: `DELETE /queue/:id` returns `409` while `locked_until` is
 in the future, because that job genuinely belongs to a running worker.
+
+## 2a. Cancellation is one conditional statement
+
+`cancelJob` encodes the allowed transitions in the `WHERE` clause and lets the database decide:
+
+| From | To |
+|---|---|
+| `queued` | `cancelled` |
+| `running` **with an expired lease** | `cancelled` |
+| anything else | **refused** — zero rows updated |
+
+Reading the row and then updating it by id alone is unsafe even though the read looks like a
+guard. Between the two statements a worker can atomically claim the job, so the caller is told
+"cancelled" while the worker goes on to dispatch **paid** work and then overwrites the row as
+`done`. The same unconditional update could also rewrite an already `done` or `failed` job as
+`cancelled`, destroying its outcome.
+
+With the predicate, a racing claim flips the row to `running` with a live lease, the predicate
+stops matching, and the cancel **loses the race cleanly** (`409`) instead of lying.
 
 ## 3. Idempotency
 

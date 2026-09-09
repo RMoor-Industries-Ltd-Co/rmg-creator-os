@@ -7,7 +7,8 @@ import {
   enqueueJob,
   claimNextJob,
   recoverStaleJobs,
-  findCompletedByIdempotencyKey
+  findCompletedByIdempotencyKey,
+  cancelJob
 } from '../src/queue.js';
 import type { Database } from '../src/client.js';
 
@@ -222,5 +223,61 @@ d('production queue — execution safety (Phase A)', () => {
     // Excluding the row itself is what the worker does, so it never matches its own job.
     expect(await findCompletedByIdempotencyKey(db, 'k-done', job.id)).toBeUndefined();
     expect(await findCompletedByIdempotencyKey(db, 'k-missing')).toBeUndefined();
+  });
+
+  // ---- Cancellation is an atomic transition, not a read-then-write ----------------------
+
+  it('cancels a queued job', async () => {
+    const { job } = await add();
+    expect(await cancelJob(db, job.id)).toMatchObject({ outcome: 'cancelled' });
+    const [row] = await db.select().from(tables.productionJobs).where(eq(tables.productionJobs.id, job.id));
+    expect(row!.status).toBe('cancelled');
+  });
+
+  it('LOSES the race cleanly when a worker claims the job first — it must not report success', async () => {
+    const { job } = await add();
+    // Claim wins, then cancel arrives: the row is `running` with a live lease, so the
+    // conditional update matches nothing. Previously the unconditional update would have
+    // written `cancelled` while the worker went on to dispatch paid work.
+    await claimNextJob(db, 'worker-a', 600);
+    const res = await cancelJob(db, job.id);
+    expect(res.outcome).toBe('refused');
+    if (res.outcome === 'refused') expect(res.reason).toMatch(/lease is live/);
+
+    const [row] = await db.select().from(tables.productionJobs).where(eq(tables.productionJobs.id, job.id));
+    expect(row!.status).toBe('running'); // the worker still owns it
+  });
+
+  it('a concurrent claim and cancel never both succeed', async () => {
+    const { job } = await add();
+    const [claim, cancel] = await Promise.all([claimNextJob(db, 'worker-a', 600), cancelJob(db, job.id)]);
+    const bothWon = Boolean(claim) && cancel.outcome === 'cancelled';
+    expect(bothWon).toBe(false);
+  });
+
+  it('cancels a running job whose lease has EXPIRED — the abandoned-job control', async () => {
+    const { job } = await add();
+    await claimNextJob(db, 'crashed-worker');
+    await expireLease(job.id);
+    expect(await cancelJob(db, job.id)).toMatchObject({ outcome: 'cancelled' });
+  });
+
+  it.each(['done', 'failed', 'cancelled'] as const)(
+    'refuses to overwrite an already-%s job', async (status) => {
+      const { job } = await add();
+      await db.execute(sql`UPDATE production_jobs SET status = ${status}::production_job_status,
+        result_id = 'keep-me' WHERE id = ${job.id}::uuid`);
+      const res = await cancelJob(db, job.id);
+      expect(res.outcome).toBe('refused');
+      if (res.outcome === 'refused') expect(res.reason).toMatch(new RegExp(`already ${status}`));
+
+      const [row] = await db.select().from(tables.productionJobs).where(eq(tables.productionJobs.id, job.id));
+      expect(row!.status).toBe(status);      // outcome preserved
+      expect(row!.resultId).toBe('keep-me'); // result not destroyed
+    }
+  );
+
+  it('reports not_found for an unknown job', async () => {
+    expect(await cancelJob(db, '00000000-0000-0000-0000-000000000000')).toEqual({ outcome: 'not_found' });
   });
 });
