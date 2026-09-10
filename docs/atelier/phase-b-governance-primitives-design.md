@@ -178,6 +178,9 @@ CREATE TABLE approval_evidence (
   source_system     text NOT NULL,          -- 'rmg-creator-os' | 'hvnglobalco-com'
   authorization_ref text,                   -- signature id / fabric request id — the pointer to proof
 
+  -- the exact outbound package this decision authorizes (§3.5); the digest covers it
+  approved_package  jsonb,
+
   -- B2 assertion binding (NULL for decisions made inside Creator OS)
   signing_key_id    text,                   -- which domain key signed it; revocation is checked at read
   assertion_id      text,                   -- the single-use assertion/nonce
@@ -189,10 +192,13 @@ CREATE TABLE approval_evidence (
   recorded_at       timestamptz NOT NULL DEFAULT now(),
 
   -- a noted approval without a note is not a noted approval
-  -- btrim() strips spaces only: a note of a single tab or newline would pass `btrim(notes) <> ''`
-  -- and create a visually blank obligation. Require at least one non-whitespace character.
+  -- Both halves are load-bearing. `btrim()` strips spaces only, so a lone tab or newline passed
+  -- the round-1 check; but `notes ~ '...'` is NULL when notes is NULL, and Postgres ACCEPTS a
+  -- CHECK evaluating to NULL — so the round-2 fix for the whitespace hole silently reopened the
+  -- missing-note hole it replaced. An explicit NOT NULL test is required alongside it.
   CONSTRAINT note_required_for_noted_approval
-    CHECK (decision <> 'approved_with_note' OR notes ~ '[^[:space:]]')
+    CHECK (decision <> 'approved_with_note'
+           OR (notes IS NOT NULL AND notes ~ '[^[:space:]]'))
 );
 
 -- exactly one live decision per (subject, scope)
@@ -215,20 +221,30 @@ Recording `signing_key_id` is useless without something to join it to. A fourth 
 owned by B2 but modelled here so the gate predicate is satisfiable:
 
 ```sql
+CREATE TYPE signing_key_status AS ENUM ('active','revoked');
+
 CREATE TABLE signing_keys (
   key_id       text PRIMARY KEY,
   domain       text NOT NULL,          -- 'hvnglobalco-com'
   public_key   text NOT NULL,
-  status       text NOT NULL DEFAULT 'active',   -- active | revoked
+  status       signing_key_status NOT NULL DEFAULT 'active',
   activated_at timestamptz NOT NULL DEFAULT now(),
-  revoked_at   timestamptz
+  revoked_at   timestamptz,
+  CONSTRAINT revoked_has_timestamp
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
 );
 ```
 
+**Revocation is one-way, and enforced.** A `text` column with a comment permits both a
+misspelling — which would fail the `status = 'revoked'` test and silently leave compromised
+evidence authoritative — and an `UPDATE … SET status = 'active'` that *un-revokes* a leaked key.
+Either turns forged evidence back into good evidence. Hence an enum, and a trigger with the same
+monotonic shape as `approval_evidence`: `key_id` and `public_key` are immutable, and `status` may
+move `active → revoked` and never back.
+
 Evidence carrying a `signing_key_id` whose row is `revoked` is **not live evidence**, whatever
 its digest says. Rotation inserts a new key and marks the old one revoked; nothing is deleted, so
-history stays readable. Without this table, "revocation invalidates evidence written under a
-leaked key" is a sentence with no durable fact behind it.
+history stays readable.
 
 #### Supersession — a sequence that actually commits
 
@@ -346,12 +362,22 @@ CREATE TABLE workflow_transitions (
   to_state               text NOT NULL,
   requested_by           text NOT NULL,      -- opaque principal id
   requested_by_kind      principal_kind NOT NULL,
+  asserted_role          text,               -- role claimed for THIS action
+  source_system          text NOT NULL,      -- where the action came from
+  auth_context           jsonb NOT NULL DEFAULT '{}',  -- session id, auth_age_seconds, request id
   authorized_by_evidence uuid REFERENCES approval_evidence(id),
   reason                 text,
   occurred_at            timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX workflow_transitions_subject ON workflow_transitions (subject_type, subject_id, occurred_at);
 ```
+
+**Authority context lives on the row, not only on a linked evidence record.** Creation, operator
+cancellation and timeout handling have no `authorized_by_evidence` to point at, so with only a
+principal id and kind they could not satisfy Phase B's requirement to attribute a consequential
+action with its role and authority context. `asserted_role`, `source_system` and `auth_context`
+are therefore columns on every transition. An optional foreign key cannot carry a mandatory
+property.
 
 **The state change and its transition row commit together, or neither does.** Because state lives
 on the subject row and this table only records it, two writes exist — and nothing previously
@@ -431,6 +457,20 @@ A digest over the **approval-relevant projection** of the subject, not the whole
 > assembled final cuts **without setting `finalVideoId` at all**. Pinning to it would resolve
 > uploaded cuts by the wrong key and leave assembled cuts unpublishable. **Defining one pin with
 > consistent semantics, and populating it from both producers, is a prerequisite** — see §3.6.
+
+> **And the package has to exist when the approval is made.** `platforms`, `type` and `date` are
+> not properties of the production at all — `PATCH /productions/:id/approvals` accepts only
+> `brand` and `state`, and publish receives those three in *its own request body*, later. So a
+> digest "covering the outbound package" is unsatisfiable as stated: at approval time two of
+> the four inputs do not exist anywhere to be hashed.
+>
+> **B1 therefore changes the approval action, not only the digest.** Approving captures the
+> complete outbound package — per-platform caption and hashtags, target platforms, publish type
+> and date — and stores it as `approval_evidence.approved_package jsonb`, which the digest
+> covers. Publish then **sends that stored package** and ignores request-supplied platforms,
+> type and date for an approved production. Approving a post whose destination and timing are
+> still undecided is not approving a post; making the founder choose them at the gate is the
+> point, not a side effect.
 
 > **The captions half matters as much as the video.** `server.ts:2238-2271` reads captions and
 > hashtags from `posts` and takes `platforms`, `type` and `date` from the *request body*. After
@@ -948,6 +988,12 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 35 | Evidence and legacy map disagree | Every decision's two writes share one transaction (§13) |
 | 36 | Rejected work waits for ever, still reported as pending | Non-approving verdicts move the job, committed with the evidence write (§4.1) |
 | 37 | Evidence recorded under an id the fabric cannot resolve | `FOUNDER_PRINCIPALS` maps email → canonical principal; evidence stores the mapped id (§7.2) |
+| 38 | A `NULL` note satisfies the noted-approval CHECK | Postgres accepts a CHECK evaluating to NULL, so the regex alone was not a constraint. `notes IS NOT NULL AND notes ~ '[^[:space:]]'` (§3.2) |
+| 39 | Platforms, type or date chosen after approval | The approval action captures the whole outbound package into `approved_package`; publish sends it and ignores the request's copies (§3.5) |
+| 40 | A revoked signing key is set back to `active` | Enum vocabulary plus a monotonic `active → revoked` trigger; `key_id` and `public_key` immutable (§3.2) |
+| 41 | A transition with no linked evidence carries no authority context | `asserted_role`, `source_system` and `auth_context` are columns on every transition (§3.2) |
+| 42 | Concurrent approvals for different brands lose one from the UI map | Row lock or `jsonb_set` on the single key, inside the transaction (§13) |
+| 43 | The test suite vouches for behaviour the design has abandoned | Step-up cases rewritten to `auth_time`, including refusal when the claim is absent (§12) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -973,11 +1019,19 @@ machine founder row; concurrent approvals collide on the live index; supersessio
 test on Phase A's live queries**); the `one_parent` CHECK; `0023` applied twice against a clean
 database through the real runner, as `0022` was.
 
-**Step-up (§7.1)** — pure: token `iat` older than the window is rejected; `iat` in the future is
-rejected; email mismatch between step-up and session is rejected; missing or expired credential
-is rejected; `STEP_UP_MAX_AGE_SECONDS` unset falls back to 900 and never to unlimited. Integration:
-an approval write without a valid step-up is refused with `step_up_required`, and a successful
-one records `auth_age_seconds` in provenance.
+**Step-up (§7.1)** — pure: **`auth_time`** older than the window is rejected; `auth_time` in the
+future is rejected; **a token with no `auth_time` claim at all is refused, never accepted by
+falling back to `iat`**; email mismatch between step-up and session is rejected; missing or
+expired credential is rejected; a step-up signed with `COOKIE_SECRET` rather than
+`STEP_UP_COOKIE_SECRET` is rejected; `STEP_UP_MAX_AGE_SECONDS` unset falls back to 900 and never
+to unlimited. Integration: an approval write without a valid step-up is refused with
+`step_up_required`, and a successful one records `auth_age_seconds` in provenance.
+
+> These cases previously tested `iat`, which §7.1 now rejects as proof of anything. A test list
+> left behind when the design moves is worse than no list: an implementation could pass every
+> case and still ship the stale-login hole, with the suite reporting green. Same failure shape as
+> the failure-table row missed in round one — **the fix landed in one place and the document
+> kept vouching for the old behaviour somewhere else.**
 
 #### The decision-7 acceptance test — required, and it is a pair
 
@@ -1046,6 +1100,13 @@ the never. A control with no test proving it fails is not a control.
    **Every decision's evidence write and legacy-map projection share one transaction** — not only
    withdrawal. If either half commits alone the dashboard and the gate disagree, in whichever
    direction is worse for that decision.
+   **One transaction is necessary and not sufficient.** `deliveryApprovals` is a single JSONB
+   column, so two approvals for *different brand scopes* can each read the same old map, insert
+   non-conflicting evidence, and then write back separate whole-map values — both commit, and one
+   brand silently vanishes from the UI. Either `SELECT … FOR UPDATE` the production row before
+   reading the map, or update the one key in place with `jsonb_set` inside the transaction rather
+   than round-tripping the whole object. The evidence rows would be correct and the projection
+   wrong, which is the worst shape for a bug that only the UI shows.
 7. **The two inherited prerequisites (§3.6)** — a consistent final-video pin populated by both
    producers, and the A-Roll spend-boundary decision. Both gate step 8.
 8. Widen `checkDeliveryApproval`; publish reads evidence, sends the **approved snapshot** of the
