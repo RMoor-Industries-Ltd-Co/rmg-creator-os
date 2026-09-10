@@ -139,7 +139,7 @@ live. Phase B adds governance on top of a queue that is already concurrency-safe
 
 ## 3. Data model
 
-Four new tables and two sets of additive column changes — the `work_items` parent columns on
+Five new tables and two sets of additive column changes — the `work_items` parent columns on
 `production_jobs` (§3.3) and the gate descriptor (§4.1). Migration
 **two** migrations — `0023_governance_enums.sql` then `0024_governance_primitives.sql` (`0022`
 is the Phase A migration). The split is not cosmetic: Postgres cannot use an
@@ -172,7 +172,11 @@ CREATE TABLE approval_evidence (
   revision_digest   text NOT NULL,          -- digest of the approval-relevant content (§3.5)
 
   -- the decision
-  decision          text NOT NULL,          -- approved | approved_with_note | rejected | revision_required
+  -- withdrawn is a first-class decision, not a UI state: §4.2a inserts one for every
+  -- `pending` toggle. Omitting it here (as an earlier revision did) would have produced a
+  -- request validator and TypeScript union that reject every withdrawal.
+  decision          text NOT NULL,          -- approved | approved_with_note | rejected
+                                            -- | revision_required | withdrawn
   notes             text,                   -- REQUIRED when decision = 'approved_with_note'
 
   -- who decided, and under what authority
@@ -190,7 +194,15 @@ CREATE TABLE approval_evidence (
   assertion_id      text,                   -- the single-use assertion/nonce
   decision_seq      bigint NOT NULL,        -- monotonic per (subject_type, subject_id, scope); see §8.2
 
+  -- when the DECISION was made, as distinct from when Creator OS recorded it. For a B2
+  -- assertion this is the signed `issued_at`; for a decision made inside Creator OS the two
+  -- coincide. Without it, a legitimately delayed delivery leaves the audit trail claiming the
+  -- founder decided at ingest time, and the value that passed the freshness check is gone.
+  decided_at        timestamptz NOT NULL,
+
   -- lineage
+  -- provenance additionally retains the COMPLETE signed artifact (payload bytes + signature)
+  -- for any assertion-backed row, so a decision stays independently verifiable after the fact
   provenance        jsonb NOT NULL DEFAULT '{}',
   superseded_at     timestamptz,            -- set FIRST when superseding (see below)
   superseded_by     uuid REFERENCES approval_evidence(id),
@@ -824,7 +836,7 @@ than a style preference:
 | Migration | Contents |
 |---|---|
 | **`0023_governance_enums.sql`** | `ALTER TYPE production_job_status ADD VALUE 'awaiting_approval'`; `ALTER TYPE production_job_capability ADD VALUE 'accord_article'`; `CREATE TYPE principal_kind`, `signing_key_status`. **Nothing that references the new values.** |
-| **`0024_governance_primitives.sql`** | The four tables, all triggers and indexes, the `production_jobs` parent and gate-descriptor columns, and every CHECK that names `'awaiting_approval'`. |
+| **`0024_governance_primitives.sql`** | **All five tables** — `approval_evidence`, `workflow_transitions`, `work_items`, `signing_keys`, `publication_intents` (§4.3) — all triggers and indexes, the `production_jobs` parent and gate-descriptor columns, `productions.final_video_row_id` (§3.6(b)), and every CHECK that names `'awaiting_approval'`. |
 
 A migration test that applies both from an empty database — rather than asserting the final
 schema — is what would have caught this, and is added to §12.
@@ -1045,12 +1057,38 @@ therefore declares an intent and holds it:
    is surfaced, not swept silently — that is the one state where "did it publish?" is genuinely
    unknown, and it needs a human to look.
 
-**A withdrawal that arrives while an intent is open is recorded, not lost.** It supersedes as
-normal and takes effect for every subsequent gate read; what it cannot do is retroactively
-un-send a post already handed to Postiz. The honest guarantee is therefore bounded and worth
-stating plainly: **no publication begins after a withdrawal commits, and no withdrawal is
-silently dropped because a publication was running.** Recalling an already-transmitted post is a
-platform operation, not a database one, and B1 does not pretend otherwise.
+**But the lock ends at the claim's commit, and the Postiz request happens after it — seventh
+review round.** The three steps above serialize *the claim* against *the withdrawal*; they do
+not serialize the **outbound request**. A withdrawal can take the lock the instant step 1
+commits and be durably recorded while the intent is still open, after which the original
+publisher — holding a lease and a stale in-memory decision — hands the post to Postiz anyway.
+The lease records that a publication was in progress; it does not stop it. So the guarantee
+claimed above did not hold as written.
+
+Two ordering rules make it hold, and both are needed:
+
+1. **Withdrawal closes the window rather than racing it.** §4.2a's transaction takes the same
+   `FOR UPDATE` lock on the evidence row *and* inspects `publication_intents`. If an intent for
+   that subject and scope is open, the withdrawal **does not silently proceed**: it either waits
+   for the intent to close (bounded by the lease, which is seconds) or is rejected `409` with
+   "publication in progress, retry". The founder is told, which is the honest outcome — a
+   withdrawal that appears to succeed while the post is being transmitted is the worst of the
+   available behaviours.
+2. **A fence check immediately before the outbound call.** The publisher re-reads its own intent
+   row inside the same statement that marks it `transmitting` —
+   `UPDATE publication_intents SET phase = 'transmitting' WHERE id = $1 AND phase = 'claimed'
+   AND lease_expires_at > now() RETURNING evidence_id` — and aborts unless one row comes back.
+   `transmitting` is the phase during which rule 1 makes withdrawal wait rather than commit.
+   This is the same conditional-update shape Phase A used for the job claim, applied to the last
+   moment Creator OS still controls.
+
+**What remains unclosed, stated rather than papered over.** Between the fence and Postiz
+accepting the request there is a genuine network interval, and no database can shorten it to
+zero. The bounded guarantee is therefore: **a withdrawal either commits before the fence — in
+which case nothing is transmitted — or is held until the intent closes.** A withdrawal is never
+silently dropped, and a publication never *begins* under a decision the database has already
+revoked. Recalling an already-transmitted post is a platform operation, not a database one, and
+B1 does not pretend otherwise.
 
 `publication_intents` is the fifth table B1 adds, and it belongs to the enum-free migration.
 
@@ -1268,9 +1306,32 @@ authorization holes rather than tidiness.**
   stale approval's ordinal above the live rejection and defeat the very comparison the rule
   introduces. A field that decides which decision wins must be signed by whoever decided.
 
+**The bytes are specified, not left to each side's JSON serializer — seventh review round.**
+The two implementations live in different repositories and different languages, so key order,
+timestamp formatting, Unicode normalization and number rendering would each be an independent
+opportunity for every legitimate assertion to fail verification — while both sides' unit tests
+pass, because each tests its own helper against itself. The wire format is therefore fixed:
+
+- **JWS Compact Serialization (RFC 7515)**, `alg: EdDSA` over Ed25519, `kid` carrying `key_id`.
+  The signature covers `BASE64URL(header) || '.' || BASE64URL(payload)` — **the transmitted
+  bytes themselves** — so no canonicalization of the decoded object is required on either side,
+  and re-serialization can never change what was signed. This is the property that makes the
+  round-trip robust, not the choice of library.
+- The payload is the object above; `issued_at` is **RFC 3339 with an explicit `Z`**, and
+  `decision_seq` is a JSON integer.
+- Creator OS verifies the compact form, and **retains it verbatim** in
+  `provenance.signed_assertion` before decoding anything — so the artifact stays independently
+  verifiable later, without trusting Creator OS's own parse of it.
+- A conformance vector — one fixed key, payload and expected compact string — is checked into
+  both repositories and asserted by both test suites. Cross-repo agreement that is only claimed
+  is cross-repo agreement that breaks on first contact.
+
 Creator OS verifies against the domain's published key, then writes evidence with
-`source_system = 'hvnglobalco-com'`, `signing_key_id = key_id`, `assertion_id = nonce`, and the
-transmitting principal in `provenance`.
+`source_system = 'hvnglobalco-com'`, `signing_key_id = key_id`, `assertion_id = nonce`,
+**`decided_at = issued_at`** (the signed instant, not the ingest instant), `decision_seq` as
+signed, the verbatim compact assertion in `provenance.signed_assertion`, and the transmitting
+principal alongside it. `recorded_at` remains Creator OS's own transaction time; the two differ
+by exactly the transport delay, which is a fact worth keeping rather than collapsing.
 
 `notes` is inside the signature because §4.2 makes a note a binding obligation; unsigned, a
 transporter could strip or rewrite it and the signature would still verify.
@@ -1408,7 +1469,12 @@ would have aborted on deploy, not in review.
   (invisible to Phase A's claim and recovery queries, §4.1) and
   `production_job_capability.accord_article` (§3.4, without which no Accord job can be enqueued
   at all).
-- **`productions.final_video_row_id uuid REFERENCES videos(id)`** — §3.6(b)'s pin, in `0024`.
+- **`productions.final_video_row_id text REFERENCES videos(id)`** — §3.6(b)'s pin, in `0024`.
+  **`text`, not `uuid`** — `videos.id` is declared `text('id').primaryKey()`
+  (`packages/db/src/schema.ts:197`, matching `0001_easy_gargoyle.sql`), and Postgres refuses a
+  foreign key whose referencing and referenced types are incompatible, so the `uuid` an earlier
+  revision named would have failed `0024` outright, before any backfill ran. The type is
+  inherited from the table being referenced; it is not a choice.
   It was named as a prerequisite and then never assigned to a migration, which would have left
   publish re-deriving a winner by `updatedAt` — exactly the mutable selection the digest exists
   to eliminate. Nullable on add; **backfilled** for existing productions by resolving each
@@ -1431,16 +1497,40 @@ would have aborted on deploy, not in review.
   hole — the migration would open the exact gap it exists to close, for precisely the jobs
   already in flight. The deploy sequence is therefore ordered rather than incidental:
 
-  1. `0024` runs, adding the columns.
-  2. A backfill step resolves `resolveGate` for **every** non-terminal job and, where a gate
-     applies, writes the complete descriptor and moves a `queued` job to `awaiting_approval`.
-     It runs **before** the gate-aware worker image is deployed, so nothing can claim a job
-     mid-backfill.
-  3. Only then does the gate-aware gateway roll out.
+  1. **Claims are stopped first.** "Deploy the gate-aware image afterwards" does not make the
+     **already-running Phase A workers disappear** — they keep claiming throughout steps 1–2,
+     and a pre-deploy governed job can be claimed and dispatched before the backfill reaches it.
+     Seventh review round, and it is the same class of mistake as ordering a lock after the read
+     it protects. Claims are therefore excluded for the whole window, by the cheapest mechanism
+     the deployment already has: **`WORKER_TICK_ENABLED=false` and the ticker stopped** (Phase A
+     built exactly this switch, and it is still off in production), plus a
+     `pg_advisory_lock` that `claimNextJob` takes and the backfill holds, so a worker started by
+     hand mid-window blocks rather than races.
+  2. `0024` runs, adding the columns.
+  3. A backfill step resolves `resolveGate` for **every** non-terminal job and writes the result
+     — the complete descriptor where a gate applies, and an explicit *resolved-ungated* marker
+     where it does not — moving a gated `queued` job to `awaiting_approval`.
+  4. The gate-aware gateway rolls out.
+  5. Claims resume: the advisory lock is released and the ticker re-enabled — a founder decision
+     in its own right, since it is the first time automatic dispatch runs at all.
 
-  And the predicate itself fails closed regardless: a job whose capability `resolveGate` says is
-  governed is **not claimable with a null descriptor**. Missing is treated as *unresolved*, not
-  as *ungated* — so a job the backfill somehow missed stalls visibly instead of dispatching.
+  **"Null" cannot mean two things — seventh review round.** The previous wording had a null
+  descriptor mean *both* "`resolveGate` returned null, this job is legitimately ungated" *and*
+  "the backfill missed this job", and asked the claim path to tell them apart by re-resolving
+  policy. It cannot: `autonomy_level` is a `resolveGate` input and is **not** a persisted
+  `production_jobs` field, and the reader table above deliberately says claim uses only the
+  stored descriptor. An implementation would have had to either dispatch some missed governed
+  jobs or stall every ungated one. So the resolution is recorded rather than inferred:
+
+  ```sql
+  ALTER TABLE production_jobs ADD COLUMN gate_resolution text;  -- 'gated' | 'ungated'
+  ```
+
+  written by `enqueueJob` and by the backfill in the same statement as the descriptor, with the
+  completeness CHECK extended so `'gated'` requires all four descriptor fields and `'ungated'`
+  requires none. **`NULL` now means exactly one thing — unresolved — and an unresolved job is
+  not claimable.** A job the backfill missed stalls visibly; an ungated job runs; neither
+  depends on re-deriving an input the row does not carry.
 - `productions.deliveryApprovals` is **not dropped.** B1 dual-writes: evidence becomes the source
   of truth for the gate, the map stays as a projection for the existing UI. It is removed in a
   later, separate change once nothing reads it.
@@ -1530,6 +1620,14 @@ would have aborted on deploy, not in review.
 | 64 | An Accord job can only be enqueued by masquerading as a video capability | `accord_article` added to `production_job_capability`; an unhandled capability fails the job explicitly rather than completing it (§3.4) |
 | 65 | Provider change silently reuses another provider's gate rule | `provider` is part of the `resolveGate` key, resolved server-side (§4.1) |
 | 66 | Publish re-derives the winning video by `updatedAt` | `productions.final_video_row_id` added and backfilled in `0024`; a null pin blocks approval (§10) |
+| 67 | A withdrawal commits while a publish is between its claim and its Postiz request | Withdrawal waits on or is refused against an open intent; a conditional `claimed → transmitting` fence immediately precedes the outbound call (§4.3) |
+| 68 | Already-running Phase A workers claim governed jobs during the migration window | Claims stopped first — ticker off plus an advisory lock `claimNextJob` takes — for the whole migrate-and-backfill window (§10) |
+| 69 | A null descriptor means both "legitimately ungated" and "backfill missed it" | Explicit `gate_resolution` column; `NULL` means unresolved and an unresolved job is unclaimable (§10) |
+| 70 | Cross-repo signature verification fails on serialization differences | JWS Compact Serialization over the transmitted bytes, fixed algorithm and timestamp format, and a conformance vector checked into both repositories (§8.2) |
+| 71 | `0024` aborts because the pin's type does not match `videos.id` | The pin is `text`, inherited from `videos.id text` (`schema.ts:197`) (§10) |
+| 72 | Every withdrawal is rejected by a validator derived from the schema | `withdrawn` is in the primary `decision` vocabulary, not only in §4.2a's prose (§3.2) |
+| 73 | Evidence records ingest time as the decision time | `decided_at` column set from the signed `issued_at`; the full artifact retained in provenance (§3.2, §8.2) |
+| 74 | The publish protocol ships without `publication_intents` | The `0024` migration map names all five tables explicitly (§4.1, §10) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -1646,6 +1744,18 @@ direction of rejecting valid work, which every negative test in the suite would 
   **fails** the job rather than marking it done;
 - two providers for one capability resolve to different gate rules;
 - publish reads `final_video_row_id`, and a production with a null pin cannot be approved.
+
+**The seventh round adds eight**, weighted toward the ordering and cross-repo cases that unit
+tests structurally cannot catch on one side alone: a withdrawal issued between the claim commit
+and the fence is held or refused, never silently committed; the fence's conditional update
+returns no row when the lease has expired; a running Phase A worker cannot claim during the
+backfill window (advisory lock held); a job with `gate_resolution = NULL` is unclaimable while
+`'ungated'` runs and `'gated'` waits; the JWS conformance vector verifies **byte-identically in
+both repositories** — the one test that would catch a serialization divergence, and it must
+exist on both sides to mean anything; `0024` applies against the real `videos` table (type
+compatibility is a migration fact, not a review opinion); a `withdrawn` decision passes the
+request validator; and `decided_at` on an assertion-backed row equals the signed `issued_at`
+rather than the ingest time.
 
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control. **And at least one positive
