@@ -812,11 +812,27 @@ is rejected; `STEP_UP_MAX_AGE_SECONDS` unset falls back to 900 and never to unli
 an approval write without a valid step-up is refused with `step_up_required`, and a successful
 one records `auth_age_seconds` in provenance.
 
-**A test for what the `CHECK` does *not* do.** One test writes a row with
-`principal_kind = 'human'` from a caller that is not a human and shows the constraint **accepts**
-it — proving the check is a coherence guard, not authorization, and that the real gate is
-enforced upstream. A test that only demonstrates the happy path would let a later reader repeat
-this document's original error.
+#### The decision-7 acceptance test — required, and it is a pair
+
+Named explicitly by the founder as a B1 acceptance condition, because it is the test that
+demonstrates *where authorization actually lives*. It is **two assertions against the same
+falsified input**, and neither half means anything alone:
+
+| Half | Input | Required result |
+|---|---|---|
+| **A — the constraint is not the gate** | a row with `principal_kind = 'human'` and `asserted_role = 'founder'`, inserted directly | the database **accepts** it |
+| **B — the write path is the gate** | the same falsified claim presented through `PATCH /productions/:id/approvals` by a caller that is not a founder | **refused**, and **no evidence row exists afterwards** |
+
+Half A alone reads like a bug report. Half B alone reads like an ordinary authorization test.
+Together they state the architecture: *the database will happily store this; the application will
+not create it.* Anyone who later tries to "harden" the constraint into an authorization control
+has to delete half A to do it, which is precisely the tripwire wanted.
+
+Run half B across every way the claim can be falsified: a machine principal with a valid session,
+an allowlisted non-founder with a valid step-up (§7.2), and a request supplying `principal_kind`
+or `asserted_role` in its body. **The write path derives both from the authenticated caller and
+never from the request** — a test that passes because the field was ignored is the outcome
+wanted, and it should assert the ignoring, not merely the refusal.
 
 **From the review findings**, each gets the test that would have caught it: a live `rejected` row
 does **not** resume a job; a gated job is never observable as `queued` (insert and pause in one
@@ -922,5 +938,6 @@ validated.
 | Workflow transitions | Delivery of immutable evidence into Creator OS |
 | Work-item parent **+ the `enqueueJob` / `/queue` contract it needs** | *Article-shaped production on that parent* |
 | Waiting-for-approval surface (`/queue` by `awaiting_approval`) | |
+| **Acceptance test: a falsified `principal_kind='human'` cannot obtain approval through the write path, though the constraint accepts the value** (§12) | |
 | Dual-write compatibility with the legacy approvals map | |
 | Step-up authentication (§7.1) | |
