@@ -206,7 +206,13 @@ CREATE UNIQUE INDEX approval_evidence_live
   ON approval_evidence (subject_type, subject_id, scope)
   WHERE superseded_at IS NULL;
 
--- replay protection, enforced by the database rather than by an application existence check
+-- replay protection, enforced by the database rather than by an application existence check.
+-- The pairing CHECK is not decoration: NULLs are distinct in a unique index, so a row that
+-- carried an assertion_id while omitting signing_key_id would satisfy the index on EVERY
+-- replay. Both together, or neither.
+ALTER TABLE approval_evidence ADD CONSTRAINT assertion_fields_paired
+  CHECK ((signing_key_id IS NULL) = (assertion_id IS NULL));
+
 CREATE UNIQUE INDEX approval_evidence_assertion
   ON approval_evidence (signing_key_id, assertion_id)
   WHERE assertion_id IS NOT NULL;
@@ -472,6 +478,20 @@ A digest over the **approval-relevant projection** of the subject, not the whole
 > still undecided is not approving a post; making the founder choose them at the gate is the
 > point, not a side effect.
 
+> **Pinning the row does not pin the bytes.** `GET /videos/:id/raw` (`server.ts:1439-1455`)
+> serves `drive.download(row.driveFileId)` — the file's **current** contents. Replace the Drive
+> file behind an approved row and the digest still matches while Postiz fetches a different cut.
+> Selection races and content mutation are two different holes; pinning closes only the first.
+> The approval projection therefore carries a **content checksum or immutable object version**
+> for the pinned asset, verified immediately before publication.
+
+> **Nor does naming the platform pin the destination.** `matchIntegration` (`postiz.ts:81-95`)
+> returns the *first* enabled integration whose identifier matches, resolved only at publish
+> time (`server.ts:2242-2263`). Add, reorder, disable or reconnect an account afterwards and the
+> approved package goes to a different page or profile, digest unchanged. The approved package
+> records the **resolved integration identity**, and publish sends to that exact destination or
+> refuses — it does not re-resolve.
+
 > **The captions half matters as much as the video.** `server.ts:2238-2271` reads captions and
 > hashtags from `posts` and takes `platforms`, `type` and `date` from the *request body*. After
 > approval, any allowlisted user can rewrite the caption, add a platform, or flip a draft to
@@ -554,6 +574,20 @@ invisible to both. A paused job cannot be claimed and cannot be recovered — wh
 
 Three corrections from review, each closing a hole a worker or an operator could have walked
 through:
+
+**What makes a job gated is a server-owned decision, not a caller's word.** The transition table
+said "a gate applies to this job" and left it there — no policy lookup, no required field, no
+validated mapping from `gate_origin` to an evidence subject and scope. An enqueue caller could
+simply omit the marker and get an ordinary `queued` row that a worker claims and pays for. A gate
+whose *applicability* is optional is not a gate.
+
+Gate applicability is therefore derived inside `enqueueJob` from **server-side policy** —
+capability, provider, brand, autonomy level — never from an argument the caller supplies and
+never overridable by one. When policy says a gate applies, the insert writes a **complete,
+validated gate descriptor** (`gate_origin` plus the evidence `subject_type`, `subject_id` and
+`scope` the resume predicate will look for) **in the same statement** that creates the row. A
+partial descriptor is rejected rather than stored: a job marked gated that names no evidence to
+wait for can never legally resume, which is a leak in the other direction.
 
 **A gated job is never `queued`, even briefly.** The original design inserted it as `queued` and
 transitioned it afterwards. `claimNextJob` runs `FOR UPDATE SKIP LOCKED` against exactly that
@@ -773,6 +807,13 @@ the cookie to age.
   leaving forged-session untouched, which is the case failure 11 actually names. A second,
   independently rotatable key makes the two credentials independent proofs. It fails closed if
   unset in production, exactly as `assertCookieSecret` already does for the session key.
+- **Freshness is recomputed at every approval write from the signed `auth_time`** — never inferred
+  from the cookie still being present. Two reasons, and the first is arithmetic: a token whose
+  `auth_time` is already 890 seconds old would otherwise mint a cookie living another 900, so an
+  approval could land ~30 minutes after the actual login while every individual check passed.
+  The second is that `Max-Age` is a *client-side* hint and not a server-verifiable expiry at all.
+  The cookie's `maxAge` is set to the **remaining** window (`900 − age`, refused if ≤ 0), and the
+  write path re-derives the age regardless.
 - Approval write paths require a valid, unexpired `rmg_stepup` **in addition to** the session.
   Absent, expired, or belonging to a different email than the session: **refuse**, with a
   distinct discriminator (`step_up_required`) so the UI can prompt for re-authentication rather
@@ -869,6 +910,14 @@ live evidence, whatever its digest says. Without that, "revocation invalidates e
 under a leaked key" is a sentence with no mechanism — forged evidence written before revocation
 stays authoritative for ever.
 
+**Assertions expire, and the window is a number rather than an adjective.** The nonce index stops
+a *second* use; it does nothing about a *first* use that arrives late. Without a stated lifetime,
+a stolen assertion could be presented months on — after a newer rejection or withdrawal — and
+supersede the live decision, and the "expired assertion" test would have had no expected value
+to assert against. So: `issued_at` must be within **`ASSERTION_MAX_AGE_SECONDS` (default 300)**
+of receipt, with **60 seconds** of tolerated clock skew into the future and none beyond it.
+Outside that window the assertion is refused before any evidence is written.
+
 Verification failure is not an error to log and continue past — it is a refusal.
 
 ### 8.3 Why this survives contract 26's write block
@@ -896,10 +945,19 @@ Two different authentications, and they must not be confused:
 
 | Action | Authenticates | Mechanism |
 |---|---|---|
-| **Minting** an assertion (the founder decides) | a **human** | Google SSO + step-up, the same shape as §7.1 |
+| **Minting** an assertion (the founder decides) | a **human who holds the founder grant** | Google SSO + step-up (§7.1) **and** the founder authorization of §7.2 |
 | **Transporting** an already-minted assertion | a **machine** | the fleet's constant-time key pattern |
 
-A machine may carry. Only a human may mint. The signing key sits behind the human path. A repository that is pages today
+A machine may carry. Only a human may mint. The signing key sits behind the human path.
+
+**"A human" is not the rule — that was the same error again, one layer out.** Requiring SSO plus
+step-up proves *identity and presence*, which §7.2 already establishes is not *authority*. On a
+surface that holds the signing key, an allowlisted colleague satisfying those two checks could
+obtain a domain signature over `principal_id = rahm@business, asserted_role = founder`, and the
+resulting assertion would verify perfectly downstream. The founder grant is required **before the
+signing key is reachable**, and the domain **derives `principal_id` and `asserted_role` from the
+authenticated caller** — it never signs values the request supplied. Only the subject, decision,
+digest and notes come from the request. A repository that is pages today
 acquires exactly one server capability, for one governed purpose, and each future route is its
 own decision rather than a consequence of this one.
 
@@ -924,7 +982,11 @@ can record and display but cannot interpret is a value it cannot accidentally au
 
 ## 10. Migration compatibility
 
-- Three new tables — nothing existing reads them.
+- **Four** new tables — `approval_evidence`, `workflow_transitions`, `work_items`, `signing_keys`
+  — all in `0023`, and nothing existing reads them. (An earlier revision said three here while
+  §3 assigned four, which would have let `signing_keys` and its enum be omitted from deployment
+  or stranded on rollback.) `signing_keys` is created in B1 with the rest even though only B2
+  writes it: a gate predicate that joins a table which may or may not exist is not a predicate.
 - One new enum value — invisible to Phase A's claim and recovery queries (§4.1).
 - `production_jobs.work_item_id` nullable; `production_id` relaxed to nullable with a `CHECK`
   every existing row already satisfies.
@@ -962,7 +1024,7 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 8 | Two approvals race | Partial unique index on live rows |
 | 9 | A stopgap machine credential becomes permanent | Contract 36 interim rule; §7 declines it explicitly |
 | 10 | Evidence is edited after the fact | Append-only; only `superseded_by` is ever written |
-| 11 | Stolen/forged 30-day session → forged founder approval | **Closed by ratified decision 2:** approval writes additionally require a fresh `rmg_stepup` credential, ≤15 minutes old, verified against Google's `iat` (§7.1). A stolen session alone can no longer approve. `assertCookieSecret` continues to fail closed in production |
+| 11 | Stolen/forged 30-day session → forged founder approval | **Closed by ratified decision 2:** approval writes additionally require a `rmg_stepup` credential whose **`auth_time`** is ≤15 minutes old — refused outright when that claim is absent or in the future — signed with an independent key, and re-aged at every write (§7.1). *An earlier revision of this row said "verified against Google's `iat`", which §7.1 had already stopped trusting; a checklist that contradicts the normative section is how the vulnerability gets reintroduced by someone following the checklist.* |
 | 13 | A rejection resumes gated work | Resume requires `decision ∈ {approved, approved_with_note}`, not merely live evidence (§4.1) |
 | 14 | A worker claims a gated job before it is paused | Gated jobs are inserted directly as `awaiting_approval`; the runnable state never exists (§4.1) |
 | 15 | Content changes between resume and claim | `approved_revision_digest` on the job, re-compared at dispatch (§4.1) |
@@ -994,6 +1056,13 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 41 | A transition with no linked evidence carries no authority context | `asserted_role`, `source_system` and `auth_context` are columns on every transition (§3.2) |
 | 42 | Concurrent approvals for different brands lose one from the UI map | Row lock or `jsonb_set` on the single key, inside the transaction (§13) |
 | 43 | The test suite vouches for behaviour the design has abandoned | Step-up cases rewritten to `auth_time`, including refusal when the claim is absent (§12) |
+| 44 | An allowlisted non-founder mints a founder assertion at HVN Global | Founder grant required before the signing key is reachable; the domain derives `principal_id` and `asserted_role` from the caller and never signs request-supplied values (§8.4) |
+| 45 | Approved package published to a different channel | Resolved integration identity is captured at approval; publish sends there or refuses, never re-resolving (§3.5) |
+| 46 | Drive file replaced behind an approved video row | Content checksum / immutable object version in the approval projection, verified before publication (§3.5) |
+| 47 | A stolen assertion is presented for the first time months later | `issued_at` within `ASSERTION_MAX_AGE_SECONDS` (300), 60s skew forward, none beyond (§8.2) |
+| 48 | Replay slips past the nonce index via a NULL `signing_key_id` | Paired CHECK — both fields set or both NULL (§3.2) |
+| 49 | Step-up window silently doubles | Age recomputed from the signed `auth_time` at every write; cookie `maxAge` is the remaining window, never a fresh 900 (§7.1) |
+| 50 | An enqueue caller omits the gate marker | Gate applicability derived from server-side policy inside `enqueueJob`; a partial descriptor is rejected, not stored (§4.1) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
