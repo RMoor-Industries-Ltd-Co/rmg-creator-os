@@ -779,7 +779,7 @@ invisible to both. A paused job cannot be claimed and cannot be recovered — wh
 |---|---|---|
 | **insert directly as `awaiting_approval`** | enqueue | a gate applies — see below |
 | `queued → awaiting_approval` | **the stale-gate sweep only** | a gated job whose gate no longer holds (below); never a general path |
-| `running → awaiting_approval` | **nobody** | a running job holds a lease and may have paid work in flight; pause it and the external side effect still lands with nothing tracking it |
+| `running → awaiting_approval` | **the pre-dispatch revalidation abort only** | permitted at exactly one point: the worker has claimed and holds a lease but **has not made any provider call**, and the gate revalidation fails (below). Nowhere else — once a provider call has started, pausing the job leaves the external side effect landing with nothing tracking it |
 | `awaiting_approval → queued` | evidence presentation | live evidence for the subject with **`decision ∈ {approved, approved_with_note}`** AND **`revision_digest` = current digest** |
 | `awaiting_approval → cancelled` | authorized principal, or timeout | attributed transition; `gate_origin` preserved (below) |
 | `awaiting_approval → failed` | **never automatically** | — |
@@ -975,32 +975,52 @@ So the claim keeps conditions 1–3 in the single statement — they are ordinar
 the first thing the worker does after claiming, **before any provider call, in its own short
 transaction**:
 
-1. the worker recomputes the subject's current digest with the same pure function the approval
-   used;
-2. it re-reads the live evidence `FOR UPDATE` and compares;
-3. on match it proceeds; **on mismatch it aborts the job to `awaiting_approval`** — the one
-   `running → awaiting_approval` transition permitted, and permitted *only* here, because at
-   this point the job has a lease and **no external side effect has begun**;
+1. it re-reads the live evidence for the descriptor's `(subject_type, subject_id, scope)`
+   **`FOR UPDATE`**, which is what makes the rest of this a decision rather than a snapshot;
+2. it re-asserts **all four conditions, not only the digest** — live and unsuperseded,
+   approving, key not revoked, and `revision_digest` equal to the digest it recomputes here with
+   the same pure function the approval used;
+3. all four hold → it proceeds; any one fails → **it aborts the job to `awaiting_approval`** —
+   the one `running → awaiting_approval` transition permitted, and permitted *only* here,
+   because at this point the job has a lease and **no external side effect has begun**;
 4. the abort and its reason are recorded as a `workflow_transitions` row.
 
+**Conditions 1–3 are re-run here even though the claim already checked them.** The claim's check
+was a moment; a rejection, a withdrawal or a key revocation can commit between the claim and
+this transaction. An earlier revision of this fix recomputed only the digest and proceeded on a
+match — so *unchanged content* would have let the provider call go ahead under evidence that was
+no longer approving, which is the same class of hole the fix was written to close, moved a few
+milliseconds later. The `FOR UPDATE` read is what serializes this against those writes: a
+gate-invalidating transaction either commits before it (and revalidation fails) or waits behind
+it (and the job is already dispatched under evidence that was live when it was read).
+
 The window between claim and revalidation therefore contains no spend and no outbound call. That
-is the property that actually matters — *no paid work runs under a stale approval* — and it is
-obtainable, which "compare the current digest inside the claim" was not. The transition table
-above is amended accordingly: `running → awaiting_approval` is **permitted for the pre-dispatch
-revalidation abort only**, and remains forbidden once any provider call has started.
+is the property that actually matters — *no paid work runs under a stale approval or a revoked
+key* — and it is obtainable, which "compare the current digest inside the claim" was not.
 
 **And the failure path needed a legal transition, which it did not have.** The same revision
 promised to "return the job to `awaiting_approval`", while the table above forbids both
 `queued → awaiting_approval` and `running → awaiting_approval` — and the claim statement sets
 `running` before anything could inspect the gate. That was a contradiction, not a policy.
 
-Resolved by making the gate part of the claim predicate rather than a check after it: a job whose
-`gate_origin` is set is claimable **only** while the four conditions hold, so a stale-gated job is
-simply never claimed — it stays `queued` and invisible to workers, exactly as an unsatisfied
-`WHERE` clause should behave. A separate sweep (the same shape as `recoverStaleJobs`) moves such
-jobs back to `awaiting_approval` **from `queued`**, and that transition is legal *only* for the
-sweep and *only* when the gate is unsatisfied. It is added to the table below as such: narrowly
-permitted, never a general path.
+Resolved by splitting the gate across the two points where each half is actually evaluable:
+
+- **Conditions 1–3 are part of the claim predicate**, not a check after it. A job whose
+  `gate_origin` is set is claimable **only** while live, approving, key-valid evidence exists —
+  three ordinary joins against `approval_evidence` and `signing_keys`, all expressible in the
+  single atomic statement. A job failing them is simply never claimed: it stays `queued` and
+  invisible to workers, exactly as an unsatisfied `WHERE` clause should behave.
+- **Condition 4 — the digest — is re-asserted immediately after the claim**, in the
+  pre-dispatch revalidation transaction above, because it is not SQL-evaluable at all. *An
+  earlier revision of this paragraph said all four conditions live in the claim predicate. That
+  is the blocker corrected above, and leaving the sentence standing here would have reinstated
+  it: an implementer following this resolution would write the compare-two-resume-values check
+  and believe the gate was closed.*
+
+A separate sweep (the same shape as `recoverStaleJobs`) moves jobs whose conditions 1–3 no longer
+hold back to `awaiting_approval` **from `queued`**, and that transition is legal *only* for the
+sweep and *only* when the gate is unsatisfied. Digest staleness is not the sweep's job — it is
+caught at revalidation, where the digest can actually be computed.
 
 **Non-approving verdicts move the job, rather than leaving it waiting for ever.** A live
 `rejected` or `revision_required` decision matched no transition at all, so a job would sit in
@@ -1716,6 +1736,7 @@ would have aborted on deploy, not in review.
 | 75 | Claim-time digest invalidation compares two copies of the resume-time value and detects nothing | Conditions 1–3 stay in the atomic claim; condition 4 becomes a transactional revalidation before any provider call, aborting to `awaiting_approval` with no side effect started (§4.1) |
 | 76 | A rejection or key revocation between claim and fence still lets publication begin | The fence re-asserts the whole four-part gate in one conditional `UPDATE`, not just intent phase and lease (§4.3) |
 | 77 | A revoked key signs with its own `kid` while naming an active key in the payload | `key_id` lives only in the protected header; evidence stores the `kid` verification used; a payload `key_id` is rejected outright (§8.2) |
+| 78 | The pre-dispatch revalidation checks only the digest, so a rejection or key revocation between claim and dispatch still pays a provider | All four conditions re-asserted under `FOR UPDATE` in that transaction, not the digest alone (§4.1) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -1852,6 +1873,12 @@ called (asserted on the mock, not on the status); record a `rejected` decision a
 and assert the fence returns no row; and present an assertion whose payload names a different
 `key_id` from the protected `kid` and assert it is refused rather than reconciled — plus its
 positive complement, that evidence stores the header `kid`.
+
+One more from the verification pass, and it is the complement of failure 75's test: record a
+`rejected` decision (and separately, revoke the signing key) **after** the claim and **before**
+dispatch, leaving the content untouched, and assert the worker aborts to `awaiting_approval`
+with the provider mock never called. Unchanged content is exactly the case a digest-only
+revalidation waves through.
 
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control. **And at least one positive
