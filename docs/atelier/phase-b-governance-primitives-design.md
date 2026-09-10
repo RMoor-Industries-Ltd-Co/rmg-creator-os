@@ -139,7 +139,7 @@ live. Phase B adds governance on top of a queue that is already concurrency-safe
 
 ## 3. Data model
 
-Three new tables and two additive column changes. Migration **`0023_governance_primitives.sql`**
+Four new tables and two additive column changes. Migration **`0023_governance_primitives.sql`**
 (next free; `0022` is the Phase A migration).
 
 ### 3.1 `principal_kind` — a shared vocabulary, not an identity store
@@ -189,8 +189,10 @@ CREATE TABLE approval_evidence (
   recorded_at       timestamptz NOT NULL DEFAULT now(),
 
   -- a noted approval without a note is not a noted approval
+  -- btrim() strips spaces only: a note of a single tab or newline would pass `btrim(notes) <> ''`
+  -- and create a visually blank obligation. Require at least one non-whitespace character.
   CONSTRAINT note_required_for_noted_approval
-    CHECK (decision <> 'approved_with_note' OR (notes IS NOT NULL AND btrim(notes) <> ''))
+    CHECK (decision <> 'approved_with_note' OR notes ~ '[^[:space:]]')
 );
 
 -- exactly one live decision per (subject, scope)
@@ -206,6 +208,27 @@ CREATE UNIQUE INDEX approval_evidence_assertion
 CREATE INDEX approval_evidence_subject
   ON approval_evidence (subject_type, subject_id);
 ```
+
+#### `signing_keys` — the fact revocation needs
+
+Recording `signing_key_id` is useless without something to join it to. A fourth table, small and
+owned by B2 but modelled here so the gate predicate is satisfiable:
+
+```sql
+CREATE TABLE signing_keys (
+  key_id       text PRIMARY KEY,
+  domain       text NOT NULL,          -- 'hvnglobalco-com'
+  public_key   text NOT NULL,
+  status       text NOT NULL DEFAULT 'active',   -- active | revoked
+  activated_at timestamptz NOT NULL DEFAULT now(),
+  revoked_at   timestamptz
+);
+```
+
+Evidence carrying a `signing_key_id` whose row is `revoked` is **not live evidence**, whatever
+its digest says. Rotation inserts a new key and marks the old one revoked; nothing is deleted, so
+history stays readable. Without this table, "revocation invalidates evidence written under a
+leaked key" is a sentence with no durable fact behind it.
 
 #### Supersession — a sequence that actually commits
 
@@ -247,8 +270,16 @@ BEGIN
      IS DISTINCT FROM (to_jsonb(OLD) - 'superseded_at' - 'superseded_by') THEN
     RAISE EXCEPTION 'approval_evidence: only supersession fields may change';
   END IF;
-  IF OLD.superseded_at IS NOT NULL AND OLD.superseded_by IS NOT NULL THEN
-    RAISE EXCEPTION 'approval_evidence: supersession is one-time';
+  -- supersession is monotonic: superseded_at fills once and never clears; superseded_by fills
+  -- once, only after superseded_at is set, and never changes.
+  IF OLD.superseded_at IS NOT NULL AND NEW.superseded_at IS DISTINCT FROM OLD.superseded_at THEN
+    RAISE EXCEPTION 'approval_evidence: superseded_at is immutable once set';
+  END IF;
+  IF NEW.superseded_at IS NULL AND NEW.superseded_by IS NOT NULL THEN
+    RAISE EXCEPTION 'approval_evidence: superseded_by requires superseded_at';
+  END IF;
+  IF OLD.superseded_by IS NOT NULL AND NEW.superseded_by IS DISTINCT FROM OLD.superseded_by THEN
+    RAISE EXCEPTION 'approval_evidence: superseded_by is immutable once set';
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
@@ -261,6 +292,18 @@ CREATE TRIGGER approval_evidence_append_only
 A trigger rather than role permissions because the gateway needs `UPDATE` for step 1 and 3 above;
 revoking it wholesale would break supersession. The trigger permits exactly the two columns the
 sequence needs and refuses everything else, including every `DELETE`.
+
+**Monotonicity, not just one-timeness — second review round.** An earlier version checked only
+"were both fields already set?", which permitted a second update to *clear* `superseded_at` while
+setting `superseded_by`: the old pointer was null, so the check passed, and **the superseded row
+became live again.** A fresh row could likewise set `superseded_by` alone and then rewrite it
+indefinitely. The rules above constrain each `OLD → NEW` pair directly, which is what "one-time"
+actually requires.
+
+`workflow_transitions` gets the same treatment — `BEFORE UPDATE OR DELETE … RAISE`, with no
+permitted mutation at all, since nothing about a recorded transition ever legitimately changes.
+Calling a table append-only and leaving the gateway role able to rewrite it is the same gap this
+section just closed for evidence.
 
 `principal_kind = 'human'` is required for any row whose `asserted_role = 'founder'`. Enforce it
 as a `CHECK`, not only as application logic, so no future write path can forget:
@@ -367,8 +410,9 @@ are part of the work-item work, not a follow-on to it.
 A digest over the **approval-relevant projection** of the subject, not the whole row — otherwise
 `updated_at` invalidates approvals.
 
-- `production`: `brand`, `thumbnailDriveId`, `adIndexCode`, `taggedScript`, and — critically —
-  **the id of the exact video row publish will send**, not `finalVideoId`.
+- `production`: `brand`, `thumbnailDriveId`, `adIndexCode`, `taggedScript`, **the exact video row
+  publish will send**, and **the complete outbound post package** — per-platform captions and
+  hashtags from `posts`, plus the target platforms, publish type and date.
 
 > **Defect this exposes, confirmed in live code.** `POST /productions/:id/publish` does **not**
 > read `productions.finalVideoId`. It queries `videos` for this production and picks
@@ -376,11 +420,25 @@ A digest over the **approval-relevant projection** of the subject, not the whole
 > digest over `finalVideoId` would therefore bind nothing: insert another completed render after
 > approval and publish sends that one, unapproved, with the digest still matching.
 >
-> **B1 must close this**, and there are only two honest ways: make publish use the pinned
-> `finalVideoId`, or compute the digest over the same selection expression publish uses.
-> **Recommended: pin.** Approval should name an asset, and a selection rule that can silently
-> change its answer after a human said yes is the same defect class as the approval map Phase A
-> had to enforce. Pinning also makes the evidence readable — it names a video id.
+> **B1 must close this**, and there are only two honest ways: make publish use a pinned asset,
+> or compute the digest over the same selection expression publish uses.
+> **Recommended: pin.** A selection rule that can silently change its answer after a human said
+> yes is the same defect class as the approval map Phase A had to enforce.
+
+> **But `finalVideoId` cannot be that pin as it stands** — second review round, confirmed in
+> code. `routes/delivery.ts:236` sets `productions.finalVideoId` to the **Drive file id**, while
+> the `videos` row it just created has a random `videos.id`; and `server.ts:1816-1834` creates
+> assembled final cuts **without setting `finalVideoId` at all**. Pinning to it would resolve
+> uploaded cuts by the wrong key and leave assembled cuts unpublishable. **Defining one pin with
+> consistent semantics, and populating it from both producers, is a prerequisite** — see §3.6.
+
+> **The captions half matters as much as the video.** `server.ts:2238-2271` reads captions and
+> hashtags from `posts` and takes `platforms`, `type` and `date` from the *request body*. After
+> approval, any allowlisted user can rewrite the caption, add a platform, or flip a draft to
+> publish-now — and none of it touches the digest. The evidence would still authorize a
+> materially different post than the one that goes out. The digest covers a canonical snapshot
+> of the whole outbound package, and publish sends the snapshot rather than re-reading mutable
+> rows and trusting the request.
 - `accord_package`: the package manifest digest supplied by the domain (contract 31 already
   requires a content-addressed revision, so Creator OS should *carry* that digest, not compute
   a second one).
@@ -388,6 +446,46 @@ A digest over the **approval-relevant projection** of the subject, not the whole
 The projection is defined in one pure function per subject type, unit-tested, and versioned —
 `digest_v1:<sha256>` — so a later change to what counts as approval-relevant is visible rather
 than silently re-validating old evidence.
+
+### 3.6 Two prerequisites B1 inherits, both larger than a schema change
+
+Found in the second review round, both confirmed in live code. Neither is a defect in this
+design; both are properties of the existing system that the approval binding this design
+promises **cannot be built on top of without changing first.** They are stated here rather than
+discovered during implementation.
+
+#### (a) The queue is not the spend boundary for A-Roll
+
+§4.1 pauses gated work by inserting the job as `awaiting_approval`, on the premise that the paid
+provider call happens at dispatch. **For A-Roll it does not.** `server.ts:1935-1964` calls
+`client.generateVideo` — the paid HeyGen render — at the route, and only then calls
+`enqueueJob`. The code says so itself:
+
+> `// One queue row per video row. The paid HeyGen call already happened above, so this …`
+
+So a gate over `production_jobs` cannot stop A-Roll spend. The job row is a tracking record of
+money already committed. Pausing it pauses nothing that costs anything.
+
+Two ways to fix it, and the choice is a scoping decision:
+
+| Option | Cost | Consequence |
+|---|---|---|
+| **Move the provider call behind worker dispatch** | Restructures a live A-Roll route | The queue becomes the real spend boundary, and every future gate works uniformly. Touches the path Phase A was written to protect |
+| **Evaluate and enforce the gate at the route**, before any provider call | Smaller, local | Two gate mechanisms to keep consistent; a later capability that spends at the route must remember to add one |
+
+**Recommended: move the call behind dispatch**, because the alternative distributes the gate
+across every route that might ever spend, and a gate you have to remember to add is one that
+eventually is not added. But this is real work on a live path and should be confirmed, not
+assumed, before B1 starts.
+
+#### (b) There is no consistent "the approved video" pointer
+
+As §3.5 records, `finalVideoId` holds a Drive file id from one producer and is never set by the
+other. Before approval can bind an asset, B1 needs one pin with one meaning — most plainly a
+`final_video_row_id` referencing `videos.id`, populated by **both** the upload path and the
+assembly path, with publish reading it instead of re-deriving a winner by `updatedAt`.
+
+Both prerequisites are B1's, and both are additions to the scope estimated in §13.
 
 ---
 
@@ -407,7 +505,7 @@ invisible to both. A paused job cannot be claimed and cannot be recovered — wh
 | Transition | Who may | Condition |
 |---|---|---|
 | **insert directly as `awaiting_approval`** | enqueue | a gate applies — see below |
-| `queued → awaiting_approval` | **nobody** | see below |
+| `queued → awaiting_approval` | **the stale-gate sweep only** | a gated job whose gate no longer holds (below); never a general path |
 | `running → awaiting_approval` | **nobody** | a running job holds a lease and may have paid work in flight; pause it and the external side effect still lands with nothing tracking it |
 | `awaiting_approval → queued` | evidence presentation | live evidence for the subject with **`decision ∈ {approved, approved_with_note}`** AND **`revision_digest` = current digest** |
 | `awaiting_approval → cancelled` | authorized principal, or timeout | attributed transition; `gate_origin` preserved (below) |
@@ -430,12 +528,43 @@ the original resume condition said only "live, digest-matching evidence", which 
 row satisfies. That would have returned **rejected work to the queue and paid to process it.**
 The predicate now requires `decision ∈ {approved, approved_with_note}`.
 
-**A resumed job re-checks its revision at claim.** Digest comparison fails closed only *while*
-resuming. Once the job is `queued`, an approval-relevant mutation can land before a worker claims
-it, and the claim query checks status and lease only. So the job carries
-`approved_revision_digest`, written at resume, and **dispatch re-compares it** — mismatch returns
-the job to `awaiting_approval` rather than executing. The window closes at the moment the money
-would be spent.
+**A resumed job re-validates the whole gate at claim — not just the digest.** Digest comparison
+fails closed only *while* resuming. Once the job is `queued`, the world can move: the content can
+change, **the founder can withdraw or reject the approval**, or the signing key can be revoked —
+none of which alters the subject digest. An earlier revision re-checked only
+`approved_revision_digest`, which would have let a withdrawn approval dispatch. Claim-time
+validation therefore requires, atomically, all four:
+
+1. live evidence for the subject exists, and is **not** superseded;
+2. its `decision` is approving;
+3. its `signing_key_id` (if any) is not revoked;
+4. its `revision_digest` equals the subject's current digest.
+
+**And the failure path needed a legal transition, which it did not have.** The same revision
+promised to "return the job to `awaiting_approval`", while the table above forbids both
+`queued → awaiting_approval` and `running → awaiting_approval` — and the claim statement sets
+`running` before anything could inspect the gate. That was a contradiction, not a policy.
+
+Resolved by making the gate part of the claim predicate rather than a check after it: a job whose
+`gate_origin` is set is claimable **only** while the four conditions hold, so a stale-gated job is
+simply never claimed — it stays `queued` and invisible to workers, exactly as an unsatisfied
+`WHERE` clause should behave. A separate sweep (the same shape as `recoverStaleJobs`) moves such
+jobs back to `awaiting_approval` **from `queued`**, and that transition is legal *only* for the
+sweep and *only* when the gate is unsatisfied. It is added to the table below as such: narrowly
+permitted, never a general path.
+
+**Non-approving verdicts move the job, rather than leaving it waiting for ever.** A live
+`rejected` or `revision_required` decision matched no transition at all, so a job would sit in
+`awaiting_approval` and keep being reported as waiting after the founder had already decided —
+which fails the Phase B acceptance condition that rejection and revision have an explicit path
+(`master-atelier-agentic-production-plan.md:236-242`). Committed **with the evidence write**, in
+one transaction:
+
+| Verdict | Job goes to |
+|---|---|
+| `rejected` | `cancelled`, `gate_origin` preserved so retry still refuses |
+| `revision_required` | `cancelled`, same — the revised work is a new job against a new revision |
+| `withdrawn` | stays `awaiting_approval`; the decision was un-made, not made |
 
 **Who may request approval:** any principal, human or machine. Requesting is not deciding
 (clause 7). **What is required to resume:** live, *approving*, digest-matching evidence — nothing
@@ -576,17 +705,34 @@ the cookie to age.
 
 **Design.** A second, separate credential, minted only by a fresh sign-in:
 
-- `POST /auth/google/step-up` accepts a Google ID token, verifies it exactly as `/auth/google`
-  does (audience, `email_verified`, allowlist) **and additionally rejects it unless its `iat` is
-  within `STEP_UP_MAX_AGE_SECONDS` (default 900) of now.** Google's `tokeninfo` returns `iat`
-  and `exp`, so this is a real check against the issuer's claim, not a local timer we set
-  ourselves.
+- The client requests a **deliberately fresh authentication** — OIDC `max_age=900` (and
+  `prompt=login` where the provider honours it), which asks the issuer to re-authenticate the
+  user rather than mint a token from an existing session.
+- `POST /auth/google/step-up` accepts the resulting ID token, verifies it exactly as
+  `/auth/google` does (audience, `email_verified`, allowlist), **and validates the `auth_time`
+  claim — the time the user actually authenticated — is within `STEP_UP_MAX_AGE_SECONDS`
+  (default 900).**
+
+> **Corrected, second review round.** An earlier revision checked `iat`. **`iat` is when the
+> token was issued, not when the user authenticated.** Google will happily mint a token with a
+> fresh `iat` from a browser session established weeks ago, without prompting for anything — so
+> the check would have passed while proving nothing about presence, which is the entire point of
+> step-up. `auth_time` is the claim that carries the fact, and `max_age` is what makes the
+> issuer produce and honour it. A token lacking `auth_time` is **refused**, not accepted with a
+> fallback to `iat`.
 - On success it issues `rmg_stepup` — signed, `httpOnly`, `secure`, `sameSite: 'lax'`,
   `maxAge` 900 — carrying **the verified email**, the step-up id, and the authentication instant.
   The email is in the signed value deliberately: the next rule refuses a credential belonging to
   a different session, and with only an id there is nothing to compare, since B1 adds no
-  server-side step-up store. Signing makes the embedded email as trustworthy as the session
-  cookie's, which is already the same mechanism.
+  server-side step-up store.
+
+  **Signed with its own key, `STEP_UP_COOKIE_SECRET` — not `COOKIE_SECRET`.** Second review
+  round, and the point is sharp: if step-up were signed with the session secret, then the single
+  scenario where forgery matters — that secret compromised — would let an attacker mint *both* a
+  session and a matching fresh step-up. The mitigation would close stolen-session replay while
+  leaving forged-session untouched, which is the case failure 11 actually names. A second,
+  independently rotatable key makes the two credentials independent proofs. It fails closed if
+  unset in production, exactly as `assertCookieSecret` already does for the session key.
 - Approval write paths require a valid, unexpired `rmg_stepup` **in addition to** the session.
   Absent, expired, or belonging to a different email than the session: **refuse**, with a
   distinct discriminator (`step_up_required`) so the UI can prompt for re-authentication rather
@@ -628,8 +774,17 @@ So the approval write boundary checks three things, in order, and refuses on any
 2. a valid, matching, unexpired step-up — *are you here right now?*
 3. **the principal is in the founder set** — *may you assert founder authority?*
 
-The founder set is its own configuration (`FOUNDER_PRINCIPALS`), **not** `AUTH_ALLOWED_EMAILS`,
-and unset means empty — no founder, refuse — never "everyone". Adding a colleague to the
+The founder set is its own configuration, **not** `AUTH_ALLOWED_EMAILS`, and unset means empty —
+no founder, refuse — never "everyone".
+
+**It is a mapping, not a set.** Second review round: B1 authenticates a *Google email*, while the
+ratified principal is `rahm@business`. A set of principals cannot be membership-tested against an
+email, and a set of emails would record evidence under an id the fabric will never recognise —
+so the correlation breaks precisely when authorization moves upstream. `FOUNDER_PRINCIPALS` is
+therefore `email → canonical principal id` (e.g. `rahm@rmasters.group → rahm@business`).
+Membership is "does this authenticated email map?", and **the evidence records the mapped
+canonical id**, not the email. When the fabric gains a human principal, this mapping is what it
+replaces — and evidence written before the handover still names the right subject. Adding a colleague to the
 allowlist must never silently grant approval authority; that is a decision with its own record.
 
 Check 3 is Creator OS enforcing a boundary the fabric will eventually own (§9). Until a human
@@ -781,6 +936,18 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 23 | UI shows a withdrawn approval over a gate that still opens | `withdrawn` supersedes live evidence in the same transaction as the map write (§4.2a) |
 | 24 | A noted approval carries no note, or the note is stripped in transit | CHECK for a non-blank note; `notes` inside the signed assertion (§3.2, §8.2) |
 | 25 | Rollback strands paused jobs | Paused work migrated or cancelled before the schema is removed (§10) |
+| 26 | Caption, platform or schedule changed after approval | Digest covers the whole outbound package; publish sends the approved snapshot (§3.5) |
+| 27 | Paid A-Roll render fires before any gate can pause it | **Open — §3.6(a).** The queue is not the spend boundary for A-Roll; needs the provider call moved behind dispatch, or a route-level gate |
+| 28 | Approval withdrawn or key revoked between resume and claim | Claim predicate requires live + approving + key-valid + digest-matching, atomically (§4.1) |
+| 29 | A superseded row is revived by clearing `superseded_at` | Trigger constrains each `OLD → NEW` pair; both fields are monotonic (§3.2) |
+| 30 | Step-up forged with the compromised session secret | Independent `STEP_UP_COOKIE_SECRET` (§7.1) |
+| 31 | A fresh token proves nothing about a fresh login | `auth_time` validated, `max_age` requested; a token without `auth_time` is refused (§7.1) |
+| 32 | Whitespace-only approval note | `notes ~ '[^[:space:]]'` (§3.2) |
+| 33 | `workflow_transitions` rewritten after the fact | Its own append-only trigger (§3.2) |
+| 34 | Legacy backfill collides with a live row written in between | Backfill runs before the write path exists (§13) |
+| 35 | Evidence and legacy map disagree | Every decision's two writes share one transaction (§13) |
+| 36 | Rejected work waits for ever, still reported as pending | Non-approving verdicts move the job, committed with the evidence write (§4.1) |
+| 37 | Evidence recorded under an id the fabric cannot resolve | `FOUNDER_PRINCIPALS` maps email → canonical principal; evidence stores the mapped id (§7.2) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -828,11 +995,21 @@ Together they state the architecture: *the database will happily store this; the
 not create it.* Anyone who later tries to "harden" the constraint into an authorization control
 has to delete half A to do it, which is precisely the tripwire wanted.
 
-Run half B across every way the claim can be falsified: a machine principal with a valid session,
-an allowlisted non-founder with a valid step-up (§7.2), and a request supplying `principal_kind`
-or `asserted_role` in its body. **The write path derives both from the authenticated caller and
-never from the request** — a test that passes because the field was ignored is the outcome
-wanted, and it should assert the ignoring, not merely the refusal.
+Run half B across every way the claim can be falsified — but **split it, because one case cannot
+prove what it looks like it proves:**
+
+| Case | Caller | Assert |
+|---|---|---|
+| B1 | machine principal with a valid session | refused; no evidence row |
+| B2 | allowlisted **non**-founder with a valid step-up (§7.2) | refused; no evidence row |
+| B3 | **an authorized founder**, body supplying `principal_kind: 'agent'` / `asserted_role: 'x'` | **succeeds**, and the stored row reads `human` / `founder` |
+
+**B3 must use an authorized founder** — second review round. Running the body-injection case as a
+non-founder proves nothing: that caller is already refused by founder-set membership, so the test
+passes identically whether the handler trusts the body or ignores it. It would go green while the
+authorized path happily accepted forged fields. Only a caller who gets *past* authorization can
+demonstrate that the write path derives both values from the authenticated identity and discards
+what the request said.
 
 **From the review findings**, each gets the test that would have caught it: a live `rejected` row
 does **not** resume a job; a gated job is never observable as `queued` (insert and pause in one
@@ -859,35 +1036,45 @@ the never. A control with no test proving it fails is not a control.
    re-authentication prompt and retry flow**. Server and UI in the same step — shipping the check
    without the prompt makes every approval unreachable.
 4. Founder-set authorization at the write boundary (§7.2), separate from `AUTH_ALLOWED_EMAILS`.
-5. `approval_evidence` write path behind `PATCH /productions/:id/approvals`, requiring session +
-   step-up + founder-set membership, recording the email as a `human` principal with
-   `auth_age_seconds` in provenance; `withdrawn` on `pending`; dual-write the legacy map.
-6. Widen `checkDeliveryApproval`; publish gate reads evidence **and pins `finalVideoId`** (§3.5).
-7. `workflow_transitions`, written in the same transaction as the state change it records.
-8. Backfill legacy approvals as unbound history.
-9. `work_items`, the `production_jobs` parent columns, **and the `enqueueJob` / `/queue` contract
-   changes they require** (§3.4). Ratified decision 5 places the work-item parent in B1; only the
-   *article-shaped production* that uses it is B2.
-10. A waiting-for-approval surface: `/queue` filterable by `awaiting_approval`, exposing what is
+5. **Backfill legacy approvals as unbound history — before any live write path exists.** Second
+   review round: backfilling *after* enabling writes means a production re-approved in between
+   already holds a live row, so the backfill collides with `approval_evidence_live` and either
+   fails or silently drops the legacy record. Backfilling first makes the collision impossible.
+6. `approval_evidence` write path behind `PATCH /productions/:id/approvals`, requiring session +
+   step-up + founder-set membership, recording the **mapped canonical principal** as `human` with
+   `auth_age_seconds` in provenance; `withdrawn` on `pending`.
+   **Every decision's evidence write and legacy-map projection share one transaction** — not only
+   withdrawal. If either half commits alone the dashboard and the gate disagree, in whichever
+   direction is worse for that decision.
+7. **The two inherited prerequisites (§3.6)** — a consistent final-video pin populated by both
+   producers, and the A-Roll spend-boundary decision. Both gate step 8.
+8. Widen `checkDeliveryApproval`; publish reads evidence, sends the **approved snapshot** of the
+   whole outbound package, and resolves the video by the pin rather than by `updatedAt`.
+9. `workflow_transitions`, written in the same transaction as the state change it records, with
+   its own append-only trigger.
+10. `work_items`, the `production_jobs` parent columns, **and the `enqueueJob` / `/queue` contract
+    changes they require** (§3.4). Ratified decision 5 places the work-item parent in B1; only the
+    *article-shaped production* that uses it is B2.
+11. A waiting-for-approval surface: `/queue` filterable by `awaiting_approval`, exposing what is
     waiting, on whom, and since when. Phase B's own acceptance conditions ask for it, and an
     approval queue nobody can see is a durable pause that behaves like a lost job.
 
 **B1.5 — small, sequencing-critical**
 
-11. `awaiting_approval` enum value, `gate_origin`, `approved_revision_digest`, the transition
-    rules, the retry guard, and the Phase A invisibility regression tests. Landing the state
-    before any gate needs it keeps that PR small.
+12. `awaiting_approval` enum value, `gate_origin`, `approved_revision_digest`, the gate-aware
+    claim predicate, the stale-gate sweep, the non-approving verdict transitions, the retry
+    guard, and the Phase A invisibility regression tests.
 
 **B2 — blocked on `hvnglobalco-com`**
 
-12. Registry `PrincipalKind` change (governed, `rmg-piaar-system` first, mirror second).
-13. HVN Global's first authenticated route + signing key — human-authenticated minting per §8.4.
-14. `packages/identity` / `authz` human principal support; the founder set moves out of Creator
-    OS config and into the fabric (§7.2's interim ends).
-15. Assertion verification, key-status checking, and ingest in Creator OS.
-16. Article-shaped production on the B1 work-item parent.
+13. Registry `PrincipalKind` change (governed, `rmg-piaar-system` first, mirror second).
+14. HVN Global's first authenticated route + signing key — human-authenticated minting per §8.4.
+15. `packages/identity` / `authz` human principal support; the founder mapping moves out of
+    Creator OS config and into the fabric (§7.2's interim ends).
+16. Assertion verification, `signing_keys` lifecycle, and ingest in Creator OS.
+17. Article-shaped production on the B1 work-item parent.
 
-Steps 1–11 are safe to build and merge without any of 12–16. That is the point of the split, and
+Steps 1–12 are safe to build and merge without any of the B2 steps that follow. That is the point of the split, and
 ratified decision 5 authorizes exactly that.
 
 ---
