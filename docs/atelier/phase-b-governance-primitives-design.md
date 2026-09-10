@@ -141,7 +141,10 @@ live. Phase B adds governance on top of a queue that is already concurrency-safe
 
 Four new tables and two sets of additive column changes — the `work_items` parent columns on
 `production_jobs` (§3.3) and the gate descriptor (§4.1). Migration
-**`0023_governance_primitives.sql`** (next free; `0022` is the Phase A migration).
+**two** migrations — `0023_governance_enums.sql` then `0024_governance_primitives.sql` (`0022`
+is the Phase A migration). The split is not cosmetic: Postgres cannot use an
+`ALTER TYPE … ADD VALUE` result inside the adding transaction, and Drizzle wraps each migration
+in one. See §4.1 and §10.
 
 ### 3.1 `principal_kind` — a shared vocabulary, not an identity store
 
@@ -386,28 +389,42 @@ plausible successor*: it could point at a row for a different subject, a differe
 the superseded row itself.
 
 A deferred constraint trigger closes both, and deferral is available here because this is a
-`CONSTRAINT TRIGGER` rather than the partial unique index discussed above:
+`CONSTRAINT TRIGGER` rather than the partial unique index discussed above.
+
+**It must validate the row as it finally stands, not the tuple that queued the event — sixth
+review round, and the first version of this trigger was broken by exactly that.** Postgres queues
+a *separate* deferred event per row-update, each carrying its own frozen `NEW` snapshot. The
+legitimate three-step sequence updates the row twice, so at `COMMIT` two events fire: step 3's
+event sees both columns populated, but **step 1's event still sees `superseded_by IS NULL`** and
+raised. The check as first written therefore failed every correct supersession while permitting
+nothing extra — a constraint that rejects only valid transactions. The function must re-read the
+current row by `NEW.id` and judge that:
 
 ```sql
 CREATE FUNCTION approval_evidence_supersession_complete() RETURNS trigger AS $$
-DECLARE succ approval_evidence%ROWTYPE;
+DECLARE cur approval_evidence%ROWTYPE;
+        succ approval_evidence%ROWTYPE;
 BEGIN
-  IF NEW.superseded_at IS NULL THEN RETURN NULL; END IF;
-  IF NEW.superseded_by IS NULL THEN
-    RAISE EXCEPTION 'approval_evidence %: superseded_at set with no successor', NEW.id;
+  -- re-read: the queued NEW tuple is an intermediate state of a multi-statement sequence
+  SELECT * INTO cur FROM approval_evidence WHERE id = NEW.id;
+  IF NOT FOUND THEN RETURN NULL; END IF;          -- append-only trigger already refuses DELETE
+  IF cur.superseded_at IS NULL THEN RETURN NULL; END IF;
+  IF cur.superseded_by IS NULL THEN
+    RAISE EXCEPTION 'approval_evidence %: superseded_at set with no successor', cur.id;
   END IF;
-  IF NEW.superseded_by = NEW.id THEN
-    RAISE EXCEPTION 'approval_evidence %: cannot supersede itself', NEW.id;
+  IF cur.superseded_by = cur.id THEN
+    RAISE EXCEPTION 'approval_evidence %: cannot supersede itself', cur.id;
   END IF;
-  SELECT * INTO succ FROM approval_evidence WHERE id = NEW.superseded_by;
-  IF succ.subject_type IS DISTINCT FROM NEW.subject_type
-     OR succ.subject_id IS DISTINCT FROM NEW.subject_id
-     OR succ.scope      IS DISTINCT FROM NEW.scope THEN
+  SELECT * INTO succ FROM approval_evidence WHERE id = cur.superseded_by;
+  IF succ.subject_type IS DISTINCT FROM cur.subject_type
+     OR succ.subject_id IS DISTINCT FROM cur.subject_id
+     OR succ.scope      IS DISTINCT FROM cur.scope THEN
     RAISE EXCEPTION 'approval_evidence %: successor % is for a different subject/scope',
-                    NEW.id, NEW.superseded_by;
+                    cur.id, cur.superseded_by;
   END IF;
-  IF succ.recorded_at < NEW.recorded_at THEN
-    RAISE EXCEPTION 'approval_evidence %: successor % predates it', NEW.id, NEW.superseded_by;
+  IF succ.decision_seq <= cur.decision_seq THEN
+    RAISE EXCEPTION 'approval_evidence %: successor % does not follow it in sequence',
+                    cur.id, cur.superseded_by;
   END IF;
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
@@ -418,9 +435,40 @@ CREATE CONSTRAINT TRIGGER approval_evidence_supersession_complete
   FOR EACH ROW EXECUTE FUNCTION approval_evidence_supersession_complete();
 ```
 
+Two events now both re-read the same final row and reach the same verdict, which is the property
+a commit-time check needs: **idempotent in the number of times it fires.** Ordering is compared
+on `decision_seq` (§8.2) rather than `recorded_at`, because a clock reading is not an order.
+
 Deferred is the whole point: the three-step sequence is *legitimately* incomplete between steps 1
 and 3, so the check has to run at `COMMIT` and not before. A transaction that performs step 1
-alone now fails at commit rather than silently leaving the subject undecided.
+alone now fails at commit rather than silently leaving the subject undecided. The test for this
+is therefore two-sided — the correct three-step sequence **commits**, and step 1 alone **raises**
+— because a one-sided test would have passed against the broken version above.
+
+**`TRUNCATE` is not `DELETE`, and the runtime role can issue it — sixth review round.** Row-level
+`BEFORE DELETE` triggers **do not fire for `TRUNCATE`**, and Creator OS runs migrations and
+application queries under the same database identity, so the runtime role owns these tables and
+holds truncate rights on them by default. One statement could therefore erase the evidence,
+transition and key tables together — taking the audit history with it and freeing every `key_id`
+for reuse — past every append-only trigger above. Statement-level guards, on all three tables:
+
+```sql
+CREATE FUNCTION governance_table_no_truncate() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only: TRUNCATE is not permitted', TG_TABLE_NAME;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER approval_evidence_no_truncate    BEFORE TRUNCATE ON approval_evidence
+  FOR EACH STATEMENT EXECUTE FUNCTION governance_table_no_truncate();
+CREATE TRIGGER workflow_transitions_no_truncate BEFORE TRUNCATE ON workflow_transitions
+  FOR EACH STATEMENT EXECUTE FUNCTION governance_table_no_truncate();
+CREATE TRIGGER signing_keys_no_truncate         BEFORE TRUNCATE ON signing_keys
+  FOR EACH STATEMENT EXECUTE FUNCTION governance_table_no_truncate();
+```
+
+Separating table ownership and revoking the runtime role's truncate privilege is the stronger
+control and is worth doing when the deployment gains a migration-only role; the triggers are what
+holds today, under the identity model that actually exists.
 
 `workflow_transitions` gets the same treatment — `BEFORE UPDATE OR DELETE … RAISE`, with no
 permitted mutation at all, since nothing about a recorded transition ever legitimately changes.
@@ -536,6 +584,26 @@ satisfy the one-parent CHECK without fabricating the video production this desig
 the shortcut §3.4 exists to avoid, reintroduced through the back door. The enqueue surface,
 its one-parent validation, and the `/queue` filters that currently accept only `production_id`
 are part of the work-item work, not a follow-on to it.
+
+**And the capability vocabulary blocks it one level lower — sixth review round.**
+`production_job_capability` is an enum of `aroll | broll | lipsync | audio | thumbnail | poster`,
+and `enqueueJob` requires one of them. Even with a `work_item_id` column and a relaxed parent
+CHECK, **there is no value an Accord job could legally carry**: it either masquerades as a video
+capability — the fabrication §3.4 rejects, relocated from the parent row to the capability
+column — or it fails validation before it reaches the new parent at all. The Phase B exit
+condition "an Accord article moves through the queue" is unsatisfiable until this is fixed.
+
+```sql
+ALTER TYPE production_job_capability ADD VALUE 'accord_article';
+```
+
+with dispatch defined rather than left implicit: the worker's capability switch gains an
+`accord_article` branch, and until B2 gives it a real handler it **fails the job explicitly**
+(`failed`, with a reason) rather than falling through a `default` that silently marks work done.
+A capability the dispatcher does not recognise must be an error, never a no-op — a governed job
+that completes without doing anything is worse than one that fails. The enum addition carries
+the same commit-boundary constraint as `awaiting_approval` (§4.1) and travels in the same
+enum-only migration.
 
 ### 3.5 `revision_digest` — what exactly is hashed
 
@@ -723,7 +791,7 @@ policy source at all** from which the other three could later be reconstructed. 
 the evidence tuple, and nothing would have made them infer the same one — four readers, four
 opportunities to look up the wrong row, and the disagreement fails open at whichever of them
 guesses an approval that exists. Typed columns and a completeness constraint, in migration
-`0023`:
+`0024`:
 
 ```sql
 ALTER TABLE production_jobs
@@ -742,6 +810,56 @@ ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_status
   CHECK (status <> 'awaiting_approval' OR gate_origin IS NOT NULL);
 ```
 
+**The enum value and its first use cannot share a migration — sixth review round, and this would
+have failed on deploy rather than in review.** Drizzle runs each migration inside a transaction,
+and Postgres refuses to *use* a value added by `ALTER TYPE … ADD VALUE` until the adding
+transaction has committed (the exception being an enum created in that same transaction, which
+`production_job_status` was not). The `production_jobs_gate_status` CHECK above compares `status`
+against the freshly-added `'awaiting_approval'`, so `0023` as declared would abort partway and
+B1 could not deploy at all. `accord_article` (§3.4) has exactly the same problem.
+
+`0023` therefore splits at that commit boundary, and the split is a sequencing requirement rather
+than a style preference:
+
+| Migration | Contents |
+|---|---|
+| **`0023_governance_enums.sql`** | `ALTER TYPE production_job_status ADD VALUE 'awaiting_approval'`; `ALTER TYPE production_job_capability ADD VALUE 'accord_article'`; `CREATE TYPE principal_kind`, `signing_key_status`. **Nothing that references the new values.** |
+| **`0024_governance_primitives.sql`** | The four tables, all triggers and indexes, the `production_jobs` parent and gate-descriptor columns, and every CHECK that names `'awaiting_approval'`. |
+
+A migration test that applies both from an empty database — rather than asserting the final
+schema — is what would have caught this, and is added to §12.
+
+**Descriptors are immutable once written — sixth review round.** The two CHECKs above constrain
+a row's *shape*, not its *history*. `num_nonnulls(...) IN (0, 4)` happily accepts a `4 → 0`
+transition, and `production_jobs_gate_status` stops applying the moment the job leaves
+`awaiting_approval` — so a buggy or hostile `UPDATE` could clear `gate_origin` on a cancelled job
+just before retry, or repoint all four fields at an unrelated already-approved tuple just before
+claim. Either erases the server-owned policy decision the descriptor exists to record, using the
+descriptor's own storage to do it:
+
+```sql
+CREATE FUNCTION production_jobs_gate_descriptor_frozen() RETURNS trigger AS $$
+BEGIN
+  IF OLD.gate_origin IS NOT NULL AND
+     (NEW.gate_origin, NEW.gate_subject_type, NEW.gate_subject_id, NEW.gate_scope)
+     IS DISTINCT FROM
+     (OLD.gate_origin, OLD.gate_subject_type, OLD.gate_subject_id, OLD.gate_scope) THEN
+    RAISE EXCEPTION 'production_jobs %: gate descriptor is immutable once set', OLD.id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER production_jobs_gate_frozen
+  BEFORE UPDATE ON production_jobs
+  FOR EACH ROW EXECUTE FUNCTION production_jobs_gate_descriptor_frozen();
+```
+
+`approved_revision_digest` is deliberately **not** in the frozen set — it is re-stamped at each
+legitimate resume, which is what §4.1's claim revalidation compares against. A genuine policy
+migration (§4.1, "the descriptor is migrated explicitly") runs as a controlled operation that
+drops and recreates this trigger inside its own transaction, which is precisely the visibility
+that an ordinary runtime `UPDATE` must not have.
+
 `num_nonnulls(...) IN (0, 4)` is the constraint that matters: it is evaluated on every insert and
 update, it cannot be satisfied by a caller who supplies three of four, and — unlike a comment —
 it makes the "partial descriptor is rejected" sentence above true in the database rather than in
@@ -750,8 +868,12 @@ an intention.
 **The authoritative policy source, named rather than assumed.** There is no autonomy-policy
 table today, so B1 introduces the smallest thing that can be the single answer to "does a gate
 apply, and to what evidence": a **pure, versioned function in one module**,
-`resolveGate(input) → GateDescriptor | null`, keyed on `(capability, brand, subject_type,
-autonomy_level)`, with its defaults declared in code and unit-tested. Not a table, because a
+`resolveGate(input) → GateDescriptor | null`, keyed on `(capability, **provider**, brand,
+subject_type, autonomy_level)`, with its defaults declared in code and unit-tested. *`provider`
+was named as a policy input two paragraphs above and then omitted from the key — sixth review
+round. For a capability that can run through more than one provider those are different cost and
+governance boundaries, and a key without it silently reuses one provider's rule for another. It
+is taken from the server-side resolution of the job, never from the request.* Not a table, because a
 policy row is another thing an operator can edit to open a gate; not an environment variable,
 because the mapping is structured. The **default is `gate applies`** for every capability B1
 governs — an unrecognised capability resolves to a gate rather than to none, so adding a
@@ -898,6 +1020,39 @@ publish gate.
 4. if `approved_with_note`, all notes discharged; else fail closed.
 
 Its purity and its 12 unit tests survive; the signature widens.
+
+#### The gate read is a moment; publication is an interval — sixth review round
+
+Those four checks are a **point-in-time read**, and `POST /productions/:id/publish` performs them
+first and *then* awaits an integration lookup and a media upload before Postiz creates anything.
+A withdrawal or rejection landing inside that interval commits happily — nothing in §4.2a's
+transaction knows a publish is in flight — and the post goes out under evidence that is no longer
+live. §3.5's byte binding does not close it either: that proves the *bytes* are the approved ones,
+and this is about the *decision* having been revoked while approved bytes were being sent.
+
+A one-time read cannot fix an interval; the two writers have to be serialized. Publication
+therefore declares an intent and holds it:
+
+1. **Claim.** In one transaction, re-run the four checks `FOR UPDATE` against the live evidence
+   row and insert a `publication_intents` row — `(subject_type, subject_id, scope)` unique while
+   open, carrying `evidence_id`, `revision_digest` and a lease deadline in the shape Phase A's
+   job lease already uses. A second concurrent publish collides on the index rather than racing.
+2. **Supersession waits or loses.** §4.2a's withdrawal transaction takes the same row lock, so it
+   either commits **before** the claim (and the claim then fails closed, the publish never
+   starting) or **after** it. It never interleaves.
+3. **Commit or release.** Postiz's post id is recorded and the intent closed in the same
+   transaction; a failure or an expired lease releases it. An intent that expires with no post id
+   is surfaced, not swept silently — that is the one state where "did it publish?" is genuinely
+   unknown, and it needs a human to look.
+
+**A withdrawal that arrives while an intent is open is recorded, not lost.** It supersedes as
+normal and takes effect for every subsequent gate read; what it cannot do is retroactively
+un-send a post already handed to Postiz. The honest guarantee is therefore bounded and worth
+stating plainly: **no publication begins after a withdrawal commits, and no withdrawal is
+silently dropped because a publication was running.** Recalling an already-transmitted post is a
+platform operation, not a database one, and B1 does not pretend otherwise.
+
+`publication_intents` is the fifth table B1 adds, and it belongs to the enum-free migration.
 
 ---
 
@@ -1091,7 +1246,28 @@ That is the property that makes clause 7 enforceable rather than merely stated.
 ### 8.2 Recommended: signed domain assertion over an authenticated call
 
 The domain signs
-`{subject, revision_digest, decision, notes, principal_id, asserted_role, issued_at, key_id, nonce}`.
+
+```
+{ subject: { subject_type, subject_id, scope },
+  revision_digest, decision, notes, decision_seq,
+  principal_id, asserted_role, issued_at, key_id, nonce }
+```
+
+**Both of the structural fields here were added on the sixth review round, and both were
+authorization holes rather than tidiness.**
+
+- **`scope` is inside the signed `subject`.** `scope` is the brand slug that selects which live
+  evidence row a brand-scoped approval satisfies. The earlier list wrote `subject` as an
+  unspecified single value, so an implementation could plausibly have taken scope from outside
+  the signature — at which point **the authenticated machine carrier can retarget a genuine
+  founder approval from one brand to another**, signature and digest both still verifying. The
+  subject is a triple, and the triple is signed as one object; a scope supplied anywhere else in
+  the request is ignored, not merged.
+- **`decision_seq` is in the primary list, not only in the prose below.** The ordering rule added
+  in round five is worth nothing if the ordinal is transport-controlled: a carrier could raise a
+  stale approval's ordinal above the live rejection and defeat the very comparison the rule
+  introduces. A field that decides which decision wins must be signed by whoever decided.
+
 Creator OS verifies against the domain's published key, then writes evidence with
 `source_system = 'hvnglobalco-com'`, `signing_key_id = key_id`, `assertion_id = nonce`, and the
 transmitting principal in `provenance`.
@@ -1123,9 +1299,8 @@ Ordering therefore has to be carried in the signed payload rather than inferred 
 - the domain maintains a **monotonic decision sequence per `(subject_type, subject_id, scope)`**
   — a counter it increments for every decision it mints, persisted alongside the decision so it
   survives a restart — and signs it as `decision_seq`;
-- `decision_seq` joins the signed field list:
-  `{subject, revision_digest, decision, notes, principal_id, asserted_role, issued_at,
-  decision_seq, key_id, nonce}`. Unsigned it would be a hint a transporter could rewrite;
+- `decision_seq` is part of the signed payload above, not an envelope field. Unsigned it would
+  be a hint a transporter could rewrite;
 - Creator OS stores it as `approval_evidence.decision_seq bigint` and **refuses any assertion
   whose `decision_seq` is less than or equal to the live row's** for that subject and scope. The
   refusal is a `409`, not a silent drop: an out-of-order delivery is a fact worth surfacing;
@@ -1216,12 +1391,31 @@ can record and display but cannot interpret is a value it cannot accidentally au
 
 ## 10. Migration compatibility
 
-- **Four** new tables — `approval_evidence`, `workflow_transitions`, `work_items`, `signing_keys`
-  — all in `0023`, and nothing existing reads them. (An earlier revision said three here while
-  §3 assigned four, which would have let `signing_keys` and its enum be omitted from deployment
-  or stranded on rollback.) `signing_keys` is created in B1 with the rest even though only B2
-  writes it: a gate predicate that joins a table which may or may not exist is not a predicate.
-- One new enum value — invisible to Phase A's claim and recovery queries (§4.1).
+**Two migrations, and the split is mandatory** (§4.1): `0023_governance_enums.sql` adds enum
+values and types only; `0024_governance_primitives.sql` does everything that references them.
+Postgres refuses to use an `ALTER TYPE … ADD VALUE` result inside the adding transaction, and
+Drizzle wraps each migration in one. Declaring a single `0023` — as an earlier revision did —
+would have aborted on deploy, not in review.
+
+- **Five** new tables — `approval_evidence`, `workflow_transitions`, `work_items`,
+  `signing_keys`, `publication_intents` — all in `0024`, and nothing existing reads them. (An
+  earlier revision said three while §3 assigned four, which would have let `signing_keys` and
+  its enum be omitted from deployment or stranded on rollback; `publication_intents` is the
+  fifth, added in the sixth review round with §4.3's serialization.) `signing_keys` is created
+  in B1 with the rest even though only B2 writes it: a gate predicate that joins a table which
+  may or may not exist is not a predicate.
+- **Two** new enum values, both in `0023_governance_enums.sql` — `production_job_status.awaiting_approval`
+  (invisible to Phase A's claim and recovery queries, §4.1) and
+  `production_job_capability.accord_article` (§3.4, without which no Accord job can be enqueued
+  at all).
+- **`productions.final_video_row_id uuid REFERENCES videos(id)`** — §3.6(b)'s pin, in `0024`.
+  It was named as a prerequisite and then never assigned to a migration, which would have left
+  publish re-deriving a winner by `updatedAt` — exactly the mutable selection the digest exists
+  to eliminate. Nullable on add; **backfilled** for existing productions by resolving each
+  `finalVideoId` (a Drive file id) against `videos.driveFileId`, and left null where no match
+  exists rather than guessed. Both producers — the upload path (`routes/delivery.ts`) and the
+  assembly path (`server.ts:1816-1834`) — populate it going forward, and publish reads it.
+  A production with a null pin cannot be approved; that refusal is the point.
 - `production_jobs.work_item_id` nullable; `production_id` relaxed to nullable with a `CHECK`
   every existing row already satisfies.
 - `production_jobs` gate descriptor: `gate_origin`, `gate_subject_type`, `gate_subject_id`,
@@ -1230,6 +1424,23 @@ can record and display but cannot interpret is a value it cannot accidentally au
   completeness CHECK admits the whole existing table unchanged. Rollback drops the five columns
   together — dropping `gate_origin` alone would leave orphaned descriptor fields that the retry
   refusal no longer reads.
+- **Existing governed jobs are backfilled, not left null — sixth review round.** `0024` adds the
+  descriptor columns as null on every existing row, and the new claim and retry predicates read
+  a null `gate_origin` as *ungated*. A `queued` job that predates the deploy would therefore
+  dispatch with no approval, and a pre-deploy `cancelled` job could be retried through the same
+  hole — the migration would open the exact gap it exists to close, for precisely the jobs
+  already in flight. The deploy sequence is therefore ordered rather than incidental:
+
+  1. `0024` runs, adding the columns.
+  2. A backfill step resolves `resolveGate` for **every** non-terminal job and, where a gate
+     applies, writes the complete descriptor and moves a `queued` job to `awaiting_approval`.
+     It runs **before** the gate-aware worker image is deployed, so nothing can claim a job
+     mid-backfill.
+  3. Only then does the gate-aware gateway roll out.
+
+  And the predicate itself fails closed regardless: a job whose capability `resolveGate` says is
+  governed is **not claimable with a null descriptor**. Missing is treated as *unresolved*, not
+  as *ungated* — so a job the backfill somehow missed stalls visibly instead of dispatching.
 - `productions.deliveryApprovals` is **not dropped.** B1 dual-writes: evidence becomes the source
   of truth for the gate, the map stays as a projection for the existing UI. It is removed in a
   later, separate change once nothing reads it.
@@ -1238,7 +1449,7 @@ can record and display but cannot interpret is a value it cannot accidentally au
   `revision_digest` of `'legacy:unbound'`. **Legacy rows deliberately fail the digest check**, so
   a pre-Phase-B approval cannot silently satisfy a post-Phase-B gate. They are history, not
   authority. Re-approval under the new model is a founder action, and that is the correct cost.
-- Rollback: **not simply "drop three tables and two columns."** Once `awaiting_approval` has been
+- Rollback: **not simply "drop the tables and columns."** Once `awaiting_approval` has been
   used, rows carry it. The enum value persisting is harmless; the *rows* are not. Dropping the
   evidence tables removes the only mechanism that could release them, and deploying code that
   does not know the status leaves them unclaimable and unexplained — durably paused work with
@@ -1308,6 +1519,17 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 53 | A revoked signing key is deleted and its `key_id` re-inserted as active | `signing_keys` append-only including delete refusal; `key_id` never reused; FK from `approval_evidence.signing_key_id` (§3.2) |
 | 54 | A transaction sets `superseded_at` alone, leaving the subject with no live decision | Deferred `CONSTRAINT TRIGGER` at commit: both fields present, successor matches subject/scope and does not predate (§3.2) |
 | 55 | Four readers each infer the gate's evidence tuple differently | Typed descriptor columns written atomically at enqueue, a `num_nonnulls(...) IN (0,4)` completeness CHECK, and one `resolveGate` policy function that defaults to *gated* (§4.1) |
+| 56 | The deferred supersession check rejects every valid supersession | It re-reads the row by `NEW.id` at commit instead of judging the frozen `NEW` tuple of an intermediate statement; the test asserts both that the valid sequence commits and that step 1 alone raises (§3.2) |
+| 57 | `TRUNCATE` erases the audit tables past every row-level trigger | Statement-level `BEFORE TRUNCATE` triggers on all three governance tables (§3.2) |
+| 58 | A gate descriptor is cleared or retargeted after it is written | `production_jobs_gate_frozen` trigger; only `approved_revision_digest` is re-stampable (§4.1) |
+| 59 | `0023` aborts on deploy because an enum value is used in the transaction that adds it | Split into `0023` (enums only) and `0024` (everything referencing them), with an apply-from-empty migration test (§4.1, §10) |
+| 60 | Pre-deploy jobs dispatch ungated because their descriptor is null | Ordered deploy: migrate, backfill and pause before the gate-aware worker ships; and a governed capability with no descriptor is unclaimable, not ungated (§10) |
+| 61 | Withdrawal commits while a publish is mid-flight | `publication_intents` serializes the two writers on the same evidence row; no publication begins after a withdrawal commits (§4.3) |
+| 62 | A carrier retargets a founder approval to another brand scope | `scope` is inside the signed `subject` triple; a scope supplied outside the signature is ignored (§8.2) |
+| 63 | A carrier rewrites `decision_seq` to revive a stale approval | `decision_seq` is in the primary signed payload, not the envelope (§8.2) |
+| 64 | An Accord job can only be enqueued by masquerading as a video capability | `accord_article` added to `production_job_capability`; an unhandled capability fails the job explicitly rather than completing it (§3.4) |
+| 65 | Provider change silently reuses another provider's gate rule | `provider` is part of the `resolveGate` key, resolved server-side (§4.1) |
+| 66 | Publish re-derives the winning video by `updatedAt` | `productions.final_video_row_id` added and backfilled in `0024`; a null pin blocks approval (§10) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -1330,7 +1552,9 @@ verification including tampered, expired, wrong-key and replayed.
 **Postgres-backed (skipped without `TEST_DATABASE_URL`)** — the `founder_is_human` CHECK rejects a
 machine founder row; concurrent approvals collide on the live index; supersession is atomic;
 `awaiting_approval` is invisible to `claimNextJob` and `recoverStaleJobs` (**a direct regression
-test on Phase A's live queries**); the `one_parent` CHECK; `0023` applied twice against a clean
+test on Phase A's live queries**); the `one_parent` CHECK; **both migrations applied in order from an empty database**, which is
+the test that would have caught the `ALTER TYPE`/first-use collision (asserting the final schema
+would not have); the pair applied twice against a clean
 database through the real runner, as `0022` was.
 
 **Step-up (§7.1)** — pure: **`auth_time`** older than the window is rejected; `auth_time` in the
@@ -1401,8 +1625,32 @@ and an `enqueueJob` call for a gated capability with three of the four descripto
 asserting the insert is rejected rather than stored — plus its complement, an unrecognised
 capability, asserting it resolves to *gated* rather than to none.
 
+**The sixth round adds eleven more**, and two of them are the kind that only a *positive* test
+finds — the deferred supersession trigger and the migration split were both broken in the
+direction of rejecting valid work, which every negative test in the suite would have passed:
+
+- the correct three-step supersession **commits** (the test that fails against the round-five
+  trigger), and step 1 alone **raises at commit**;
+- `0023` then `0024` applied in order from an **empty** database succeeds — asserting the final
+  schema instead would not have caught the `ALTER TYPE`/first-use collision;
+- `TRUNCATE` on each of the three governance tables raises;
+- a gate descriptor cleared, and one retargeted, both raise; `approved_revision_digest` re-stamps
+  successfully;
+- a `queued` job created **before** the backfill is not claimable afterwards, and the backfill
+  moves it to `awaiting_approval`; a governed job with a null descriptor is unclaimable;
+- a withdrawal committed during an open publication intent neither interleaves nor is lost: the
+  publish either completed before it or never began;
+- an assertion whose `scope` is altered outside the signed subject fails verification;
+- an assertion whose `decision_seq` is raised in the envelope fails verification;
+- an `accord_article` job enqueues without a `productions` row, and an unhandled capability
+  **fails** the job rather than marking it done;
+- two providers for one capability resolve to different gate rules;
+- publish reads `final_video_row_id`, and a production with a null pin cannot be approved.
+
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
-the never. A control with no test proving it fails is not a control.
+the never. A control with no test proving it fails is not a control. **And at least one positive
+test per control** — round six's two rejects-everything defects are the argument: a control
+tested only by what it forbids can be a control that forbids everything.
 
 ---
 
@@ -1410,7 +1658,7 @@ the never. A control with no test proving it fails is not a control.
 
 **B1 — unblocked**
 
-1. `0023` migration + schema (nothing reads it yet).
+1. `0023` + `0024` migrations + schema (nothing reads it yet).
 2. Digest projection functions + tests.
 3. Step-up credential (§7.1) **and its UI**: `POST /auth/google/step-up`, the `rmg_stepup` cookie
    carrying the verified email, the `step_up_required` refusal, **and the dashboard
