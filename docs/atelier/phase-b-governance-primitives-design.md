@@ -198,7 +198,13 @@ CREATE TABLE approval_evidence (
   -- assertion this is the signed `issued_at`; for a decision made inside Creator OS the two
   -- coincide. Without it, a legitimately delayed delivery leaves the audit trail claiming the
   -- founder decided at ingest time, and the value that passed the freshness check is gone.
-  decided_at        timestamptz NOT NULL,
+  -- NULLABLE, and deliberately so: legacy backfilled rows (§10) have no knowable decision time,
+  -- and NOT NULL would force the migration either to fail or to write the migration timestamp
+  -- and present it as the founder's. NULL means "unknown", which is the truth. Every non-legacy
+  -- write path sets it, enforced by the CHECK below rather than by the column.
+  decided_at        timestamptz,
+  CONSTRAINT decided_at_required_unless_legacy
+    CHECK (decided_at IS NOT NULL OR asserted_role = 'legacy-unattributed'),
 
   -- lineage
   -- provenance additionally retains the COMPLETE signed artifact (payload bytes + signature)
@@ -948,6 +954,41 @@ validation therefore requires, atomically, all four:
 3. its `signing_key_id` (if any) is not revoked;
 4. its `revision_digest` equals the subject's current digest.
 
+**Condition 4 is not evaluable in the claim statement, and saying it was is the blocker round
+eight found.** The digest is a **pure TypeScript projection** (§3.5) over `productions`, `posts`
+and the pinned video row; it is not stored on the subject and not computable in SQL. Meanwhile
+`claimNextJob` is deliberately one atomic statement (Phase A). Comparing
+`approved_revision_digest` on the job against `revision_digest` on the evidence — the only
+comparison one statement *can* make — compares two copies of the value captured **at resume**,
+so it is true by construction and detects no mutation at all. Claim-time invalidation, the
+control the whole binding rests on, had no implementable data source.
+
+Two options were available, and the rejected one is worth recording:
+
+| Option | Verdict |
+|---|---|
+| Maintain `current_revision_digest` on the subject, written by every approval-relevant mutation | **Rejected.** This is precisely the *cascade* §5 argues against: correctness would depend on every present and future write path remembering to recompute, and a path that forgets fails **open**. Trading the design's one strong asymmetry for a single SQL comparison is a bad trade |
+| **Split the check: atomic claim, then transactional revalidation before any side effect** | **Recommended** |
+
+So the claim keeps conditions 1–3 in the single statement — they are ordinary joins against
+`approval_evidence` and `signing_keys`, and they fail closed in SQL — and condition 4 moves to
+the first thing the worker does after claiming, **before any provider call, in its own short
+transaction**:
+
+1. the worker recomputes the subject's current digest with the same pure function the approval
+   used;
+2. it re-reads the live evidence `FOR UPDATE` and compares;
+3. on match it proceeds; **on mismatch it aborts the job to `awaiting_approval`** — the one
+   `running → awaiting_approval` transition permitted, and permitted *only* here, because at
+   this point the job has a lease and **no external side effect has begun**;
+4. the abort and its reason are recorded as a `workflow_transitions` row.
+
+The window between claim and revalidation therefore contains no spend and no outbound call. That
+is the property that actually matters — *no paid work runs under a stale approval* — and it is
+obtainable, which "compare the current digest inside the claim" was not. The transition table
+above is amended accordingly: `running → awaiting_approval` is **permitted for the pre-dispatch
+revalidation abort only**, and remains forbidden once any provider call has started.
+
 **And the failure path needed a legal transition, which it did not have.** The same revision
 promised to "return the job to `awaiting_approval`", while the table above forbids both
 `queued → awaiting_approval` and `running → awaiting_approval` — and the claim statement sets
@@ -1074,13 +1115,36 @@ Two ordering rules make it hold, and both are needed:
    "publication in progress, retry". The founder is told, which is the honest outcome — a
    withdrawal that appears to succeed while the post is being transmitted is the worst of the
    available behaviours.
-2. **A fence check immediately before the outbound call.** The publisher re-reads its own intent
-   row inside the same statement that marks it `transmitting` —
-   `UPDATE publication_intents SET phase = 'transmitting' WHERE id = $1 AND phase = 'claimed'
-   AND lease_expires_at > now() RETURNING evidence_id` — and aborts unless one row comes back.
-   `transmitting` is the phase during which rule 1 makes withdrawal wait rather than commit.
-   This is the same conditional-update shape Phase A used for the job claim, applied to the last
-   moment Creator OS still controls.
+2. **A fence check immediately before the outbound call — and it revalidates the evidence, not
+   merely the intent.** An earlier revision fenced on `phase` and `lease_expires_at` alone. That
+   is not sufficient, and round eight was right to call it a blocker: rule 1 constrains only
+   §4.2a's *withdrawal* transaction, while a `rejected` or `revision_required` decision, or an
+   administrator revoking the signing key, can land between claim and fence and invalidate the
+   evidence without ever touching `publication_intents`. The intent would still read `claimed`,
+   the fence would pass, and publication would begin under evidence the database had already
+   invalidated. The fence therefore re-asserts the **whole** gate in one statement:
+
+   ```sql
+   UPDATE publication_intents i SET phase = 'transmitting'
+   WHERE i.id = $1 AND i.phase = 'claimed' AND i.lease_expires_at > now()
+     AND EXISTS (
+       SELECT 1 FROM approval_evidence e
+        WHERE e.id = i.evidence_id
+          AND e.superseded_at IS NULL
+          AND e.decision IN ('approved','approved_with_note')
+          AND e.revision_digest = i.revision_digest
+          AND (e.signing_key_id IS NULL OR EXISTS (
+                SELECT 1 FROM signing_keys k
+                 WHERE k.key_id = e.signing_key_id AND k.status = 'active'))
+     )
+   RETURNING i.evidence_id;
+   ```
+
+   No row back, no outbound call. This is the same four-part predicate the claim uses (§4.1) and
+   the same conditional-update shape Phase A used for the job claim, applied to the last moment
+   Creator OS still controls. **Rule 1's coordination is the courtesy; this is the control** — a
+   gate-invalidating write that forgets to consult `publication_intents` can no longer let a
+   publication through, because the fence asks the database rather than trusting the writer.
 
 **What remains unclosed, stated rather than papered over.** Between the fence and Postiz
 accepting the request there is a genuine network interval, and no database can shorten it to
@@ -1286,10 +1350,22 @@ That is the property that makes clause 7 enforceable rather than merely stated.
 The domain signs
 
 ```
-{ subject: { subject_type, subject_id, scope },
-  revision_digest, decision, notes, decision_seq,
-  principal_id, asserted_role, issued_at, key_id, nonce }
+protected header: { alg: "EdDSA", typ: "JOSE", kid: "<key_id>" }
+payload:          { subject: { subject_type, subject_id, scope },
+                    revision_digest, decision, notes, decision_seq,
+                    principal_id, asserted_role, issued_at, nonce }
 ```
+
+**`key_id` appears in the protected header and nowhere else.** An earlier revision duplicated it
+in the payload, which round eight identified as a key-revocation bypass and it is a real one: a
+holder of a revoked private key could sign with `kid = <revoked>` — so verification succeeds
+against the key that actually signed — while placing an **active** key's id in the payload. A
+verifier that selects the verification key from `kid` but persists the payload value writes
+evidence joined to the active key, and every later gate read finds a live key and treats the
+forgery as authoritative. **`approval_evidence.signing_key_id` is always the protected header's
+`kid`, the same value verification used**, and a payload carrying a `key_id` field at all is
+rejected before verification rather than reconciled. One id, one source, no reconciliation step
+to get wrong.
 
 **Both of the structural fields here were added on the sixth review round, and both were
 authorization holes rather than tidiness.**
@@ -1503,9 +1579,18 @@ would have aborted on deploy, not in review.
      Seventh review round, and it is the same class of mistake as ordering a lock after the read
      it protects. Claims are therefore excluded for the whole window, by the cheapest mechanism
      the deployment already has: **`WORKER_TICK_ENABLED=false` and the ticker stopped** (Phase A
-     built exactly this switch, and it is still off in production), plus a
-     `pg_advisory_lock` that `claimNextJob` takes and the backfill holds, so a worker started by
-     hand mid-window blocks rather than races.
+     built exactly this switch, and it is still off in production), **plus the worker routes
+     themselves refused** for the duration of the window.
+
+     *An earlier revision added "a `pg_advisory_lock` that `claimNextJob` takes" here. That is
+     false as a control during this window and round eight was right to say so: the lock exists
+     only in the **future** gate-aware `claimNextJob`, so the **old** image running throughout
+     steps 1–2 — and a manual `POST /worker/tick` against it — would take no lock at all. A
+     control that only the code you have not deployed yet honours protects nothing. The lock is
+     still worth adding to the new claim path for later maintenance windows; it is not what
+     makes this one safe.* What makes this one safe is that **automatic dispatch has never been
+     enabled in production** (Phase A shipped with `WORKER_TICK_ENABLED` unset and it remains
+     unset), so the only claimer is a deliberate manual tick, and refusing the route closes it.
   2. `0024` runs, adding the columns.
   3. A backfill step resolves `resolveGate` for **every** non-terminal job and writes the result
      — the complete descriptor where a gate applies, and an explicit *resolved-ungated* marker
@@ -1599,7 +1684,7 @@ would have aborted on deploy, not in review.
 | 43 | The test suite vouches for behaviour the design has abandoned | Step-up cases rewritten to `auth_time`, including refusal when the claim is absent (§12) |
 | 44 | An allowlisted non-founder mints a founder assertion at HVN Global | Founder grant required before the signing key is reachable; the domain derives `principal_id` and `asserted_role` from the caller and never signs request-supplied values (§8.4) |
 | 45 | Approved package published to a different channel | Resolved integration identity is captured at approval; publish sends there or refuses, never re-resolving (§3.5) |
-| 46 | Drive file replaced behind an approved video row | Content checksum / immutable object version in the approval projection, verified before publication (§3.5) |
+| 46 | Drive file replaced behind an approved video row | Content checksum / immutable object version in the approval projection, **enforced by the raw handler while it reads the bytes** — not "before publication", which is the pre-request check §3.5 shows cannot bind what Postiz later fetches. Same control as row 52 (§3.5) |
 | 47 | A stolen assertion is presented for the first time months later | `issued_at` within `ASSERTION_MAX_AGE_SECONDS` (300), 60s skew forward, none beyond (§8.2) |
 | 48 | Replay slips past the nonce index via a NULL `signing_key_id` | Paired CHECK — both fields set or both NULL (§3.2) |
 | 49 | Step-up window silently doubles | Age recomputed from the signed `auth_time` at every write; cookie `maxAge` is the remaining window, never a fresh 900 (§7.1) |
@@ -1628,6 +1713,9 @@ would have aborted on deploy, not in review.
 | 72 | Every withdrawal is rejected by a validator derived from the schema | `withdrawn` is in the primary `decision` vocabulary, not only in §4.2a's prose (§3.2) |
 | 73 | Evidence records ingest time as the decision time | `decided_at` column set from the signed `issued_at`; the full artifact retained in provenance (§3.2, §8.2) |
 | 74 | The publish protocol ships without `publication_intents` | The `0024` migration map names all five tables explicitly (§4.1, §10) |
+| 75 | Claim-time digest invalidation compares two copies of the resume-time value and detects nothing | Conditions 1–3 stay in the atomic claim; condition 4 becomes a transactional revalidation before any provider call, aborting to `awaiting_approval` with no side effect started (§4.1) |
+| 76 | A rejection or key revocation between claim and fence still lets publication begin | The fence re-asserts the whole four-part gate in one conditional `UPDATE`, not just intent phase and lease (§4.3) |
+| 77 | A revoked key signs with its own `kid` while naming an active key in the payload | `key_id` lives only in the protected header; evidence stores the `kid` verification used; a payload `key_id` is rejected outright (§8.2) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -1756,6 +1844,14 @@ exist on both sides to mean anything; `0024` applies against the real `videos` t
 compatibility is a migration fact, not a review opinion); a `withdrawn` decision passes the
 request validator; and `decided_at` on an assertion-backed row equals the signed `issued_at`
 rather than the ingest time.
+
+**Round eight's three blockers each get the test that proves the fix, and each is a test the
+broken version passes** — which is why they survived seven rounds: mutate the subject after
+resume and assert the worker aborts to `awaiting_approval` **before** any provider client is
+called (asserted on the mock, not on the status); record a `rejected` decision after the claim
+and assert the fence returns no row; and present an assertion whose payload names a different
+`key_id` from the protected `kid` and assert it is refused rather than reconciled — plus its
+positive complement, that evidence stores the header `kid`.
 
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control. **And at least one positive
