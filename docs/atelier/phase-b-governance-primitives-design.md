@@ -139,8 +139,9 @@ live. Phase B adds governance on top of a queue that is already concurrency-safe
 
 ## 3. Data model
 
-Four new tables and two additive column changes. Migration **`0023_governance_primitives.sql`**
-(next free; `0022` is the Phase A migration).
+Four new tables and two sets of additive column changes — the `work_items` parent columns on
+`production_jobs` (§3.3) and the gate descriptor (§4.1). Migration
+**`0023_governance_primitives.sql`** (next free; `0022` is the Phase A migration).
 
 ### 3.1 `principal_kind` — a shared vocabulary, not an identity store
 
@@ -184,6 +185,7 @@ CREATE TABLE approval_evidence (
   -- B2 assertion binding (NULL for decisions made inside Creator OS)
   signing_key_id    text,                   -- which domain key signed it; revocation is checked at read
   assertion_id      text,                   -- the single-use assertion/nonce
+  decision_seq      bigint NOT NULL,        -- monotonic per (subject_type, subject_id, scope); see §8.2
 
   -- lineage
   provenance        jsonb NOT NULL DEFAULT '{}',
@@ -219,6 +221,11 @@ CREATE UNIQUE INDEX approval_evidence_assertion
 
 CREATE INDEX approval_evidence_subject
   ON approval_evidence (subject_type, subject_id);
+
+-- ordering is per subject+scope and never repeats, so an out-of-order redelivery cannot
+-- reoccupy an ordinal that has already been decided
+CREATE UNIQUE INDEX approval_evidence_seq
+  ON approval_evidence (subject_type, subject_id, scope, decision_seq);
 ```
 
 #### `signing_keys` — the fact revocation needs
@@ -251,6 +258,50 @@ move `active → revoked` and never back.
 Evidence carrying a `signing_key_id` whose row is `revoked` is **not live evidence**, whatever
 its digest says. Rotation inserts a new key and marks the old one revoked; nothing is deleted, so
 history stays readable.
+
+**"Nothing is deleted" has to be enforced too — fifth review round.** One-way *status* is not
+one-way *existence*. `approval_evidence.signing_key_id` carried no foreign key, and the
+monotonicity trigger above constrained `UPDATE` only, so a lifecycle path (a rotation script, a
+cleanup job, a compromised role) could `DELETE` the revoked row and `INSERT` the same `key_id`
+as `active`. Because the gate reads the *current* status row rather than re-verifying the
+original assertion, every piece of evidence written under that formerly revoked id would become
+authoritative again — revocation undone by two ordinary statements. Three things close it:
+
+```sql
+-- 1. key rows are append-only in existence as well as in status
+CREATE FUNCTION signing_keys_append_only() RETURNS trigger AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'signing_keys is append-only: key % may not be deleted', OLD.key_id;
+  END IF;
+  IF NEW.key_id <> OLD.key_id OR NEW.public_key <> OLD.public_key OR NEW.domain <> OLD.domain THEN
+    RAISE EXCEPTION 'signing_keys: identity columns are immutable';
+  END IF;
+  IF OLD.status = 'revoked' AND NEW.status <> 'revoked' THEN
+    RAISE EXCEPTION 'signing_keys: revocation is one-way';
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+CREATE TRIGGER signing_keys_no_delete
+  BEFORE UPDATE OR DELETE ON signing_keys
+  FOR EACH ROW EXECUTE FUNCTION signing_keys_append_only();
+
+-- 2. evidence points at a key row that must therefore continue to exist
+ALTER TABLE approval_evidence
+  ADD CONSTRAINT approval_evidence_signing_key_fk
+  FOREIGN KEY (signing_key_id) REFERENCES signing_keys(key_id);
+```
+
+3. **`key_id` is never reused**, including for a key that was never used to sign anything. The
+   primary key already refuses a duplicate while the row exists; the delete refusal is what makes
+   that guarantee permanent. Rotation therefore mints a fresh id (`<domain>-<yyyymmdd>-<n>`), and
+   a key-id collision at registration is an operational error to surface, not a row to replace.
+
+The foreign key also removes a quieter failure: evidence naming a `signing_key_id` with no key
+row at all. Under the previous model the gate's join found nothing, and "no revocation row" is
+indistinguishable from "not revoked" unless every read remembers to treat a missing key as fatal.
+With the FK the unresolvable state cannot be written in the first place.
 
 #### Supersession — a sequence that actually commits
 
@@ -321,6 +372,55 @@ setting `superseded_by`: the old pointer was null, so the check passed, and **th
 became live again.** A fresh row could likewise set `superseded_by` alone and then rewrite it
 indefinitely. The rules above constrain each `OLD → NEW` pair directly, which is what "one-time"
 actually requires.
+
+**Completeness, at commit rather than per statement — fifth review round.** The trigger above
+constrains each `OLD → NEW` pair, which is what monotonicity needs, but it is a `BEFORE ROW`
+trigger and therefore cannot see how the transaction ends. A path that ran step 1 and then
+stopped — a bug, an early `RETURN`, a compromised role issuing a single `UPDATE` — could commit
+with `superseded_at` set and `superseded_by` still `NULL`: the row has left the live partial
+index, no successor has taken the slot, and **the subject now has no live decision at all**,
+which the gate reads as "unapproved" while the audit trail claims a supersession that names
+nothing. Nothing above prevented it, and §3.2 nevertheless claimed lineage completeness was
+database-enforced. Likewise `superseded_by` was only checked for monotonicity, not for *being a
+plausible successor*: it could point at a row for a different subject, a different scope, or at
+the superseded row itself.
+
+A deferred constraint trigger closes both, and deferral is available here because this is a
+`CONSTRAINT TRIGGER` rather than the partial unique index discussed above:
+
+```sql
+CREATE FUNCTION approval_evidence_supersession_complete() RETURNS trigger AS $$
+DECLARE succ approval_evidence%ROWTYPE;
+BEGIN
+  IF NEW.superseded_at IS NULL THEN RETURN NULL; END IF;
+  IF NEW.superseded_by IS NULL THEN
+    RAISE EXCEPTION 'approval_evidence %: superseded_at set with no successor', NEW.id;
+  END IF;
+  IF NEW.superseded_by = NEW.id THEN
+    RAISE EXCEPTION 'approval_evidence %: cannot supersede itself', NEW.id;
+  END IF;
+  SELECT * INTO succ FROM approval_evidence WHERE id = NEW.superseded_by;
+  IF succ.subject_type IS DISTINCT FROM NEW.subject_type
+     OR succ.subject_id IS DISTINCT FROM NEW.subject_id
+     OR succ.scope      IS DISTINCT FROM NEW.scope THEN
+    RAISE EXCEPTION 'approval_evidence %: successor % is for a different subject/scope',
+                    NEW.id, NEW.superseded_by;
+  END IF;
+  IF succ.recorded_at < NEW.recorded_at THEN
+    RAISE EXCEPTION 'approval_evidence %: successor % predates it', NEW.id, NEW.superseded_by;
+  END IF;
+  RETURN NULL;
+END $$ LANGUAGE plpgsql;
+
+CREATE CONSTRAINT TRIGGER approval_evidence_supersession_complete
+  AFTER UPDATE ON approval_evidence
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION approval_evidence_supersession_complete();
+```
+
+Deferred is the whole point: the three-step sequence is *legitimately* incomplete between steps 1
+and 3, so the check has to run at `COMMIT` and not before. A transaction that performs step 1
+alone now fails at commit rather than silently leaving the subject undecided.
 
 `workflow_transitions` gets the same treatment — `BEFORE UPDATE OR DELETE … RAISE`, with no
 permitted mutation at all, since nothing about a recorded transition ever legitimately changes.
@@ -483,7 +583,34 @@ A digest over the **approval-relevant projection** of the subject, not the whole
 > file behind an approved row and the digest still matches while Postiz fetches a different cut.
 > Selection races and content mutation are two different holes; pinning closes only the first.
 > The approval projection therefore carries a **content checksum or immutable object version**
-> for the pinned asset, verified immediately before publication.
+> for the pinned asset.
+
+> **And the check has to sit at the fetch, not before it — fifth review round.** An earlier
+> revision said the checksum is "verified immediately before publication." That verifies the
+> wrong moment. Postiz publishes via `upload-from-url`: Creator OS hands it a URL, Postiz
+> **later** fetches `/videos/:id/raw`, and the Drive file can be replaced in between. A
+> pre-publication check that passes therefore says nothing about the bytes that leave the
+> system — it is a time-of-check/time-of-use gap with a network round trip inside it, which is
+> the widest kind.
+>
+> The verification therefore moves **into the read path**, so that no fetch can succeed with
+> unapproved bytes:
+>
+> - the URL Creator OS hands to Postiz carries the approved binding —
+>   `/videos/:id/raw?digest=<approved content checksum>` (or the Drive `headRevisionId`), signed
+>   or opaque so it cannot be edited by the recipient;
+> - the raw handler **computes the checksum of the bytes it is about to stream** (or requests the
+>   pinned Drive revision explicitly, `files.get(fileId, revisionId)`), compares it to the value
+>   in the URL, and **refuses with `409` rather than serving a mismatch**. A stream already begun
+>   is aborted rather than completed;
+> - a request to `/videos/:id/raw` **without** a binding parameter keeps today's behaviour for
+>   human/browser use, but is never the URL given to a publisher.
+>
+> Streaming an immutable copy (export the approved bytes once to an append-only object at
+> approval time, publish from that) is the stronger form and is the preferred implementation if
+> the storage cost is acceptable; the digest-bound read path above is the minimum. Either way the
+> property required is the same: **the bytes that reach the platform are the bytes the founder
+> approved, proven at the moment they are read.**
 
 > **Nor does naming the platform pin the destination.** `matchIntegration` (`postiz.ts:81-95`)
 > returns the *first* enabled integration whose identifier matches, resolved only at publish
@@ -584,17 +711,90 @@ whose *applicability* is optional is not a gate.
 Gate applicability is therefore derived inside `enqueueJob` from **server-side policy** —
 capability, provider, brand, autonomy level — never from an argument the caller supplies and
 never overridable by one. When policy says a gate applies, the insert writes a **complete,
-validated gate descriptor** (`gate_origin` plus the evidence `subject_type`, `subject_id` and
-`scope` the resume predicate will look for) **in the same statement** that creates the row. A
-partial descriptor is rejected rather than stored: a job marked gated that names no evidence to
-wait for can never legally resume, which is a leak in the other direction.
+validated gate descriptor in the same statement** that creates the row. A partial descriptor is
+rejected rather than stored: a job marked gated that names no evidence to wait for can never
+legally resume, which is a leak in the other direction.
 
-**A gated job is never `queued`, even briefly.** The original design inserted it as `queued` and
-transitioned it afterwards. `claimNextJob` runs `FOR UPDATE SKIP LOCKED` against exactly that
-status, so a worker could claim and dispatch **paid work** in the window between the insert and
-the pause. Gated jobs are therefore **inserted directly in `awaiting_approval`** — the gate is
-evaluated in the same transaction that makes the row visible, so the runnable state never exists.
-There is consequently no `queued → awaiting_approval` transition at all.
+**"A complete descriptor" needed a storage contract, and did not have one — fifth review
+round.** The prose named four things (`gate_origin`, `subject_type`, `subject_id`, `scope`)
+while the declared schema change added only two columns, and the repository has **no autonomy-
+policy source at all** from which the other three could later be reconstructed. `enqueueJob`,
+`POST /queue/:id/retry`, `claimNextJob` and the stale-gate sweep would each have had to *infer*
+the evidence tuple, and nothing would have made them infer the same one — four readers, four
+opportunities to look up the wrong row, and the disagreement fails open at whichever of them
+guesses an approval that exists. Typed columns and a completeness constraint, in migration
+`0023`:
+
+```sql
+ALTER TABLE production_jobs
+  ADD COLUMN gate_origin              text,          -- the policy rule that paused this job
+  ADD COLUMN gate_subject_type        text,          -- same vocabulary as approval_evidence.subject_type
+  ADD COLUMN gate_subject_id          text,
+  ADD COLUMN gate_scope               text,
+  ADD COLUMN approved_revision_digest text;
+
+-- all four descriptor fields, or none of them: a half-written gate is not a gate
+ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_complete
+  CHECK (num_nonnulls(gate_origin, gate_subject_type, gate_subject_id, gate_scope) IN (0, 4));
+
+-- and a gated job must actually be gated at rest
+ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_status
+  CHECK (status <> 'awaiting_approval' OR gate_origin IS NOT NULL);
+```
+
+`num_nonnulls(...) IN (0, 4)` is the constraint that matters: it is evaluated on every insert and
+update, it cannot be satisfied by a caller who supplies three of four, and — unlike a comment —
+it makes the "partial descriptor is rejected" sentence above true in the database rather than in
+an intention.
+
+**The authoritative policy source, named rather than assumed.** There is no autonomy-policy
+table today, so B1 introduces the smallest thing that can be the single answer to "does a gate
+apply, and to what evidence": a **pure, versioned function in one module**,
+`resolveGate(input) → GateDescriptor | null`, keyed on `(capability, brand, subject_type,
+autonomy_level)`, with its defaults declared in code and unit-tested. Not a table, because a
+policy row is another thing an operator can edit to open a gate; not an environment variable,
+because the mapping is structured. The **default is `gate applies`** for every capability B1
+governs — an unrecognised capability resolves to a gate rather than to none, so adding a
+capability without adding a policy entry fails safe.
+
+Every one of the four readers calls `resolveGate` — or, once the row exists, reads the stored
+descriptor back — and none of them derives the tuple independently:
+
+| Reader | Uses |
+|---|---|
+| `enqueueJob` | `resolveGate` → writes the descriptor atomically with the row |
+| `POST /queue/:id/retry` | the **stored** descriptor on the row |
+| `claimNextJob` | the **stored** descriptor, joined to `approval_evidence` in the claim predicate |
+| stale-gate sweep | the **stored** descriptor, same join |
+
+Storing the tuple rather than re-resolving it at each read is deliberate: a policy change must
+not silently re-point an already-paused job at different evidence. When policy genuinely changes,
+the descriptor is migrated explicitly, which is a visible operation.
+
+**A newly enqueued gated job is never `queued`, even briefly.** The original design inserted it
+as `queued` and transitioned it afterwards. `claimNextJob` runs `FOR UPDATE SKIP LOCKED` against
+exactly that status, so a worker could claim and dispatch **paid work** in the window between the
+insert and the pause. Gated jobs are therefore **inserted directly in `awaiting_approval`** — the
+gate is evaluated in the same transaction that makes the row visible, so the runnable state never
+exists on the enqueue path.
+
+*Scoped precisely — fifth review round.* An earlier revision drew the wrong conclusion from that
+and stated flatly that "there is no `queued → awaiting_approval` transition at all", which
+contradicts both the table above and the stale-gate sweep introduced two paragraphs down: an
+**approved** job is deliberately resumed into `queued`, and if its gate later stops holding the
+sweep must be able to pause it again. The invariant is about **insertion**, not about the
+transition's existence:
+
+- a *newly inserted* gated job never passes through `queued` — there is no enqueue path that
+  creates one;
+- `queued → awaiting_approval` **does exist**, for the stale-gate sweep alone, and only when the
+  gate is unsatisfied;
+- a resumed gated job **is** legitimately observable as `queued`, and is protected there by the
+  claim predicate rather than by its status.
+
+Read the other way round — as the earlier wording invited — an implementer would omit the sweep,
+or write a regression test asserting "no gated job is ever `queued`" that fails on every
+correctly resumed job.
 
 **Resuming requires an *approving* verdict, not merely evidence.** §5 stores rejections as live
 evidence deliberately — a rejection nobody can find is how the same package gets resubmitted. But
@@ -910,6 +1110,40 @@ live evidence, whatever its digest says. Without that, "revocation invalidates e
 under a leaked key" is a sentence with no mechanism — forged evidence written before revocation
 stays authoritative for ever.
 
+**Freshness is not ordering — fifth review round.** The nonce index refuses a *duplicate*
+assertion and the age window (below) refuses a *late* one. Neither refuses an assertion delivered
+**out of order**. Two assertions minted inside the same five-minute window — say an approval,
+then the founder changes their mind and a rejection — are both individually valid; if transport
+delivers the rejection first and the approval second, the older approval arrives last, supersedes
+the newer rejection, and **the gate reopens against the founder's actual latest decision.** No
+attacker is required; a retried HTTP POST is enough.
+
+Ordering therefore has to be carried in the signed payload rather than inferred from arrival:
+
+- the domain maintains a **monotonic decision sequence per `(subject_type, subject_id, scope)`**
+  — a counter it increments for every decision it mints, persisted alongside the decision so it
+  survives a restart — and signs it as `decision_seq`;
+- `decision_seq` joins the signed field list:
+  `{subject, revision_digest, decision, notes, principal_id, asserted_role, issued_at,
+  decision_seq, key_id, nonce}`. Unsigned it would be a hint a transporter could rewrite;
+- Creator OS stores it as `approval_evidence.decision_seq bigint` and **refuses any assertion
+  whose `decision_seq` is less than or equal to the live row's** for that subject and scope. The
+  refusal is a `409`, not a silent drop: an out-of-order delivery is a fact worth surfacing;
+- the comparison is made **inside the supersession transaction**, against the row it is about to
+  supersede, so two concurrent deliveries cannot both read the same predecessor — the partial
+  unique index already serialises them, and the loser retries and is then correctly refused;
+- `issued_at` is **not** used for ordering. It is a clock reading from another machine, subject
+  to skew, and skew is exactly the condition under which two decisions land close together.
+
+For the interim direct-call transport (§8.3) and for B1's local founder path, where no domain
+sequence exists, the same property is obtained locally: the sequence is the count of prior
+evidence rows for the subject and scope, assigned inside the same transaction that inserts the
+row. `decision_seq` is `NOT NULL` for that reason — there is no evidence-writing path that
+legitimately lacks an ordinal.
+
+Sequence and nonce solve different problems and both are required: the nonce stops the *same*
+decision being applied twice, the sequence stops a *superseded* decision being reapplied at all.
+
 **Assertions expire, and the window is a number rather than an adjective.** The nonce index stops
 a *second* use; it does nothing about a *first* use that arrives late. Without a stated lifetime,
 a stolen assertion could be presented months on — after a newer rejection or withdrawal — and
@@ -990,6 +1224,12 @@ can record and display but cannot interpret is a value it cannot accidentally au
 - One new enum value — invisible to Phase A's claim and recovery queries (§4.1).
 - `production_jobs.work_item_id` nullable; `production_id` relaxed to nullable with a `CHECK`
   every existing row already satisfies.
+- `production_jobs` gate descriptor: `gate_origin`, `gate_subject_type`, `gate_subject_id`,
+  `gate_scope`, `approved_revision_digest`, plus `production_jobs_gate_complete` and
+  `production_jobs_gate_status` (§4.1). All nullable and all `0` on every existing row, so the
+  completeness CHECK admits the whole existing table unchanged. Rollback drops the five columns
+  together — dropping `gate_origin` alone would leave orphaned descriptor fields that the retry
+  refusal no longer reads.
 - `productions.deliveryApprovals` is **not dropped.** B1 dual-writes: evidence becomes the source
   of truth for the gate, the map stays as a projection for the existing UI. It is removed in a
   later, separate change once nothing reads it.
@@ -1034,7 +1274,7 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 19 | Evidence edited or deleted in place | Append-only trigger permitting only the two supersession columns (§3.2) |
 | 20 | Assertion replayed | Unique index on `(signing_key_id, assertion_id)` (§8.2) |
 | 21 | Evidence forged before a key was revoked stays authoritative | `signing_key_id` recorded; gate reads join key status (§8.2) |
-| 22 | Approval survives the asset changing under it | Digest binds the video publish actually selects; publish pins `finalVideoId` (§3.5) |
+| 22 | Approval survives the asset changing under it | Digest binds the video publish actually selects, resolved through the new `productions.final_video_row_id` pin (§3.6(b)) — **not** `finalVideoId`, which holds a Drive file id for one producer and nothing for the other — together with the content checksum enforced in the raw read path (§3.5) |
 | 23 | UI shows a withdrawn approval over a gate that still opens | `withdrawn` supersedes live evidence in the same transaction as the map write (§4.2a) |
 | 24 | A noted approval carries no note, or the note is stripped in transit | CHECK for a non-blank note; `notes` inside the signed assertion (§3.2, §8.2) |
 | 25 | Rollback strands paused jobs | Paused work migrated or cancelled before the schema is removed (§10) |
@@ -1063,6 +1303,11 @@ can record and display but cannot interpret is a value it cannot accidentally au
 | 48 | Replay slips past the nonce index via a NULL `signing_key_id` | Paired CHECK — both fields set or both NULL (§3.2) |
 | 49 | Step-up window silently doubles | Age recomputed from the signed `auth_time` at every write; cookie `maxAge` is the remaining window, never a fresh 900 (§7.1) |
 | 50 | An enqueue caller omits the gate marker | Gate applicability derived from server-side policy inside `enqueueJob`; a partial descriptor is rejected, not stored (§4.1) |
+| 51 | Two in-window assertions delivered out of order; the older approval supersedes the newer rejection | Signed monotonic `decision_seq`; an assertion at or below the live row's ordinal is refused `409` inside the supersession transaction (§8.2) |
+| 52 | Postiz fetches replaced bytes after a passing pre-publication check | Verification moves into `/videos/:id/raw`: the publisher URL carries the approved digest and the handler refuses a mismatch while reading (§3.5) |
+| 53 | A revoked signing key is deleted and its `key_id` re-inserted as active | `signing_keys` append-only including delete refusal; `key_id` never reused; FK from `approval_evidence.signing_key_id` (§3.2) |
+| 54 | A transaction sets `superseded_at` alone, leaving the subject with no live decision | Deferred `CONSTRAINT TRIGGER` at commit: both fields present, successor matches subject/scope and does not predate (§3.2) |
+| 55 | Four readers each infer the gate's evidence tuple differently | Typed descriptor columns written atomically at enqueue, a `num_nonnulls(...) IN (0,4)` completeness CHECK, and one `resolveGate` policy function that defaults to *gated* (§4.1) |
 | 12 | The `CHECK` constraint is mistaken for the authorization gate | **Corrected by ratified decision 7** (§3.2): the constraint prevents an incoherent row and decides nothing. Authorization lives in the fabric/domain boundary. Called out here because *this document* made that mistake once, in writing, and a reader could inherit it |
 
 Failure 11 was the one B1 *introduced* rather than mitigated, and it is now mitigated by design
@@ -1135,13 +1380,26 @@ demonstrate that the write path derives both values from the authenticated ident
 what the request said.
 
 **From the review findings**, each gets the test that would have caught it: a live `rejected` row
-does **not** resume a job; a gated job is never observable as `queued` (insert and pause in one
-transaction, asserted by a concurrent claim finding nothing); a mutation between resume and claim
+does **not** resume a job; a *newly enqueued* gated job is never observable as `queued`
+(insert and pause in one transaction, asserted by a concurrent claim finding nothing) — paired
+with its complement, that a **resumed** gated job is legitimately `queued` and is held back by
+the claim predicate rather than by its status, so the first test cannot be written in a form that
+fails on correct resumption; a mutation between resume and claim
 sends the job back to `awaiting_approval` instead of dispatching; `retry` refuses a `gate_origin`
 job without approving evidence; an allowlisted non-founder is refused at the write boundary; the
 supersession sequence commits (and the naive orders provably do not); the append-only trigger
 rejects an edit and a delete; a replayed assertion violates the unique index; a `withdrawn` row
 closes the publish gate the map's `pending` implies.
+
+**Fifth round adds five more**, each written against the specific reordering or lifecycle path
+that produced it: two in-window assertions delivered newest-first, asserting the older one is
+refused `409` and the live decision is unchanged; a Drive file replaced *after* the publish call
+and *before* the raw fetch, asserting the raw handler refuses rather than streaming; a revoked
+key deleted and re-inserted with the same `key_id`, asserting both statements fail; a transaction
+that sets `superseded_at` and commits without a successor, asserting the commit itself raises;
+and an `enqueueJob` call for a gated capability with three of the four descriptor fields,
+asserting the insert is rejected rather than stored — plus its complement, an unrecognised
+capability, asserting it resolves to *gated* rather than to none.
 
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control.
