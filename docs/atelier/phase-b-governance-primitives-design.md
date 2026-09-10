@@ -1839,6 +1839,37 @@ Recorded here as the design's fixed points.
 | 5 | **B1 may proceed alone**, before the HVN transport exists. |
 | 6 | **Signed domain assertions are the preferred B2 transport.** → §8.2 |
 | 7 | **Database constraints are defense in depth, not authorization authority.** → §3.2 |
+| 8 | **B1's binding boundary is what publication transmits** — asset bytes / content hash, resolved destination, exact copy, and decision ordering. → §3.5, §4.3, §8.2 |
+| 9 | **The design-review loop closes at round 8.** → §15 |
+
+### Decision 8 — the binding boundary, and why it is a decision rather than a discovery
+
+Ratified 2026-09-10. Each review round that bound approval to something revealed the next thing
+underneath it that was not bound — the video row, then its bytes, then the fetch that reads them;
+the platform, then the resolved integration; freshness, then ordering. That regress does not
+terminate on its own, because nothing beneath the approval surface is content-addressed. So the
+depth is set deliberately:
+
+**In scope for B1 — bound, and enforced:**
+
+| Dimension | Bound by |
+|---|---|
+| The asset's bytes | Content checksum / immutable version, enforced in the raw read path (§3.5) |
+| The destination | Resolved integration identity captured at approval; publish never re-resolves (§3.5) |
+| The copy | The complete outbound package in `approved_package`, sent rather than re-read (§3.5) |
+| Which decision wins | Signed `decision_seq`, monotonic per subject and scope (§8.2) |
+| When it may be sent | `publication_intents` fence at the outbound boundary (§4.3) |
+
+**Out of scope for B1 — recorded as accepted risk, not silently ignored:** Drive ACL changes
+behind an approved asset; credential rotation behind a resolved destination; Postiz's own
+internal storage of a submitted post; and any other infrastructure beneath the publication
+contract. Each is a real exposure and each is a later control. **The rule that decides
+membership:** a concern is B1's if it can change *what publication transmits*; otherwise it is
+carried forward. If one of these later turns out to break the publication contract directly,
+that promotes it into scope — the boundary is a line, not a permanent exemption.
+
+Naming the line is what makes the remaining exposure legible. An unbounded "bind everything"
+would have read as stronger while leaving exactly the same gaps, undocumented.
 
 Decision 7 corrected this document. The earlier text described the `founder_is_human` CHECK as
 contract 36's clauses "expressed where they cannot be argued with"; a caller can in fact label
@@ -1857,6 +1888,32 @@ happened twice in this initiative — on the Phase A code PR (#52) and on contra
 (`rmg-piaar-system#36`) — and in both cases the review layer was lost silently, with the PR
 still showing green. Neither loss changed an outcome, but the failure mode is repeatable and
 costs nothing to avoid.
+
+**A second rule, added because the first one worked too well: a review loop needs a stop
+condition.** A plain push does not re-trigger a Codex review — an explicit `@codex review`
+comment does — so each round was requested deliberately, and eight of them ran. Rounds 1–4 found
+defects in the *design*. From round 5 on, the majority of each round's findings were about the
+**previous round's edits**: a document this size cannot absorb a dozen corrections without
+introducing new inconsistencies, and the two most serious late catches — a deferred trigger that
+would have rejected every valid supersession, and a foreign key whose type could not be created
+— are precisely the class a migration test finds in seconds and a prose review finds by luck.
+
+**Ratified decision 9, 2026-09-10: round 8 is the final broad design review.** After it, a
+finding merges or carries forward according to a stated threshold rather than a judgement call:
+
+| Blocks the merge | Carries forward to a B1 implementation PR |
+|---|---|
+| A machine principal can manufacture founder approval | A missing index |
+| Creator OS becomes an approval authority for Accord | A migration-ordering detail |
+| Approval binds to mutable or unbound content | A Postgres syntax or DDL correction |
+| A write path bypasses step-up / founder authorization | A test case to add |
+| The state machine advances without required evidence | A field type to refine |
+| The model cannot be implemented without violating contract 31 or 36 | A route-naming or serialization detail |
+| | A concurrency nuance that does not change the ratified authority model |
+
+A blocker gets **one targeted verification review of that blocker only** — never another general
+round. Everything else becomes an acceptance item on the PR that implements it, where it is
+checked by a test rather than by re-reading.
 
 ## 16. What is authorized next
 
