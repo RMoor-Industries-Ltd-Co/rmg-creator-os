@@ -163,7 +163,12 @@ Three facts from §1 decide the whole design:
 
 ```sql
 CREATE TYPE render_attempt_state AS ENUM
-  ('submitting','submitted','rendering','persisted','failed','abandoned');
+  ('submitting','submitted','rendering','persisted','failed',
+   -- D-J3a (§10.3.1). NOT a kind of 'failed': a failed attempt is safe to retry, and this
+   -- one is precisely the attempt we must not retry, because we could not establish whether
+   -- it already produced a paid render. It is terminal until a human resolves it.
+   'reconcile_inconclusive',
+   'abandoned');
 
 CREATE TABLE render_attempts (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -189,6 +194,15 @@ CREATE TABLE render_attempts (
   input_snapshot  jsonb NOT NULL,
 
   failure_reason  text,
+
+  -- D-J3a audit. A resubmission is authorized by the conclusion that no prior render
+  -- exists, so the search that reached that conclusion has to be recorded — otherwise a
+  -- paid call rests on reasoning nothing kept. `reconcile_outcome` is 'exhausted' (the
+  -- search completed and found nothing), 'recovered' (it found one) or 'inconclusive'.
+  reconcile_outcome     text,
+  reconcile_checked_at  timestamptz,
+  reconcile_detail      text,              -- why a search was inconclusive, in words
+
   created_at      timestamptz NOT NULL DEFAULT now(),
   completed_at    timestamptz,
   UNIQUE (production_id, segment_key, attempt_no),
@@ -204,7 +218,19 @@ CREATE TABLE render_attempts (
   CONSTRAINT submitted_attempt_has_provider_ref
     CHECK (state NOT IN ('submitted','rendering') OR provider_ref IS NOT NULL),
   CONSTRAINT failed_attempt_has_reason
-    CHECK (state <> 'failed' OR failure_reason IS NOT NULL)
+    CHECK (state <> 'failed' OR failure_reason IS NOT NULL),
+
+  CONSTRAINT reconcile_outcome_vocabulary
+    CHECK (reconcile_outcome IS NULL
+           OR reconcile_outcome IN ('exhausted','recovered','inconclusive')),
+
+  -- An inconclusive attempt must say when the search ran and why it could not resolve.
+  -- Without both, the state is indistinguishable from an attempt nobody has looked at.
+  CONSTRAINT inconclusive_attempt_is_documented
+    CHECK (state <> 'reconcile_inconclusive'
+           OR (reconcile_outcome = 'inconclusive'
+               AND reconcile_checked_at IS NOT NULL
+               AND reconcile_detail IS NOT NULL))
 );
 ```
 
@@ -630,7 +656,7 @@ Two enum changes are required, and neither was in B1.1:
 
 | Enum | New value | First use |
 |---|---|---|
-| `render_attempt_state` (new type) | — created whole, so no boundary problem | §3.1's table |
+| `render_attempt_state` (new type) | — created whole (including `reconcile_inconclusive`, D-J3a §10.3.1), so no boundary problem | §3.1's table |
 | `production_job_status` (existing) | **`rendering`** (§4.2 — the job stays leased through provider render rather than being marked `done` at submission) | step D's dispatcher |
 
 `production_job_status` already carries `awaiting_approval` from B1.1's `0023`. `rendering` is a
@@ -656,7 +682,7 @@ constraint, but it must respect the two existing constraints it interacts with:
 | Step | Contents | Gate |
 |---|---|---|
 | **A** | Enum-only, no uses: `render_attempt_state` created; `production_job_status` gains `rendering` | — |
-| **B** | `render_attempts` (incl. `retain_media`, `media_purged_at`, `media_purge_reason` — D-J2), `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger, **and the production-plan segments array D-J1 requires** (`segment_key` is `NOT NULL` and has nothing to point at without it) | A deployed |
+| **B** | `render_attempts` (incl. `retain_media`, `media_purged_at`, `media_purge_reason` — D-J2; `reconcile_outcome`, `reconcile_checked_at`, `reconcile_detail` — D-J3a), `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger, **and the production-plan segments array D-J1 requires** (`segment_key` is `NOT NULL` and has nothing to point at without it) | A deployed |
 | **C** | Durable poller + persistence/digest step — behaviour-neutral until D | B deployed |
 | **D** | Move the provider call behind dispatch; attempts created at enqueue; job moves to `rendering`; `Idempotency-Key` sent as the attempt id | **Three preconditions:** a dispatcher is enabled and observed working (§4.1); C has run against production traffic; **the HeyGen v3 migration has landed** (D-J3 / §11 — v2 offers no idempotency handle, and is retired 2026-11-01 regardless) |
 | **E** | The approval route, step-up, evidence writes; old route refuses | D deployed |
@@ -859,11 +885,27 @@ of exhaustion has to be a failure rather than a miss:
 
 | How the search ended | Entitled to conclude | Behaviour |
 |---|---|---|
-| Server says no more pages | Nothing exists | Submit |
-| A match was found | It exists | Adopt it |
+| A **usable** match was found (exact title, not `failed`) | It exists | Adopt it |
+| Explicit "no more pages" **and** no continuation cursor | Nothing exists | Submit |
 | Page bound reached with pages remaining | **Nothing** | Fail closed |
-| Server claims more pages but returns no cursor | **Nothing** | Fail closed |
+| More pages claimed, but no cursor to follow | **Nothing** | Fail closed |
+| No explicit "no more pages" **and** no cursor | **Nothing** | Fail closed |
+| "No more pages" **contradicted by** a continuation cursor | **Nothing** | Fail closed |
 | The search itself errored | **Nothing** | Fail closed |
+
+Two rows deserve their exact wording, because a looser version of each was written first and
+was wrong:
+
+- **"usable"**, not merely "found". An exact-title match whose own status is `failed` is
+  something to supersede, not inherit (§4.6, §4.7). Adopting one binds the attempt to a
+  provider reference that produced nothing. A failed match therefore does **not** end the
+  search: it is skipped, and the search continues to exhaustion, because a usable duplicate
+  may sit on a later page.
+- **"and no continuation cursor"**, not just the flag. The two signals are independent
+  fields, so they can disagree, and a response asserting the end while still offering a way
+  to continue is internally inconsistent — which this rule says fails closed. Treating the
+  flag as authoritative and the cursor as trailing noise is a guess, and the thing it guesses
+  about is whether to spend money.
 
 Each of the last three was, at some point in the migration, implemented as "return not-found
 and carry on" — and each would have authorized a duplicate paid render. They are not exotic:
@@ -874,18 +916,35 @@ wrong for this reason alone.
 a durable attempt record, the rule travels with it:
 
 - An attempt whose reconciliation search failed closed is **not** eligible for resubmission.
-  It is a distinct state — "completion unknown, search inconclusive" — and it needs an
-  operator decision, not a retry. It must not fall back into the ordinary
-  attempt/backoff path, which exists for failures that are safe to repeat.
+  It takes the distinct terminal state `reconcile_inconclusive` (§3.1) — "completion unknown,
+  search inconclusive" — and needs an operator decision, not a retry. It must not fall back
+  into the ordinary attempt/backoff path, which exists for failures that are safe to repeat.
+  This is why it is an enum value rather than a flavour of `failed`: `failed` is safe to
+  retry and this is precisely the attempt that is not, so collapsing them would feed it to
+  the machinery the rule exists to keep it away from.
 - The retry/sweep machinery must therefore be able to tell "this attempt failed" from "we
   could not establish whether this attempt produced a render". Collapsing the two is the same
   mistake one level up from the client.
-- A resubmission must record *why* it was permitted: which search exhausted, and when. A paid
-  call authorized by a conclusion nothing recorded is not auditable after the fact.
+- A resubmission must record *why* it was permitted: `reconcile_outcome`,
+  `reconcile_checked_at` and, when inconclusive, `reconcile_detail` (§3.1). A paid call
+  authorized by a conclusion nothing recorded is not auditable after the fact.
 
-The same rule applies to any future provider on the same path, not only HeyGen. A provider
-with no searchable history cannot satisfy it at all — which is §4.3's third row, and why
-"step D does not ship" is the correct outcome there rather than a cautious default.
+The same rule applies to any future provider on the same path, not only HeyGen.
+
+What a provider must offer to satisfy it is **a way to prove, at the moment of retry, whether
+the earlier submission produced a render.** Searchable history is one way. A durable
+idempotency key is another and a better one: if replaying it always returns the original
+response rather than rendering again, the replay *is* the proof, and no search is needed.
+That is §4.3's first row, and it remains sufficient on its own.
+
+HeyGen needs both only because its key expires after 24 hours (§11.2). Past that window the
+key proves nothing, and history becomes the only remaining handle — which is why this client
+implements both.
+
+So the provider that cannot satisfy the rule is the one with **neither** a durable idempotency
+guarantee **nor** searchable history — §4.3's third row, where "step D does not ship" is the
+correct outcome rather than a cautious default. A provider whose idempotency never expires
+needs no history endpoint and is not excluded.
 
 ---
 
