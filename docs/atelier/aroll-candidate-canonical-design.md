@@ -837,6 +837,56 @@ canonical set of a pinned assembled output.
   is §4.3's third row — the row on which this design already committed to not shipping. The
   v3 migration is therefore step D's second precondition, alongside an enabled dispatcher.
 
+#### 10.3.1 D-J3a — the exhausted-search rule
+
+Founder direction, 2026-09-11, after the v3 migration and two rounds of review on it
+(`27178e2`, and the follow-up fixes) surfaced five and then three real defects, most of them
+in exactly this area:
+
+> **Only a provably exhausted history search may authorize a new paid submission when prior
+> completion is uncertain. Incomplete, truncated, inconsistent, or bounded-out history must
+> fail closed.**
+
+This is a **generalization of D-J3, not a restatement of it**, and it is recorded here rather
+than only in the client because the client is the wrong place for it to live. Reconciliation
+is not "query history before retry" — that phrasing is what produced the defects. The rule is
+about which conclusions a search is entitled to reach.
+
+The distinction that matters: a search that finds nothing on the page it looked at has **not**
+established that nothing exists. Only exhaustion establishes that. And "nothing exists" is
+precisely the conclusion that authorizes spending money, so every way a search can end short
+of exhaustion has to be a failure rather than a miss:
+
+| How the search ended | Entitled to conclude | Behaviour |
+|---|---|---|
+| Server says no more pages | Nothing exists | Submit |
+| A match was found | It exists | Adopt it |
+| Page bound reached with pages remaining | **Nothing** | Fail closed |
+| Server claims more pages but returns no cursor | **Nothing** | Fail closed |
+| The search itself errored | **Nothing** | Fail closed |
+
+Each of the last three was, at some point in the migration, implemented as "return not-found
+and carry on" — and each would have authorized a duplicate paid render. They are not exotic:
+a bounded loop that returns its accumulator is the obvious way to write the code, and it is
+wrong for this reason alone.
+
+**What this obliges of `render_attempts` (§3.1, §4.3).** When step D wires reconciliation to
+a durable attempt record, the rule travels with it:
+
+- An attempt whose reconciliation search failed closed is **not** eligible for resubmission.
+  It is a distinct state — "completion unknown, search inconclusive" — and it needs an
+  operator decision, not a retry. It must not fall back into the ordinary
+  attempt/backoff path, which exists for failures that are safe to repeat.
+- The retry/sweep machinery must therefore be able to tell "this attempt failed" from "we
+  could not establish whether this attempt produced a render". Collapsing the two is the same
+  mistake one level up from the client.
+- A resubmission must record *why* it was permitted: which search exhausted, and when. A paid
+  call authorized by a conclusion nothing recorded is not auditable after the fact.
+
+The same rule applies to any future provider on the same path, not only HeyGen. A provider
+with no searchable history cannot satisfy it at all — which is §4.3's third row, and why
+"step D does not ship" is the correct outcome there rather than a cautious default.
+
 ---
 
 ## 11. HeyGen capability verification
