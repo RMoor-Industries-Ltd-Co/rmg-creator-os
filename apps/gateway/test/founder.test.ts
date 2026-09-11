@@ -59,6 +59,39 @@ describe('parseFounderPrincipals', () => {
     const { map } = parseFounderPrincipals('rahm@rmasters.group=rahm@business=extra');
     expect(map.get('rahm@rmasters.group')).toBe('rahm@business=extra');
   });
+
+  // B1.3 follow-up verification: the exact value the founder configured in production Doppler
+  // is a plain comma-separated list of email addresses — NOT `email=principalId` pairs. Against
+  // the parser's documented contract (`email=principalId`, comma-separated), this produces an
+  // EMPTY founder map and flags all three entries malformed — the opposite of what was intended.
+  // This is not a defect in the parser (it is doing exactly what §7.2 and its own doc comment
+  // say), it is a live configuration/contract mismatch surfaced by test rather than left to be
+  // discovered at the write boundary later. See docs/atelier/b1-3-operational-activation.md §1.
+  it('the currently-configured production value ("email,email,email", no "=") parses to ZERO founder principals', () => {
+    const configuredValue =
+      'rahm@rmasters.group,rmoorindustries@gmail.com,rahmind.consulting@rmoorind.com';
+    const { map, malformed } = parseFounderPrincipals(configuredValue);
+    expect(map.size).toBe(0);
+    expect(malformed).toEqual([
+      'rahm@rmasters.group',
+      'rmoorindustries@gmail.com',
+      'rahmind.consulting@rmoorind.com'
+    ]);
+  });
+
+  it('the same three identities DO parse correctly once given as email=principalId pairs', () => {
+    // Documents the fix shape without prescribing what the principal ids should actually be —
+    // that is Rahm's call, not this test's. `email` is used as a placeholder principal id only
+    // to prove the mechanics; a real value should follow Contract 36's principal-id convention.
+    const fixed =
+      'rahm@rmasters.group=rahm@business,rmoorindustries@gmail.com=rmoorindustries@business,rahmind.consulting@rmoorind.com=rahmind@business';
+    const { map, malformed } = parseFounderPrincipals(fixed);
+    expect(malformed).toEqual([]);
+    expect(map.size).toBe(3);
+    expect(map.get('rahm@rmasters.group')).toBe('rahm@business');
+    expect(map.get('rmoorindustries@gmail.com')).toBe('rmoorindustries@business');
+    expect(map.get('rahmind.consulting@rmoorind.com')).toBe('rahmind@business');
+  });
 });
 
 describe('resolveFounderPrincipal', () => {

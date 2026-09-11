@@ -59,31 +59,115 @@ explicitly does **not** attempt any automatic rollback — it names the manual r
 and states that an automated rollback is a separate architectural decision, per the directive's
 explicit instruction not to add one here.
 
-## 5. B1.2 production activation — exact remaining operator actions
+## 5. B1.2 production activation — corrected status (updated after founder follow-up)
 
-Neither of these was fabricated or worked around. **This session's `DOPPLER_TOKEN` has access
-only to the `axis-tekhen` Doppler project, not `master-atelier`** — confirmed directly via
-`curl -u "$DOPPLER_TOKEN:" https://api.doppler.com/v3/projects`, not assumed. There is no write
-path to production secrets from here.
+**Both `STEP_UP_COOKIE_SECRET` and `FOUNDER_PRINCIPALS` have been added to Doppler
+(`master-atelier`, `prd`) by the founder.** This section previously said both "still need to be
+added" — that was accurate when B1.3 was first drafted and is now stale; it is corrected here
+rather than left standing. Neither value was added, read, or modified by this session — this
+session has no write access to the `master-atelier` Doppler project (this session's
+`DOPPLER_TOKEN` grants access only to the unrelated `axis-tekhen` project — confirmed via
+`curl -u "$DOPPLER_TOKEN:" https://api.doppler.com/v3/projects`, not assumed) and secret values
+are never printed or retrieved by any check in this document.
 
-1. **`STEP_UP_COOKIE_SECRET`** — generate a production-grade random secret (e.g.
-   `openssl rand -hex 32`), distinct from `COOKIE_SECRET`, and add it to Doppler project
-   `master-atelier`, config `prd`. Also requires the one-time GCP console step already on
-   record in this repo's `CLAUDE.md`: add `https://<dashboard host>/stepup-callback.html` as an
-   authorized redirect URI on the existing `GOOGLE_CLIENT_ID` OAuth client.
-2. **`FOUNDER_PRINCIPALS`** — add the initial authorized business-domain Founder principal
-   (Contract 36) as `email=principalId` pairs, e.g. `rahm@rmasters.group=rahm@business`, to the
-   same Doppler config. Absence means no Founder approvals are possible — server-side only,
-   never a client-visible value.
+**A. Configuration presence (Doppler)** — done, per the founder. Not independently verifiable
+from this session (no Doppler read/write access to `master-atelier`); taken on the founder's
+word, as it must be — this session cannot and must not attempt to confirm a secret's presence by
+any means that would expose it.
 
-Both variables are already in `infra/docker-compose.prod.yml`'s `allen`-adjacent `gateway`
-environment block from B1.2 — only the Doppler values are missing, not the wiring.
+**B. Deployment wiring (Doppler → container env)** — verified from source, both variables:
+
+```
+infra/control-server/docker-compose.yml:91   STEP_UP_COOKIE_SECRET: ${STEP_UP_COOKIE_SECRET:-}
+infra/control-server/docker-compose.yml:92   STEP_UP_MAX_AGE_SECONDS: ${STEP_UP_MAX_AGE_SECONDS:-}
+infra/control-server/docker-compose.yml:96   FOUNDER_PRINCIPALS: ${FOUNDER_PRINCIPALS:-}
+```
+
+`deploy.sh` sources `doppler secrets download` with `set -a` (auto-export) before
+`docker compose up -d`, so any variable Doppler holds under these exact names reaches the
+gateway container's environment on the next deploy that runs this script. No gap here.
+
+**C. Currently-running production image has consumed it** — **not verified, and not claimed.**
+This session has no SSH access to the production server. What *is* verifiable from here: a
+read-only `GET https://rmg-creator-os.rmasters.group/api/health` (public endpoint, no secret
+exposure) right now returns
+
+```json
+{"status":"ok","service":"gateway","checks":{"postgres":"ok","redis":"ok","heygen":"ok","higgsfield":"ok","drive":"ok","allen":"ok"},"time":"..."}
+```
+
+— no `readiness` field, confirming the currently-running image predates this PR (expected,
+since #72 is not merged/deployed). This says nothing about whether the *currently-running*
+container's process environment already contains the founder's newly-added Doppler values:
+`docker compose up -d` reads Doppler only at deploy time, containers do not hot-reload
+environment changes, and this session cannot determine from outside whether a deploy has run
+since the values were added. **This is exactly why §6's live validation, and simply watching
+`/health.readiness` after the next normal deploy, is the actual proof — not anything checkable
+before then.**
+
+### Critical finding: the configured `FOUNDER_PRINCIPALS` value does not parse as intended
+
+The founder-supplied value is a **plain comma-separated list of email addresses**:
+
+```
+rahm@rmasters.group,rmoorindustries@gmail.com,rahmind.consulting@rmoorind.com
+```
+
+`parseFounderPrincipals()` (`apps/gateway/src/founder.ts`) — unchanged by this follow-up, exactly
+as originally documented and tested — requires **comma-separated `email=principalId` pairs**
+(e.g. `rahm@rmasters.group=rahm@business`), consistent with §7.2's mapping design (an
+authenticated Google email is not the same identity space as a Contract-36 canonical principal
+id, so a plain set of emails cannot record evidence under an id the fabric will recognize).
+
+Run against the exact configured string, the parser produces:
+
+```
+map.size === 0
+malformed === ['rahm@rmasters.group', 'rmoorindustries@gmail.com', 'rahmind.consulting@rmoorind.com']
+```
+
+**All three identities are currently rejected. The founder set is empty; every founder-gated
+write will refuse (fail closed — this is expected and correct behavior given the parser's
+contract, not a crash or a security gap).** This was verified directly (running the parser
+against the literal string, both ad hoc and as
+`apps/gateway/test/founder.test.ts`'s new assertion) — not inferred.
+
+**This was NOT worked around.** Per this follow-up's explicit instruction, the configured Doppler
+value was not changed, and the parser was not loosened to accept a bare email list merely to
+make it pass. The expected syntax, to fix this, is `email=principalId` pairs:
+
+```
+rahm@rmasters.group=<canonical-principal-id>,rmoorindustries@gmail.com=<canonical-principal-id>,rahmind.consulting@rmoorind.com=<canonical-principal-id>
+```
+
+The `<canonical-principal-id>` for each identity is a decision under Contract 36 (Approval
+Authority and Founder Identity, `rmg-piaar-system`), not something this session should invent —
+`apps/gateway/test/founder.test.ts` demonstrates the corrected shape mechanically using
+placeholder ids (`rahm@business`, etc.) only to prove the parser accepts it; those exact
+placeholder strings are not a recommendation for what the real ids should be.
+
+**Operator action required, replacing what was previously listed:**
+
+1. ~~Add `STEP_UP_COOKIE_SECRET` to Doppler~~ — done.
+2. **Re-enter `FOUNDER_PRINCIPALS` in Doppler using `email=principalId` syntax** (see above) once
+   the three canonical principal ids are decided. The current value is not silently wrong in a
+   dangerous direction — it fails closed to "no founder" — but it does not authorize the
+   identities it was clearly meant to.
+3. **GCP redirect URI** — no evidence in this repository that this has been done; still an
+   outstanding one-time console step (add
+   `https://<dashboard host>/stepup-callback.html` as an authorized redirect URI on the
+   `GOOGLE_CLIENT_ID` OAuth client). This blocks the *interactive* step-up flow from completing
+   even once `STEP_UP_COOKIE_SECRET` is live; it does not block this PR's operational-hardening
+   merge, and does not block `FOUNDER_PRINCIPALS` resolution (an unrelated, non-interactive
+   check).
 
 ## 6. Live step-up validation plan (not executed)
 
-Not run — the operator config in §5 is not yet present, and this directive does not authorize
-creating a fake Founder approval or publishing anything. The smallest non-destructive proof,
-once §5 is done:
+Not run — `STEP_UP_COOKIE_SECRET` is reportedly configured, but `FOUNDER_PRINCIPALS` currently
+parses to an empty founder set (see §5's critical finding), so step 2 below cannot pass yet
+regardless of step-up's own state, and this directive does not authorize creating a fake Founder
+approval or publishing anything. The smallest non-destructive proof, once `FOUNDER_PRINCIPALS`
+is re-entered in the correct `email=principalId` syntax and a normal deploy has run:
 
 1. Sign in normally (`POST /auth/google`) with the account that will be `rahm@business` in
    `FOUNDER_PRINCIPALS`. Confirm an ordinary session cookie is set and no approval-adjacent
