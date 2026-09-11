@@ -49,6 +49,7 @@ import {
   STEP_UP_COOKIE
 } from './stepup.js';
 import { parseFounderPrincipals } from './founder.js';
+import { buildConfigReport } from './configReport.js';
 import {
   createDriveClient,
   createHeyGenClient,
@@ -158,6 +159,25 @@ const { map: FOUNDER_PRINCIPALS, malformed: FOUNDER_PRINCIPALS_MALFORMED } = par
 if (FOUNDER_PRINCIPALS_MALFORMED.length > 0) {
   app.log.warn({ entries: FOUNDER_PRINCIPALS_MALFORMED }, 'FOUNDER_PRINCIPALS: ignoring malformed entries');
 }
+
+// Startup configuration report (B1.3 §1-2, docs/atelier — incident #65-#71). A secret-free,
+// operator-visible summary of which capabilities are actually usable at boot — built from the
+// SAME facts this file already used to construct its clients/gates above, never from a second
+// read of the raw env vars, so it cannot drift from what the gateway is actually doing. Logged
+// once, and reused by /health below rather than recomputed per request.
+const CONFIG_REPORT = buildConfigReport({
+  authEnabled: AUTH_ENABLED,
+  stepUpConfigured: STEP_UP_CONFIGURED,
+  founderPrincipalCount: Object.keys(FOUNDER_PRINCIPALS).length,
+  workerSecretConfigured: (process.env.WORKER_SECRET ?? '').trim().length > 0,
+  workerTickEnabled: process.env.WORKER_TICK_ENABLED === 'true',
+  postizConfigured: postizConfigured(),
+  heygenConfigured: heygen !== null,
+  driveConfigured: drive !== null,
+  higgsfieldConfigured: higgs !== null,
+  redisConfigured: Boolean(REDIS_URL)
+});
+app.log.info({ config: CONFIG_REPORT }, 'startup configuration report (no secret values)');
 
 // isPublicRoute + the allowlist/cookie-secret helpers live in ./auth.ts (unit-tested).
 if (AUTH_ENABLED) {
@@ -304,6 +324,15 @@ if (process.env.BACKFILL_LEGACY_APPROVALS !== 'false') {
   }
 }
 
+// DEPENDENCY HEALTH (B1.3 §3): is the thing actually reachable right now. 'unconfigured' means
+// there is no credential to reach it with — that is a deliberate state, not a fault, and must
+// never collapse into 'fail' (which means "configured, but the live check failed"). Neither
+// heygen nor drive nor higgsfield makes a live/paid provider call here — a configured client
+// object is proof of configuration, not proof the provider is reachable or correct; a real
+// probe of those would itself be the mistake §3 warns against ("do not introduce paid provider
+// calls into health checks"). Postgres/redis/ALLEN DO get a real (free) reachability check
+// because "select 1" / PING / an internal HTTP call cost nothing and this repo's own dependency,
+// unlike a metered third-party API.
 app.get('/health', async (): Promise<HealthResponse> => {
   const checks: Record<string, 'ok' | 'fail' | 'unconfigured'> = {};
   try {
@@ -312,16 +341,24 @@ app.get('/health', async (): Promise<HealthResponse> => {
   } catch {
     checks.postgres = 'fail';
   }
-  try {
-    checks.redis = (await redis.ping()) === 'PONG' ? 'ok' : 'fail';
-  } catch {
-    checks.redis = 'fail';
+  if (!REDIS_URL) {
+    checks.redis = 'unconfigured';
+  } else {
+    try {
+      checks.redis = (await redis.ping()) === 'PONG' ? 'ok' : 'fail';
+    } catch {
+      checks.redis = 'fail';
+    }
   }
-  // Integration availability (key-configured check, not a live API ping).
-  checks.heygen = heygen ? 'ok' : 'fail';
-  checks.higgsfield = higgs ? 'ok' : 'fail';
-  checks.drive = drive ? 'ok' : 'fail';
-  // ALLEN health proxy — inspect llm/tts/stt sub-checks, not just HTTP 200.
+  // Configuration-presence only — see the module comment above. 'unconfigured' when the
+  // feature has no credentials at all; never 'fail' for that case, which previously made an
+  // optional, never-set-up integration indistinguishable from a broken one.
+  checks.heygen = heygen ? 'ok' : 'unconfigured';
+  checks.higgsfield = higgs ? 'ok' : 'unconfigured';
+  checks.drive = drive ? 'ok' : 'unconfigured';
+  // ALLEN health proxy — inspect llm/tts/stt sub-checks, not just HTTP 200. This IS a live call,
+  // but to our own sibling dependency container over the internal network, not a paid external
+  // provider, and ALLEN's own /health similarly never makes a paid call on our behalf.
   try {
     const allenRes = await fetch('http://allen:8090/health', { signal: AbortSignal.timeout(3000) });
     if (!allenRes.ok) {
@@ -334,8 +371,21 @@ app.get('/health', async (): Promise<HealthResponse> => {
   } catch {
     checks.allen = 'fail';
   }
-  const status = Object.values(checks).every((v) => v === 'ok') ? 'ok' : 'degraded';
-  return { status, service: 'gateway', checks, time: new Date().toISOString() };
+  // PROCESS HEALTH: this handler running at all, on the DB it just proved reachable, IS process
+  // health — there is no separate "is the event loop alive" check to add beyond that. 'ok'
+  // requires every DEPENDENCY that is actually configured to be 'ok' — an 'unconfigured'
+  // dependency never degrades status, matching the existing allen 'unconfigured' behavior this
+  // fix generalizes to heygen/higgsfield/drive/redis.
+  const status = Object.values(checks).every((v) => v !== 'fail') ? 'ok' : 'degraded';
+  return {
+    status,
+    service: 'gateway',
+    checks,
+    // CAPABILITY READINESS (B1.3 §3) — computed once at boot (see CONFIG_REPORT above), not
+    // recomputed per request: capability readiness only changes on redeploy, never mid-process.
+    readiness: CONFIG_REPORT,
+    time: new Date().toISOString()
+  };
 });
 
 app.get('/recipes', async () => db.select().from(tables.recipes));

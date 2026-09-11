@@ -5,7 +5,16 @@
 export interface HealthResponse {
   status: 'ok' | 'degraded';
   service: string;
+  /** PROCESS + DEPENDENCY health (B1.3 §3) — is Postgres/Redis/ALLEN/Drive reachable right now.
+   *  'unconfigured' here means "this dependency has no credentials, so there is nothing to
+   *  reach" — never conflated with 'fail' (configured but not working). */
   checks: Record<string, 'ok' | 'fail' | 'unconfigured'>;
+  /** CAPABILITY READINESS (B1.3 §3) — is a feature's configuration usable, not whether a live
+   *  request to its provider has ever succeeded. A configured client object is not proof an
+   *  external API works; this never makes (or implies) a paid or live provider call. Optional
+   *  only for backward compatibility with any consumer reading an older HealthResponse shape.
+   *  See apps/gateway/src/configReport.ts for the exact status vocabulary. */
+  readiness?: Record<string, string>;
   time: string;
 }
 
