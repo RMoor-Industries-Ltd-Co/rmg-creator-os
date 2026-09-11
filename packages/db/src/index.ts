@@ -13,3 +13,11 @@ export {
   DEFAULT_LEASE_SECONDS
 } from './queue.js';
 export type { EnqueueJobInput, EnqueueResult, StaleRecovery, CancelOutcome } from './queue.js';
+export { computeProductionDigest, computeAccordPackageDigest } from './digest.js';
+export type {
+  ProductionDigestInput,
+  AccordPackageDigestInput,
+  OutboundPackage,
+  OutboundPost,
+  PinnedVideo
+} from './digest.js';
