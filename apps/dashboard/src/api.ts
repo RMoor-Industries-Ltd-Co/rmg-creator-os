@@ -3,7 +3,9 @@ const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
 import { startLoad, endLoad } from './loading';
 import {
   isSessionExpired,
+  isStepUpRequired,
   notifyUnauthorized,
+  requestStepUp,
   SESSION_EXPIRED_MESSAGE,
   type ApiErrorBody
 } from './authClient';
@@ -61,25 +63,51 @@ export interface GenerateConfig {
   stabilityMode?: string;
 }
 
+type FetchOutcome<T> =
+  | { kind: 'ok'; body: T }
+  | { kind: 'session_expired' }
+  | { kind: 'step_up_required' }
+  | { kind: 'error'; message: string };
+
+async function fetchOnce<T>(path: string, init: RequestInit | undefined): Promise<FetchOutcome<T>> {
+  const res = await fetch(`${API}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
+  });
+  const body = (await res.json().catch(() => ({}))) as unknown;
+  if (isSessionExpired(res.status, body as ApiErrorBody)) return { kind: 'session_expired' };
+  if (isStepUpRequired(res.status, body as ApiErrorBody)) return { kind: 'step_up_required' };
+  if (!res.ok) {
+    const msg = (body as { error?: string }).error ?? `Request failed (${res.status})`;
+    return { kind: 'error', message: msg };
+  }
+  return { kind: 'ok', body: body as T };
+}
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   startLoad();
   try {
-    const res = await fetch(`${API}${path}`, {
-      ...init,
-      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) }
-    });
-    const body = (await res.json().catch(() => ({}))) as unknown;
-    if (isSessionExpired(res.status, body as ApiErrorBody)) {
+    let result = await fetchOnce<T>(path, init);
+    if (result.kind === 'step_up_required') {
+      // The session is fine; this specific write needs a *fresh* re-authentication (§7.1). Show
+      // the prompt and retry the same request exactly once — never loop indefinitely if the
+      // gateway keeps refusing after a completed step-up.
+      await requestStepUp();
+      result = await fetchOnce<T>(path, init);
+    }
+    if (result.kind === 'session_expired') {
       // Session missing/expired: route the whole app to sign-in and surface a
       // friendly message instead of a raw "unauthorized".
       notifyUnauthorized();
       throw new Error(SESSION_EXPIRED_MESSAGE);
     }
-    if (!res.ok) {
-      const msg = (body as { error?: string }).error ?? `Request failed (${res.status})`;
-      throw new Error(msg);
+    if (result.kind === 'step_up_required') {
+      throw new Error('Re-authentication did not satisfy the step-up requirement.');
     }
-    return body as T;
+    if (result.kind === 'error') {
+      throw new Error(result.message);
+    }
+    return result.body;
   } finally {
     endLoad();
   }

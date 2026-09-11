@@ -27,3 +27,28 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void {
 export function notifyUnauthorized(): void {
   handler?.();
 }
+
+/** Discriminator for a 401 meaning "your ordinary session is fine, but this write needs a fresh
+ *  re-authentication" (docs/atelier/phase-b-governance-primitives-design.md §7.1) — distinct from
+ *  `isSessionExpired`: the session itself has not expired, so the whole app must NOT be routed to
+ *  the sign-in screen. */
+export function isStepUpRequired(status: number, body: ApiErrorBody): boolean {
+  if (status !== 401) return false;
+  return body.code === 'step_up_required';
+}
+
+let stepUpHandler: (() => Promise<void>) | null = null;
+
+/** App registers a callback that shows the re-authentication prompt and returns a promise
+ *  resolving once a fresh `rmg_stepup` credential has been minted — or rejecting if the user
+ *  cancels. `requestStepUp()` (called from `req()`'s retry path) awaits exactly this promise. */
+export function setStepUpRequiredHandler(fn: (() => Promise<void>) | null): void {
+  stepUpHandler = fn;
+}
+
+/** Rejects immediately (no infinite hang) when no prompt is registered — e.g. before `App` has
+ *  mounted `StepUpPrompt`, or in a context (tests, a headless script) with no UI to show one. */
+export function requestStepUp(): Promise<void> {
+  if (!stepUpHandler) return Promise.reject(new Error('Step-up required, but no re-authentication prompt is available.'));
+  return stepUpHandler();
+}

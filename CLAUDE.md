@@ -85,3 +85,4 @@ Claude Code web environment variables so it persists across sessions.
 | `YOUTUBE_API_KEY` | master-atelier prd | Added Jun 27 2026 |
 | `GDRIVE_LIBRARY_FOLDER_ID` | master-atelier prd | Added Jun 28 2026 — brand asset library |
 | `DATABASE_URL` | master-atelier prd | **Do not add** — built by compose |
+| `STEP_UP_COOKIE_SECRET` | master-atelier prd | **Needs adding** — B1.2 §13 step 3 (2026-09-11). A distinct strong secret from `COOKIE_SECRET`; the gateway fails closed at startup in production if it is unset or left at the dev default. `STEP_UP_MAX_AGE_SECONDS` is optional (defaults to 900). Also needs a one-time GCP console step, not a Doppler secret: add `https://<dashboard host>/stepup-callback.html` as an authorized redirect URI on the existing `GOOGLE_CLIENT_ID` OAuth client, or the step-up popup's redirect will be rejected by Google. |

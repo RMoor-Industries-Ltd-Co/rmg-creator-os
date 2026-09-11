@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Re-authenticating…</title></head>
+<body>
+<script>
+  // Google's OAuth 2.0 implicit id_token flow redirects here with the token (or an error) in the
+  // URL fragment, never the query string — it must not be logged server-side. This page has no
+  // app state of its own; it only relays the fragment back to the window that opened it
+  // (StepUp.tsx) via postMessage, scoped to this origin, then closes itself.
+  (function () {
+    var hash = window.location.hash.replace(/^#/, '');
+    var params = new URLSearchParams(hash);
+    var idToken = params.get('id_token');
+    var error = params.get('error');
+    if (window.opener) {
+      window.opener.postMessage(
+        { source: 'rmg-stepup', idToken: idToken || null, error: error || null },
+        window.location.origin
+      );
+    }
+    window.close();
+  })();
+</script>
+<p>You can close this window.</p>
+</body>
+</html>
