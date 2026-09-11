@@ -290,7 +290,6 @@ app.post<{
       avatarId,
       voiceId,
       inputText: text,
-      avatarStyle,
       dimension,
       title
     });
@@ -905,7 +904,6 @@ app.post<{
     return await heygenHandler(reply, async () => {
       const { videoId } = await client.generateVideo({
         avatarId,
-        avatarStyle,
         background,
         audioUrl,
         dimension: dim,
@@ -1927,13 +1925,18 @@ app.post<{
 
   try {
     const audioUrl = await hostVoiceTrack(row, audioAssetId, stabilityMode);
-    const talkingPhotoId = await client.uploadTalkingPhoto(imgBytes, imgMime);
+    // v3 has no talking-photo id: an uploaded still becomes a photo avatar, and the *look*
+    // id is what a render is addressed by. Unlike v2's single synchronous upload, this trains
+    // asynchronously, so the call polls and can time out.
+    const { avatarId: photoAvatarId } = await client.createPhotoAvatar(imgBytes, imgMime, {
+      name: `aroll-${row.id}`
+    });
     const portrait = (orientation ?? 'portrait') === 'portrait';
     const dim = portrait ? { width: 720, height: 1280 } : { width: 1280, height: 720 };
 
     return await heygenHandler(reply, async () => {
       const { videoId } = await client.generateVideo({
-        talkingPhotoId,
+        avatarId: photoAvatarId,
         audioUrl,
         useAvatarIv: true,
         customMotionPrompt: motionPrompt?.trim() || undefined,
@@ -1949,7 +1952,7 @@ app.post<{
           heygenVideoId: videoId,
           status: 'processing',
           source: 'heygen',
-          avatarId: '',
+          avatarId: photoAvatarId,
           inputText: (row.title || row.topic).slice(0, 200),
           title: row.title ?? null,
           label: character ? `${character.name} · A-Roll` : null,
@@ -1965,7 +1968,7 @@ app.post<{
         productionId: row.id,
         capability: 'aroll',
         provider: 'heygen',
-        payload: { videoId, talkingPhotoId, audioUrl, dimension: dim, motionPrompt: motionPrompt ?? null, videoRowId: video.id },
+        payload: { videoId, photoAvatarId, audioUrl, dimension: dim, motionPrompt: motionPrompt ?? null, videoRowId: video.id },
         priority: 5,
         // One queue row per video row. The paid HeyGen call already happened above, so this
         // key cannot suppress real work — it only prevents a duplicate tracking row, and

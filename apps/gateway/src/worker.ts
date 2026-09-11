@@ -7,7 +7,11 @@ import { checkWorkerSecret, WORKER_AUTH_REQUIRED_CODE } from './workerAuth.js';
 import { eq } from '@rmg-creator-os/db';
 import { tables, claimNextJob, recoverStaleJobs, findCompletedByIdempotencyKey, DEFAULT_LEASE_SECONDS } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
-import { createDefaultRendererRegistry, type RendererRegistry } from '@rmg-creator-os/integrations';
+import {
+  createDefaultRendererRegistry,
+  type RendererRegistry,
+  type GenerateVideoOptions
+} from '@rmg-creator-os/integrations';
 
 const WORKER_SECRET = process.env.WORKER_SECRET ?? '';
 
@@ -22,7 +26,10 @@ const WORKER_ID = process.env.WORKER_ID ?? `gateway-${process.pid}-${randomUUID(
 type ProductionJob = typeof tables.productionJobs.$inferSelect;
 
 type WorkerClients = {
-  heygen: { generateVideo: (opts: Record<string, unknown>) => Promise<{ videoId: string }> } | null;
+  // Typed against the real client's options rather than `Record<string, unknown>`: under v2
+  // the loose type let the dispatch payload drift from what the client accepts, which is
+  // exactly the mismatch the v3 port had to find by hand.
+  heygen: { generateVideo: (opts: GenerateVideoOptions) => Promise<{ videoId: string }> } | null;
   drive: { uploadBuffer: (opts: { bytes: Buffer; name: string; folderId: string; mimeType: string }) => Promise<{ fileId: string; webViewLink?: string }> } | null;
 };
 
@@ -51,6 +58,9 @@ export async function dispatch(
     const client = clients.heygen;
     if (!client) throw new Error('HeyGen client not configured');
     const p = payload as {
+      photoAvatarId?: string;
+      /** v2 payloads only. A talking-photo id is not a v3 look id, so it is refused rather
+       *  than forwarded — sending it would 4xx at best and address the wrong avatar at worst. */
       talkingPhotoId?: string;
       audioUrl?: string;
       useAvatarIv?: boolean;
@@ -58,9 +68,14 @@ export async function dispatch(
       dimension?: { width: number; height: number };
       title?: string;
     };
-    if (!p.talkingPhotoId || !p.audioUrl) throw new Error('aroll payload missing talkingPhotoId or audioUrl');
+    if (!p.photoAvatarId && p.talkingPhotoId) {
+      throw new Error(
+        'aroll payload carries a v2 talkingPhotoId, which is not a v3 avatar look id — re-enqueue this render'
+      );
+    }
+    if (!p.photoAvatarId || !p.audioUrl) throw new Error('aroll payload missing photoAvatarId or audioUrl');
     const { videoId } = await client.generateVideo({
-      talkingPhotoId: p.talkingPhotoId,
+      avatarId: p.photoAvatarId,
       audioUrl: p.audioUrl,
       useAvatarIv: p.useAvatarIv ?? true,
       customMotionPrompt: p.customMotionPrompt,

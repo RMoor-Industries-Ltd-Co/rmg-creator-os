@@ -9,26 +9,43 @@ const job = (capability: string, provider: string, payload: unknown = {}) =>
 afterEach(() => vi.restoreAllMocks());
 
 describe('worker dispatch — behavior preservation (Sprint 1 PR 4)', () => {
-  it('HeyGen aroll path is unchanged: calls the client and returns its videoId', async () => {
+  it('HeyGen aroll path calls the client with the v3 avatar look id and returns its videoId', async () => {
     const generateVideo = vi.fn().mockResolvedValue({ videoId: 'hg-vid-1' });
     const out = await dispatch(
-      job('aroll', 'heygen', { talkingPhotoId: 'tp1', audioUrl: 'https://a' }),
+      job('aroll', 'heygen', { photoAvatarId: 'lk_1', audioUrl: 'https://a' }),
       { heygen: { generateVideo }, drive: null },
       createDefaultRendererRegistry()
     );
     expect(out).toEqual({ resultId: 'hg-vid-1' });
     expect(generateVideo).toHaveBeenCalledOnce();
+    // v3 addresses a photo avatar by look id through `avatarId`; there is no talking_photo_id.
+    expect(generateVideo.mock.calls[0]![0]).toMatchObject({ avatarId: 'lk_1', audioUrl: 'https://a' });
+    expect(generateVideo.mock.calls[0]![0]).not.toHaveProperty('talkingPhotoId');
+  });
+
+  it('refuses a legacy v2 talkingPhotoId payload rather than forwarding it to v3', async () => {
+    // A talking-photo id is not a look id. Forwarding one would either 4xx or, worse,
+    // collide with an unrelated v3 id — so an old queued payload fails loudly.
+    const generateVideo = vi.fn();
+    await expect(
+      dispatch(
+        job('aroll', 'heygen', { talkingPhotoId: 'tp1', audioUrl: 'https://a' }),
+        { heygen: { generateVideo }, drive: null },
+        createDefaultRendererRegistry()
+      )
+    ).rejects.toThrow(/v2 talkingPhotoId/);
+    expect(generateVideo).not.toHaveBeenCalled();
   });
 
   it('aroll/heygen still throws when the client is not configured', async () => {
     await expect(
-      dispatch(job('aroll', 'heygen', { talkingPhotoId: 't', audioUrl: 'u' }), { heygen: null, drive: null }, createDefaultRendererRegistry())
+      dispatch(job('aroll', 'heygen', { photoAvatarId: 'lk_1', audioUrl: 'u' }), { heygen: null, drive: null }, createDefaultRendererRegistry())
     ).rejects.toThrow(/HeyGen client not configured/);
   });
 
   it('aroll/heygen still throws on a missing payload field', async () => {
     await expect(
-      dispatch(job('aroll', 'heygen', { talkingPhotoId: 't' }), { heygen: { generateVideo: vi.fn() }, drive: null }, createDefaultRendererRegistry())
+      dispatch(job('aroll', 'heygen', { photoAvatarId: 'lk_1' }), { heygen: { generateVideo: vi.fn() }, drive: null }, createDefaultRendererRegistry())
     ).rejects.toThrow(/aroll payload missing/);
   });
 

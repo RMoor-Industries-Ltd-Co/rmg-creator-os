@@ -841,6 +841,12 @@ canonical set of a pinned assembled output.
 
 ## 11. HeyGen capability verification
 
+> **Superseded in part, 2026-09-11.** §11.1 below records what the client called *at the time
+> of this verification*. The v2 → v3 migration has since landed — see
+> [`heygen-v3-migration.md`](./heygen-v3-migration.md) — so the client now calls v3 throughout
+> and §11.3's deadline item is discharged. The capability findings in §11.2 are unchanged and
+> are what D-J3 rests on; step D's remaining preconditions are an enabled dispatcher and step C.
+
 Checked 2026-09-11 against `developers.heygen.com` (the current documentation host;
 `docs.heygen.com` 301-redirects there) and against this repository's own client,
 `packages/integrations/src/heygen.ts`.

@@ -76,11 +76,15 @@ The implementation order below is designed to add those layers without replacing
 
 ## Parallel, dated maintenance track — HeyGen A-Roll
 
-**Added 2026-09-09.** One repository item is time-critical and does not belong to any phase's
-scope: `packages/integrations/src/heygen.ts` calls `/v2/video/generate`, which HeyGen shuts down
-on **2026-10-31**. A-Roll is the only client-backed renderer in the dispatch path, so following
-A1–A4 and then B–E in order can leave it broken at a fixed date while this plan claims to
-protect the working spine.
+**Added 2026-09-09. Client ported 2026-09-11 — see
+[`heygen-v3-migration.md`](./heygen-v3-migration.md).** One repository item was time-critical
+and belonged to no phase's scope: `packages/integrations/src/heygen.ts` called
+`/v2/video/generate`, which HeyGen shuts down on **2026-10-31**. A-Roll is the only
+client-backed renderer in the dispatch path, so following A1–A4 and then B–E in order could
+have left it broken at a fixed date while this plan claimed to protect the working spine.
+
+The client, its callers and its tests are now on v3, which also supplies the `Idempotency-Key`
+that A-Roll decision **D-J3** makes a precondition of that track's step D.
 
 It runs as an explicitly parallel track with that deadline, scoped in
 [issue #53](https://github.com/RMoor-Industries-Ltd-Co/rmg-creator-os/issues/53) — plan first,
