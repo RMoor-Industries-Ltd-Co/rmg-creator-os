@@ -34,3 +34,5 @@ export type {
   LegacyApprovalEvidenceRow,
   BackfillResult
 } from './legacyApprovalBackfill.js';
+export { recordWorkflowTransition } from './transitions.js';
+export type { RecordWorkflowTransitionInput, PrincipalKind } from './transitions.js';
