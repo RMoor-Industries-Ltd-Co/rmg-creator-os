@@ -527,7 +527,7 @@ describe('reconcile before retry', () => {
     const client = fakeClient({ generateVideo, listVideos });
     await expect(
       reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-16', assumeKeyExpired: true })
-    ).rejects.toThrow(/cannot establish/);
+    ).rejects.toThrow(/has_more:false, next_token:"contradiction"/);
     expect(generateVideo).not.toHaveBeenCalled();
   });
 
@@ -720,7 +720,12 @@ describe('catalog pagination — v2 returned everything in one response', () => 
           ? { json: { data: [{ id: 'lk_1' }], has_more: false, next_token: 'still-here' } }
           : undefined
     ]);
-    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(/cannot establish/);
+    // The message must name the pair actually seen. The accepted risk of this rule is that
+    // HeyGen echoes a cursor on a final page — if that happens in production, an error that
+    // asserted "no next_token" would hide the very response that caused it.
+    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(
+      /has_more:false, next_token:"still-here"/
+    );
   });
 
   it('completes on an explicit no-more with no cursor — the one proven end', async () => {
@@ -766,7 +771,9 @@ describe('catalog pagination — v2 returned everything in one response', () => 
     mockFetch([
       (c) => (c.url.includes('/v3/voices') ? { json: { data: [{ voice_id: 'vo_1' }] } } : undefined)
     ]);
-    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(/cannot establish/);
+    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(
+      /has_more omitted, no next_token/
+    );
   });
 
   it('throws when the server claims more pages but returns no cursor', async () => {

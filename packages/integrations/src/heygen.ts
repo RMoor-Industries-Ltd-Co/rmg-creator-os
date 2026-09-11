@@ -290,6 +290,16 @@ export function assertDerivableIdempotencyKey(key: string): void {
  * | omitted | present | `more` — absence proves nothing, and we *can* keep reading |
  * | omitted | absent | `inconsistent` — nothing asserts the end, nothing to follow |
  */
+/** The signal pair as observed, for an error message that names the real contradiction
+ *  rather than asserting one particular shape of it. An `inconsistent` page can be any of
+ *  three combinations, and a message that hard-codes one of them will describe the other two
+ *  backwards — which matters most in the case we least expect, since that is the one whose
+ *  error someone will be reading. */
+function describePage(hasMore: boolean | undefined, nextToken: string | undefined): string {
+  const flag = hasMore === undefined ? 'has_more omitted' : `has_more:${hasMore}`;
+  return `${flag}, ${nextToken ? `next_token:${JSON.stringify(nextToken)}` : 'no next_token'}`;
+}
+
 function pageState(hasMore: boolean | undefined, nextToken: string | undefined):
   | 'done'
   | 'more'
@@ -415,8 +425,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       if (state === 'done') return out as Array<Record<string, unknown>> & T[];
       if (state === 'inconsistent') {
         throw new HeyGenError(
-          `HeyGen ${path}: cannot establish that the catalog ended — no next_token, and no ` +
-            `explicit has_more:false; refusing to return a partial catalog as if it were complete`
+          `HeyGen ${path}: cannot establish that the catalog ended (${describePage(j.has_more, token)}) ` +
+            `— refusing to return a partial catalog as if it were complete`
         );
       }
     }
@@ -650,8 +660,8 @@ export async function reconcileBeforeRetry(
       if (state === 'inconsistent') {
         throw new HeyGenError(
           `reconcileBeforeRetry: cannot establish that history for ` +
-            `${JSON.stringify(reconcileByTitle)} was exhausted — no cursor to continue, and no ` +
-            `explicit has_more:false; refusing to resubmit a paid render on an unproven search`
+            `${JSON.stringify(reconcileByTitle)} was exhausted (${describePage(result.hasMore, token)}) ` +
+            `— refusing to resubmit a paid render on an unproven search`
         );
       }
     }
