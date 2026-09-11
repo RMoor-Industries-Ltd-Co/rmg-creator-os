@@ -460,6 +460,28 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
 
   // ── workflow_transitions ────────────────────────────────────────────────────────────
   describe('workflow_transitions', () => {
+    it('refuses evidence that is about a different subject', async () => {
+      // Append-only, so a transition citing someone else's approval is permanently wrong.
+      const e = await db.execute(sql`
+        INSERT INTO approval_evidence (subject_type,subject_id,scope,revision_digest,decision,
+          principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at,
+          approved_package)
+        VALUES ('production','p-evidence-owner','vlog','d1','approved','rahm','human','founder',
+                'rmg-creator-os',1,now(),'{}'::jsonb) RETURNING id`);
+      const eid = (e.rows[0] as { id: string }).id;
+      await refused(() => db.execute(sql`
+        INSERT INTO workflow_transitions (subject_type,subject_id,to_state,evidence_id,
+          principal_id,principal_kind,asserted_role,source_system)
+        VALUES ('production','a-different-subject','queued',${eid},'rahm',
+                'human'::principal_kind,'founder','rmg-creator-os')`),
+        /is about production\/p-evidence-owner/);
+      await expect(db.execute(sql`
+        INSERT INTO workflow_transitions (subject_type,subject_id,to_state,evidence_id,
+          principal_id,principal_kind,asserted_role,source_system)
+        VALUES ('production','p-evidence-owner','queued',${eid},'rahm',
+                'human'::principal_kind,'founder','rmg-creator-os')`)).resolves.toBeTruthy();
+    });
+
     it('refuses a founder-attributed transition naming a machine actor', async () => {
       // These rows are immutable the instant they are written, so an incoherent one can
       // never be corrected — the same constraint matters more here than on evidence.
@@ -602,9 +624,14 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
       const id = (r.rows[0] as { id: string }).id;
       await refused(() => db.execute(sql`UPDATE publication_intents
         SET subject_id='p-other', evidence_id=${otherId}, revision_digest='d9' WHERE id=${id}`),
-        /may not be retargeted/);
+        /identity is immutable/);
+      // And after closure too: freezing only while open left an audit hole, since the
+      // immutable remote_post_id would then be attached to a publication that never was.
       await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
                            WHERE id=${id}`);
+      await refused(() => db.execute(sql`UPDATE publication_intents
+        SET subject_id='p-other', evidence_id=${otherId}, revision_digest='d9' WHERE id=${id}`),
+        /identity is immutable/);
     });
 
     it('refuses a published intent with no remote post id', async () => {

@@ -288,6 +288,30 @@ CREATE TABLE IF NOT EXISTS workflow_transitions (
 CREATE INDEX IF NOT EXISTS workflow_transitions_subject
   ON workflow_transitions (subject_type, subject_id, occurred_at);
 
+-- Cited evidence must be about THIS subject.
+--
+-- The foreign key proves only that the evidence row exists, so a transition for subject B
+-- could cite subject A's approval and commit — and because this table is append-only, the
+-- false authority attribution is permanent. Same shape as the publication_intents coherence
+-- rule; the consequence is worse here because nothing can ever correct the row.
+CREATE OR REPLACE FUNCTION workflow_transitions_evidence_coherent() RETURNS trigger AS $$
+DECLARE e approval_evidence%ROWTYPE;
+BEGIN
+  IF NEW.evidence_id IS NULL THEN RETURN NEW; END IF;
+  SELECT * INTO e FROM approval_evidence WHERE id = NEW.evidence_id;
+  IF e.subject_type IS DISTINCT FROM NEW.subject_type
+     OR e.subject_id IS DISTINCT FROM NEW.subject_id THEN
+    RAISE EXCEPTION 'workflow_transitions: evidence % is about %/%, not %/%',
+      NEW.evidence_id, e.subject_type, e.subject_id, NEW.subject_type, NEW.subject_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS workflow_transitions_evidence_coherent ON workflow_transitions;
+CREATE TRIGGER workflow_transitions_evidence_coherent
+  BEFORE INSERT ON workflow_transitions
+  FOR EACH ROW EXECUTE FUNCTION workflow_transitions_evidence_coherent();
+
 -- Nothing about a recorded transition ever legitimately changes.
 CREATE OR REPLACE FUNCTION workflow_transitions_immutable() RETURNS trigger AS $$
 BEGIN
@@ -420,16 +444,18 @@ BEGIN
       OLD.id, OLD.remote_post_id;
   END IF;
 
-  -- 2. An OPEN intent's identity is frozen. Retargeting subject/scope/evidence/digest
-  --    together keeps the row internally coherent (the coherence trigger still passes) while
-  --    vacating the slot held for the publication actually in flight — so a second intent for
-  --    the original subject becomes insertable and can post a duplicate.
-  IF OLD.phase IN ('claimed','transmitting','unknown')
-     AND (NEW.subject_type, NEW.subject_id, NEW.scope, NEW.evidence_id, NEW.revision_digest)
-         IS DISTINCT FROM
-         (OLD.subject_type, OLD.subject_id, OLD.scope, OLD.evidence_id, OLD.revision_digest) THEN
+  -- 2. An intent's identity is frozen in EVERY phase, not only while it is open.
+  --
+  --    Scoping this to open phases closed the duplicate-slot hole and left an audit one: a
+  --    CLOSED intent could still have all five identity fields replaced with a coherent
+  --    tuple for different evidence, and because remote_post_id is immutable, the record of
+  --    a real outbound post would then be permanently attached to a publication that never
+  --    happened. The row an auditor reads would be internally consistent and false.
+  IF (NEW.subject_type, NEW.subject_id, NEW.scope, NEW.evidence_id, NEW.revision_digest)
+     IS DISTINCT FROM
+     (OLD.subject_type, OLD.subject_id, OLD.scope, OLD.evidence_id, OLD.revision_digest) THEN
     RAISE EXCEPTION
-      'publication_intents %: an open intent (%) may not be retargeted', OLD.id, OLD.phase;
+      'publication_intents %: identity is immutable (phase %)', OLD.id, OLD.phase;
   END IF;
 
   RETURN NEW;
