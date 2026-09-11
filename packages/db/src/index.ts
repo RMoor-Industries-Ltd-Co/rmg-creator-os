@@ -21,3 +21,16 @@ export type {
   OutboundPost,
   PinnedVideo
 } from './digest.js';
+export {
+  computeLegacyApprovalEvidenceRows,
+  backfillLegacyApprovals,
+  LEGACY_PRINCIPAL_ID,
+  LEGACY_ASSERTED_ROLE,
+  LEGACY_REVISION_DIGEST,
+  LEGACY_SOURCE_SYSTEM
+} from './legacyApprovalBackfill.js';
+export type {
+  LegacyApprovalMapInput,
+  LegacyApprovalEvidenceRow,
+  BackfillResult
+} from './legacyApprovalBackfill.js';
