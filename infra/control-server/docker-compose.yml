@@ -90,6 +90,10 @@ services:
       # closed at startup (same shape as COOKIE_SECRET's own check).
       STEP_UP_COOKIE_SECRET: ${STEP_UP_COOKIE_SECRET:-}
       STEP_UP_MAX_AGE_SECONDS: ${STEP_UP_MAX_AGE_SECONDS:-}
+      # Founder-set authorization (§7.2) — email=principalId pairs, e.g.
+      # "rahm@rmasters.group=rahm@business". Distinct from AUTH_ALLOWED_EMAILS; unset means no
+      # founder (fail closed), never "everyone".
+      FOUNDER_PRINCIPALS: ${FOUNDER_PRINCIPALS:-}
       POSTIZ_API_URL: ${POSTIZ_API_URL:-https://social.rmasters.group/api/public/v1}
       POSTIZ_API_KEY: ${POSTIZ_API_KEY:-}
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}

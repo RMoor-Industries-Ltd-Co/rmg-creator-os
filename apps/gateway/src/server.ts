@@ -48,6 +48,7 @@ import {
   signStepUpCookie,
   STEP_UP_COOKIE
 } from './stepup.js';
+import { parseFounderPrincipals } from './founder.js';
 import {
   createDriveClient,
   createHeyGenClient,
@@ -128,6 +129,16 @@ await app.register(cookie, { secret: COOKIE_SECRET });
 const STEP_UP_COOKIE_SECRET = process.env.STEP_UP_COOKIE_SECRET ?? DEV_STEP_UP_COOKIE_SECRET;
 const STEP_UP_MAX_AGE_SECONDS = parseStepUpMaxAgeSeconds(process.env.STEP_UP_MAX_AGE_SECONDS);
 assertStepUpCookieSecret(STEP_UP_COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
+
+// Founder-set authorization (§7.2) — a THIRD, separate check from session + step-up: being
+// allowlisted and being fresh does not mean being the founder. Own config, never AUTH_ALLOWED_EMAILS;
+// unset means empty (no founder, refuse), never "everyone". See founder.ts.
+const { map: FOUNDER_PRINCIPALS, malformed: FOUNDER_PRINCIPALS_MALFORMED } = parseFounderPrincipals(
+  process.env.FOUNDER_PRINCIPALS
+);
+if (FOUNDER_PRINCIPALS_MALFORMED.length > 0) {
+  app.log.warn({ entries: FOUNDER_PRINCIPALS_MALFORMED }, 'FOUNDER_PRINCIPALS: ignoring malformed entries');
+}
 
 // isPublicRoute + the allowlist/cookie-secret helpers live in ./auth.ts (unit-tested).
 if (AUTH_ENABLED) {
