@@ -4,6 +4,7 @@
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import multipart from '@fastify/multipart';
+import rateLimit from '@fastify/rate-limit';
 import {
   allenChat,
   allenConfigured,
@@ -104,6 +105,11 @@ const drive =
 const app = Fastify({ logger: true });
 await app.register(cors, { origin: true, credentials: true });
 await app.register(multipart, { limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB/file
+// Opt-in only (global: false) — applies just to the routes below that set `config.rateLimit`,
+// never silently changing behavior on any other route. CodeQL: an authorization handler with no
+// rate limit invites brute-force/credential-stuffing against the Google token exchange it makes.
+await app.register(rateLimit, { global: false });
+const AUTH_RATE_LIMIT = { max: 10, timeWindow: '1 minute' };
 
 // --- Auth (single-user Google sign-in; env-gated, off until configured) ------
 const AUTH_ENABLED = process.env.AUTH_ENABLED === 'true';
@@ -146,29 +152,33 @@ app.get('/auth/config', async () => ({
 }));
 
 // Verify a Google ID token (One Tap / button), check the allow-list, set a session.
-app.post<{ Body: { credential?: string } }>('/auth/google', async (request, reply) => {
-  const credential = request.body?.credential;
-  if (!credential) return reply.code(400).send({ error: 'missing credential' });
-  try {
-    const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
-    if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
-    const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string };
-    if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
-    if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
-    if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
-    reply.setCookie(SESSION_COOKIE, t.email.toLowerCase(), {
-      signed: true,
-      httpOnly: true,
-      secure: true,
-      sameSite: 'lax',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 30
-    });
-    return { email: t.email };
-  } catch (err) {
-    return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+app.post<{ Body: { credential?: string } }>(
+  '/auth/google',
+  { config: { rateLimit: AUTH_RATE_LIMIT } },
+  async (request, reply) => {
+    const credential = request.body?.credential;
+    if (!credential) return reply.code(400).send({ error: 'missing credential' });
+    try {
+      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+      if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
+      const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string };
+      if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
+      if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
+      if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
+      reply.setCookie(SESSION_COOKIE, t.email.toLowerCase(), {
+        signed: true,
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 30
+      });
+      return { email: t.email };
+    } catch (err) {
+      return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+    }
   }
-});
+);
 
 // Verify a *deliberately fresh* Google ID token (client requests max_age=900, prompt=login) and
 // mint the second, short-lived rmg_stepup credential (§7.1). Requires no existing rmg_sess —
@@ -176,47 +186,51 @@ app.post<{ Body: { credential?: string } }>('/auth/google', async (request, repl
 // built) via verifyStepUpCookie(). Distinct failure shape from /auth/google: an auth_time claim
 // that is missing, too old, or in the future is refused outright, never accepted by falling back
 // to iat.
-app.post<{ Body: { credential?: string } }>('/auth/google/step-up', async (request, reply) => {
-  const credential = request.body?.credential;
-  if (!credential) return reply.code(400).send({ error: 'missing credential' });
-  try {
-    const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
-    if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
-    const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string; auth_time?: string };
-    if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
-    if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
-    if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
-    const authTime = extractAuthTime(t);
-    if (authTime === undefined) {
-      return reply.code(401).send({ error: 'token carries no auth_time claim; re-authenticate' });
-    }
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const { fresh, ageSeconds } = checkAuthTimeFreshness(authTime, nowSeconds, STEP_UP_MAX_AGE_SECONDS);
-    if (!fresh) {
-      return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
-    }
-    const remaining = remainingStepUpWindowSeconds(ageSeconds, STEP_UP_MAX_AGE_SECONDS);
-    if (remaining === null) {
-      return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
-    }
-    const email = t.email.toLowerCase();
-    const stepUpId = randomUUID();
-    reply.setCookie(
-      STEP_UP_COOKIE,
-      signStepUpCookie({ email, stepUpId, authTime }, STEP_UP_COOKIE_SECRET),
-      {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        path: '/',
-        maxAge: remaining
+app.post<{ Body: { credential?: string } }>(
+  '/auth/google/step-up',
+  { config: { rateLimit: AUTH_RATE_LIMIT } },
+  async (request, reply) => {
+    const credential = request.body?.credential;
+    if (!credential) return reply.code(400).send({ error: 'missing credential' });
+    try {
+      const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+      if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
+      const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string; auth_time?: string };
+      if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
+      if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
+      if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
+      const authTime = extractAuthTime(t);
+      if (authTime === undefined) {
+        return reply.code(401).send({ error: 'token carries no auth_time claim; re-authenticate' });
       }
-    );
-    return { email, stepUpId };
-  } catch (err) {
-    return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+      const nowSeconds = Math.floor(Date.now() / 1000);
+      const { fresh, ageSeconds } = checkAuthTimeFreshness(authTime, nowSeconds, STEP_UP_MAX_AGE_SECONDS);
+      if (!fresh) {
+        return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
+      }
+      const remaining = remainingStepUpWindowSeconds(ageSeconds, STEP_UP_MAX_AGE_SECONDS);
+      if (remaining === null) {
+        return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
+      }
+      const email = t.email.toLowerCase();
+      const stepUpId = randomUUID();
+      reply.setCookie(
+        STEP_UP_COOKIE,
+        signStepUpCookie({ email, stepUpId, authTime }, STEP_UP_COOKIE_SECRET),
+        {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: remaining
+        }
+      );
+      return { email, stepUpId };
+    } catch (err) {
+      return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+    }
   }
-});
+);
 
 app.get('/auth/me', async (request, reply) => {
   const raw = request.cookies?.[SESSION_COOKIE];
