@@ -51,6 +51,16 @@ by one:
 | *(none)* | `callback_id`, `callback_url` | New |
 | *(none)* | `Idempotency-Key` header | New |
 
+### Catalogs are paginated now — v2's were not
+
+`GET /v2/avatars` and `GET /v2/voices` returned the whole catalog in one response. v3 pages,
+capped at 50 looks and 100 voices. **One page is therefore not a port of the old behaviour, it
+is a silent truncation** — and on the Studio avatar picker, which loads the list once and
+filters client-side, an avatar past the cut is not merely missing from a page, it is
+permanently unselectable. `listAvatars()` and `listVoices()` follow `next_token` to exhaustion,
+with a page bound as a safety stop against an endless token chain rather than as a product
+limit.
+
 ### `dimension` → `aspect_ratio` + `resolution`
 
 v2 accepted arbitrary pixel dimensions. v3 accepts an aspect ratio from a fixed set plus a
@@ -64,6 +74,13 @@ shape:
 |---|---|
 | 720×1280 | `9:16` at `720p` |
 | 1280×720 | `16:9` at `720p` |
+
+**The tier is read off the short edge, not the long one.** A tier name is a vertical-pixel
+count in landscape (1080p is 1920×1080) and the same count on the narrow axis in portrait
+(1080p is 1080×1920) — in both, the number is the short edge. A long-edge rule assumes every
+tier is 16:9 and silently downgrades anything squarer: 1080×1080 is a 1:1 frame that genuinely
+needs the 1080p tier, but its longest edge is 1080, below the 1920 a long-edge rule would
+demand, so it would be cut to 720p and lose a third of its pixels without saying so.
 
 An unusual dimension is snapped rather than refused. Refusing would convert a call the
 provider would have absorbed into a 4xx, which is a worse outcome for a difference nobody
@@ -127,6 +144,12 @@ The client:
 - **rejects an empty-string key** rather than silently omitting the header. Dropping it would
   send an unprotected paid request while the caller believes the submission is idempotent.
   (This was a real bug in the first draft of this port; a test now covers it.)
+- **validates a base key with the derived suffix already budgeted.** `createPhotoAvatar`
+  appends `:asset` and `:avatar`, so a base key near the 255 limit passes at the boundary and
+  then produces an over-length header partway through. Checking only at use would let the
+  asset upload succeed and the avatar creation fail on length, stranding an uploaded asset
+  with nothing to attach it to; the base key is therefore validated against `255 - len(':avatar')`
+  before anything is uploaded.
 - exposes `HeyGenError.isIdempotencyConflict` so a 409 is distinguishable from a failure. A
   retry loop that treats "still in flight" as "failed" either abandons work that is about to
   succeed or resubmits it under a fresh key — which is the duplicate charge the whole
@@ -151,17 +174,27 @@ Two mechanisms, because neither covers the whole window:
 
 | Window | Mechanism |
 |---|---|
-| Inside 24h | `Idempotency-Key`. Exact: HeyGen replays, no second render |
-| Past 24h | Search `GET /v3/videos?title=…` and adopt an existing render |
+| Inside 24h, key supplied | `Idempotency-Key`. Exact: HeyGen replays, no second render |
+| Past 24h (`assumeKeyExpired`) | Search `GET /v3/videos?title=…` and adopt an existing render |
+| **No key supplied at all** | Search first — an unprotected submission is the same exposure |
 | 409 (in flight) | Search rather than fail — it is the same situation |
 
-Three properties the tests pin:
+Five properties the tests pin:
 
 1. **No speculative search while the key is live.** The normal path is one call.
-2. **Exact title match on the way back out.** `title` is a *substring* filter server-side, so
+2. **No key means search.** With no `Idempotency-Key` the submission is unprotected, so a lost
+   response is exactly the unrecoverable double-charge this helper exists to close. "No key"
+   must mean "search", not "submit and hope".
+3. **Exact title match on the way back out.** `title` is a *substring* filter server-side, so
    searching for `attempt-1` also returns `attempt-10`. Adopting that would bind this attempt
    to a different segment's render. The filter narrows; the comparison decides.
-3. **A failed prior render is not adopted.** It is something to supersede, not to inherit.
+4. **Every page is walked.** Because the filter is a substring, a short title can match far
+   more rows than the attempt's own, and the exact match may sit several pages in. Stopping at
+   page one turns "not found yet" into "not found", and the cost of that mistake is a second
+   paid render. If the page bound is reached without resolving, the helper **throws rather
+   than submitting** — an incomplete search has not established that no prior render exists,
+   and treating it as a miss would authorize the very duplicate it is meant to prevent.
+5. **A failed prior render is not adopted.** It is something to supersede, not to inherit.
 
 The caller supplies the title, and it must be unique to the attempt — a production title is
 not, since two attempts at one segment would share it. That is why the function takes
@@ -234,6 +267,89 @@ because "nothing dispatches today" is a deployment fact, not a guarantee.
 
 ---
 
+## Post-merge review fixes
+
+The first automated review of this port landed seventeen seconds after it merged, with five
+P2 findings. All five were verified against the code and were real; they are fixed in a
+follow-up, together with one the review did not name:
+
+| # | Finding | Consequence if left |
+|---|---|---|
+| 1 | `listAvatars()` took only the first page | An avatar past the 50-look cut becomes permanently unselectable in Studio |
+| — | `listVoices()` had the same bug, unflagged | Same, past 100 voices |
+| 2 | Reconciliation searched only page one | A missed match on a later page authorizes a **second paid render** |
+| 3 | Derived idempotency keys could exceed 255 | Asset uploads, avatar creation then fails on length, asset stranded |
+| 4 | No idempotency key skipped the search | An unprotected submission with no recovery path — the exact double-charge the helper exists to close |
+| 5 | Resolution read off the long edge | A 1:1 or squarer frame silently downgraded a tier |
+
+Findings 2 and 4 are the serious pair: both end in a duplicate charge on a paid API, which is
+the failure D-J3 was written to prevent. Finding 1 is the only one visible to a user.
+
+### A second round, on the fixes themselves
+
+Reviewing those fixes produced three more, all real, and two of them the *same* mistake the
+fixes were correcting:
+
+| # | Finding | Why it mattered |
+|---|---|---|
+| 6 | Hitting the catalog page bound returned the partial list as if complete | The truncation bug of finding 1, reintroduced at a higher page count and equally invisible |
+| 7 | `has_more: true` with no `next_token` was read as "exhausted" | In the recovery paths, submits a paid render on a search that is demonstrably incomplete |
+| 8 | An empty supplied `idempotencyKey` took the "no key" branch | `generateVideo` rejects an empty key; this path could accept one and return `recovered`, so the same malformed input was fatal on one entry point and fine on the other |
+
+Findings 6 and 7 have one cause: **the rule for "is there another page" was applied correctly
+to the history search and not to the catalog reader.** Two inline conditions, one of which had
+been thought through. It is now a single shared `pageState()` returning `done` / `more` /
+`inconsistent`, and *both* readers fail on `inconsistent` and on exhausting their page bound.
+The principle both now encode: **only an exhausted search licenses the conclusion that
+something does not exist**, and that conclusion is what authorizes either presenting a catalog
+as complete or spending money on a render.
+
+Finding 8 is the `undefined`-versus-empty-string distinction, the mirror of the empty-key bug
+found in the first draft of this port. A supplied-and-wrong key is not an absent one.
+
+### A third round — the same distinction, one level down
+
+| # | Finding | Why it mattered |
+|---|---|---|
+| 9 | An **omitted** `has_more` was read as `has_more: false` | An absent flag asserts nothing; treating it as the server asserting exhaustion lets a missing field authorize a paid render. `listVideos()` compounded it by coercing `undefined` to `false` before the decision ever saw it |
+
+`pageState()` now treats **only an explicit `false`** as exhaustion. An omitted flag is
+resolved by whether we can keep reading: with a cursor, follow it — reading further is always
+safe and can only make the result more complete; without one, fail closed. And
+`HeyGenVideoListPage.hasMore` is `boolean | undefined`, passed through rather than coerced,
+because flattening the two at the boundary erases the distinction before the rule can apply it.
+
+Worth noting what this round was: **the same `undefined`-is-not-`false` confusion as finding 8,
+one level down.** Finding 8 was an empty string mistaken for an absent key; finding 9 is an
+absent flag mistaken for a negative one. Both are a falsy check standing in for a decision
+about what the caller actually said. That is the shape to watch for in the `render_attempts`
+work, not the specific fields.
+
+### And the two signals must agree
+
+Reviewing the D-J3a write-up surfaced the last case: a page may assert `has_more: false`
+while still returning a cursor. The client treated the flag as authoritative and the cursor
+as trailing noise. That is a guess, and on the reconciliation path what it guesses about is
+whether to spend money — so exhaustion now requires **both** an explicit "no more" **and**
+nothing left to follow.
+
+| `has_more` | cursor | state |
+|---|---|---|
+| `false` | absent | `done` — the only proven end |
+| `false` | present | `inconsistent` |
+| `true` | present | `more` |
+| `true` | absent | `inconsistent` |
+| omitted | present | `more` — absence proves nothing, and we *can* keep reading |
+| omitted | absent | `inconsistent` |
+
+**One risk this deliberately accepts.** If HeyGen ever echoes the request token back in
+`next_token` on a final page, the catalog reads now throw where they previously returned. The
+documented field is "pagination cursor for subsequent pages", `string | null`, so a non-null
+value on a last page would itself be a contract violation — but this has not been observed
+against the live API either way. The trade is a visible, immediate read failure against a
+silent duplicate charge, and the unpaid live read mandated before any paid render (below) is
+exactly the check that would surface it.
+
 ## Verification
 
 `pnpm typecheck` and `pnpm lint` clean; the full suite runs against real Postgres.
@@ -242,8 +358,13 @@ The client tests assert the wire shape rather than just the return value — pat
 headers, body — because a wrong field name against a paid API costs either a rejected render or
 a duplicate charge, and neither shows up in a test that only checks the happy-path return.
 Specifically covered: the v3 body shape and the *absence* of every v2 spelling; the dimension
-mapping including the snap and the refusal; `Idempotency-Key` sent, omitted, validated, and
-409-classified; `callback_id` sent and omitted; status and history reads; all six
-reconciliation branches; the photo-avatar upload/create/poll sequence including timeout,
-failure, absent-status and per-step keys; and a sweep asserting every URL the client emits is
-under `/v3`.
+mapping including the snap, the refusal and the short-edge tier; catalog pagination across
+pages for both avatars and voices; `Idempotency-Key` sent, omitted, validated, length-budgeted
+and 409-classified; `callback_id` sent and omitted; status and history reads; every
+reconciliation branch including multi-page search, the exhausted-search refusal and the
+no-key path; the photo-avatar upload/create/poll sequence including timeout, failure,
+absent-status and per-step keys; and a sweep asserting every URL the client emits is under
+`/v3`.
+
+Each of the seven tests added for the review fixes was run against the pre-fix source first
+and observed to fail. A test that cannot fail is not a check.

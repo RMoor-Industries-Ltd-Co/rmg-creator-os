@@ -74,6 +74,19 @@ describe('dimensionToFormat — v2 pixel dimensions to v3 aspect_ratio + resolut
     expect(dimensionToFormat({ width: 640, height: 360 }).resolution).toBe('720p');
   });
 
+  it('reads the tier off the short edge, so a squarer frame is not downgraded', () => {
+    // A tier name is a short-edge pixel count in both orientations (1920x1080 and 1080x1920
+    // are both 1080p). Reading the LONG edge assumes 16:9 and cuts anything squarer: this
+    // 1:1 frame genuinely needs 1080p, but its longest edge is only 1080.
+    expect(dimensionToFormat({ width: 1080, height: 1080 })).toEqual({
+      aspectRatio: '1:1',
+      resolution: '1080p'
+    });
+    // Portrait and landscape at the same tier agree.
+    expect(dimensionToFormat({ width: 1080, height: 1920 }).resolution).toBe('1080p');
+    expect(dimensionToFormat({ width: 2160, height: 2160 }).resolution).toBe('4k');
+  });
+
   it('snaps an unsupported ratio to the nearest supported one rather than failing', () => {
     // 4:3 is not in v3's set; 5:4 (1.25) is nearer to 1.333 than 16:9 (1.778) or 1:1.
     expect(dimensionToFormat({ width: 1024, height: 768 }).aspectRatio).toBe('5:4');
@@ -379,19 +392,159 @@ describe('reconcile before retry', () => {
     expect(generateVideo).toHaveBeenCalledOnce();
   });
 
+  it('walks every page of history — the exact match may not be on page one', async () => {
+    // `title` is a substring filter, so a short title can match far more rows than this
+    // attempt's. Stopping at page one turns "not found yet" into a second paid render.
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValueOnce({
+        videos: [{ videoId: 'v_x', status: 'completed', title: 'attempt-70' }],
+        hasMore: true,
+        nextToken: 't2'
+      })
+      .mockResolvedValueOnce({
+        videos: [{ videoId: 'v_want', status: 'completed', title: 'attempt-7' }],
+        hasMore: false
+      });
+    const client = fakeClient({ generateVideo, listVideos });
+    const out = await reconcileBeforeRetry(client, opts, {
+      reconcileByTitle: 'attempt-7',
+      assumeKeyExpired: true
+    });
+    expect(out).toEqual({ videoId: 'v_want', outcome: 'recovered' });
+    expect(listVideos).toHaveBeenCalledTimes(2);
+    expect(listVideos.mock.calls[1]![0]).toMatchObject({ token: 't2' });
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit when the search ran out of pages without resolving', async () => {
+    // An incomplete search has not established "no prior render exists". Treating it as a
+    // miss would authorize exactly the duplicate charge this function prevents.
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: true, nextToken: 'always-more' });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-8', assumeKeyExpired: true })
+    ).rejects.toThrow(/incomplete search/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('searches first when no idempotency key was supplied at all', async () => {
+    // With no key the submission is unprotected, so a lost response is unrecoverable. "No
+    // key" must mean "search", not "submit and hope".
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi.fn().mockResolvedValue({
+      videos: [{ videoId: 'v_prior', status: 'processing', title: 'attempt-9' }],
+      hasMore: false
+    });
+    const client = fakeClient({ generateVideo, listVideos });
+    const out = await reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-9' });
+    expect(out).toEqual({ videoId: 'v_prior', outcome: 'recovered' });
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('still submits, once, when there is no key and no prior render', async () => {
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_new' });
+    const listVideos = vi.fn().mockResolvedValue({ videos: [], hasMore: false });
+    const client = fakeClient({ generateVideo, listVideos });
+    const out = await reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-11' });
+    expect(out).toEqual({ videoId: 'v_new', outcome: 'submitted' });
+    expect(listVideos).toHaveBeenCalledOnce();
+    expect(generateVideo).toHaveBeenCalledOnce();
+  });
+
+  it('refuses to submit when history omits has_more and gives no cursor', async () => {
+    // The fail-open this closes: an omitted flag read as "false" would have concluded the
+    // search was exhausted and authorized a paid render.
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: undefined, nextToken: undefined });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-14', assumeKeyExpired: true })
+    ).rejects.toThrow(/cannot establish/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('follows the cursor when history omits has_more, rather than stopping short', async () => {
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValueOnce({ videos: [], hasMore: undefined, nextToken: 't2' })
+      .mockResolvedValueOnce({
+        videos: [{ videoId: 'v_found', status: 'completed', title: 'attempt-15' }],
+        hasMore: false
+      });
+    const client = fakeClient({ generateVideo, listVideos });
+    const out = await reconcileBeforeRetry(client, opts, {
+      reconcileByTitle: 'attempt-15',
+      assumeKeyExpired: true
+    });
+    expect(out).toEqual({ videoId: 'v_found', outcome: 'recovered' });
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit when history claims more pages but returns no cursor', async () => {
+    // Same rule as the page bound: only an exhausted search licenses "no prior render
+    // exists", which is the conclusion that authorizes spending money.
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: true, nextToken: undefined });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-12', assumeKeyExpired: true })
+    ).rejects.toThrow(/cannot establish/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty supplied key instead of treating it as absent', async () => {
+    // `generateVideo` throws on an empty key. If this path quietly searched and returned
+    // `recovered`, the same malformed input would be fatal on one entry point and fine on
+    // the other. Supplied-and-wrong is not the same as not-supplied.
+    const generateVideo = vi.fn();
+    const listVideos = vi.fn().mockResolvedValue({
+      videos: [{ videoId: 'v_prior', status: 'completed', title: 'attempt-13' }],
+      hasMore: false
+    });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-13', idempotencyKey: '' })
+    ).rejects.toThrow(/invalid Idempotency-Key/);
+    expect(listVideos).not.toHaveBeenCalled();
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('refuses to submit when history says "no more" but still returns a cursor', async () => {
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: false, nextToken: 'contradiction' });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-16', assumeKeyExpired: true })
+    ).rejects.toThrow(/has_more:false, next_token:"contradiction"/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
   it('rethrows a non-409 failure rather than silently adopting something', async () => {
     const generateVideo = vi.fn().mockRejectedValue(new HeyGenError('boom', 500, {}));
     const listVideos = vi.fn();
     const client = fakeClient({ generateVideo, listVideos });
     await expect(
-      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-5' })
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-5', idempotencyKey: 'k5' })
     ).rejects.toThrow(/boom/);
     expect(listVideos).not.toHaveBeenCalled();
   });
 
   it('overrides the options title with the reconciliation title, so the two cannot drift', async () => {
     const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_new' });
-    const client = fakeClient({ generateVideo, listVideos: vi.fn() });
+    const listVideos = vi.fn().mockResolvedValue({ videos: [], hasMore: false });
+    const client = fakeClient({ generateVideo, listVideos });
     await reconcileBeforeRetry(
       client,
       { ...opts, title: 'something else' },
@@ -485,6 +638,28 @@ describe('createPhotoAvatar — v2 talking photo replaced by upload + create + t
     ).rejects.toThrow(/still processing/);
   });
 
+  it('refuses a base key too long to derive from, before uploading anything', async () => {
+    // 250 chars passes the raw 255 bound, but ':avatar' would push the second derived key to
+    // 257. Validating only at use would upload the asset and then fail, stranding it.
+    const calls = photoAvatarFetch(['completed']);
+    await expect(
+      createHeyGenClient('k').createPhotoAvatar(bytes, 'image/png', {
+        idempotencyKey: 'a'.repeat(250),
+        pollIntervalMs: 0
+      })
+    ).rejects.toThrow(/invalid Idempotency-Key/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it('accepts a base key that still fits once the suffix is added', async () => {
+    const calls = photoAvatarFetch(['completed']);
+    await createHeyGenClient('k').createPhotoAvatar(bytes, 'image/png', {
+      idempotencyKey: 'a'.repeat(248),
+      pollIntervalMs: 0
+    });
+    expect(calls[1]!.headers['Idempotency-Key']!.length).toBeLessThanOrEqual(255);
+  });
+
   it('derives distinct idempotency keys for the two mutating steps', async () => {
     const calls = photoAvatarFetch(['completed']);
     await createHeyGenClient('k').createPhotoAvatar(bytes, 'image/png', {
@@ -497,6 +672,121 @@ describe('createPhotoAvatar — v2 talking photo replaced by upload + create + t
   });
 });
 
+describe('catalog pagination — v2 returned everything in one response', () => {
+  function pagedFetch(path: string, pages: Array<{ data: unknown[]; next?: string }>) {
+    return mockFetch([
+      (c) => {
+        if (!c.url.includes(path)) return undefined;
+        const token = new URL(c.url).searchParams.get('token');
+        const index = token ? Number(token) : 0;
+        const page = pages[index]!;
+        return {
+          json: { data: page.data, has_more: Boolean(page.next), next_token: page.next ?? null }
+        };
+      }
+    ]);
+  }
+
+  it('follows next_token across avatar pages instead of truncating at one', async () => {
+    const calls = pagedFetch('/v3/avatars/looks', [
+      { data: [{ id: 'lk_1', name: 'A' }], next: '1' },
+      { data: [{ id: 'lk_2', name: 'B' }], next: '2' },
+      { data: [{ id: 'lk_3', name: 'C' }] }
+    ]);
+    const avatars = await createHeyGenClient('k').listAvatars();
+    // A single page would have returned one avatar, and lk_3 would be unselectable forever.
+    expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1', 'lk_2', 'lk_3']);
+    expect(calls).toHaveLength(3);
+    expect(calls[0]!.url).toContain('limit=50');
+    expect(calls[1]!.url).toContain('token=1');
+  });
+
+  it('follows next_token across voice pages too', async () => {
+    pagedFetch('/v3/voices', [
+      { data: [{ voice_id: 'vo_1' }], next: '1' },
+      { data: [{ voice_id: 'vo_2' }] }
+    ]);
+    const voices = await createHeyGenClient('k').listVoices();
+    expect(voices.map((v) => v.voice_id)).toEqual(['vo_1', 'vo_2']);
+  });
+
+  it('refuses a page that says "no more" while still handing back a cursor', async () => {
+    // The two signals are independent and here they disagree. Treating the flag as
+    // authoritative and the cursor as trailing noise is a guess, and on the reconciliation
+    // path what it guesses about is whether to spend money. Exhaustion needs both.
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/avatars/looks')
+          ? { json: { data: [{ id: 'lk_1' }], has_more: false, next_token: 'still-here' } }
+          : undefined
+    ]);
+    // The message must name the pair actually seen. The accepted risk of this rule is that
+    // HeyGen echoes a cursor on a final page — if that happens in production, an error that
+    // asserted "no next_token" would hide the very response that caused it.
+    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(
+      /has_more:false, next_token:"still-here"/
+    );
+  });
+
+  it('completes on an explicit no-more with no cursor — the one proven end', async () => {
+    const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
+    const avatars = await createHeyGenClient('k').listAvatars();
+    expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1']);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('throws rather than returning a partial catalog when the page bound is hit', async () => {
+    // Returning what accumulated would be the truncation bug this function fixes, back again
+    // at a higher page count — and indistinguishable from a complete catalog to the caller.
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/avatars/looks')
+          ? { json: { data: [{ id: 'lk_x' }], has_more: true, next_token: 'endless' } }
+          : undefined
+    ]);
+    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(/partial catalog/);
+  });
+
+  it('follows a cursor when has_more is omitted — absence is not an assertion of the end', async () => {
+    // Only an explicit has_more:false asserts exhaustion. An omitted flag asserts nothing,
+    // so with a cursor in hand the safe reading is to keep going.
+    let page = 0;
+    const calls = mockFetch([
+      (c) => {
+        if (!c.url.includes('/v3/avatars/looks')) return undefined;
+        page += 1;
+        return page === 1
+          ? { json: { data: [{ id: 'lk_1' }], next_token: 'n2' } } // no has_more at all
+          : { json: { data: [{ id: 'lk_2' }], has_more: false } };
+      }
+    ]);
+    const avatars = await createHeyGenClient('k').listAvatars();
+    expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1', 'lk_2']);
+    expect(calls).toHaveLength(2);
+  });
+
+  it('throws when has_more is omitted and there is no cursor either', async () => {
+    // Nothing to follow and nothing asserting the end: exhaustion is unproven, so the
+    // catalog must not be handed back as if it were complete.
+    mockFetch([
+      (c) => (c.url.includes('/v3/voices') ? { json: { data: [{ voice_id: 'vo_1' }] } } : undefined)
+    ]);
+    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(
+      /has_more omitted, no next_token/
+    );
+  });
+
+  it('throws when the server claims more pages but returns no cursor', async () => {
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/voices')
+          ? { json: { data: [{ voice_id: 'vo_1' }], has_more: true, next_token: null } }
+          : undefined
+    ]);
+    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(/cannot establish/);
+  });
+});
+
 describe('avatars and voices keep their v2-shaped output for the dashboard', () => {
   it('maps a v3 look to avatar_id/avatar_name', async () => {
     const calls = mockFetch([
@@ -504,7 +794,8 @@ describe('avatars and voices keep their v2-shaped output for the dashboard', () 
         c.url.includes('/v3/avatars/looks')
           ? {
               json: {
-                data: [{ id: 'lk_1', name: 'Rahm', gender: 'male', preview_image_url: 'https://p' }]
+                data: [{ id: 'lk_1', name: 'Rahm', gender: 'male', preview_image_url: 'https://p' }],
+                has_more: false
               }
             }
           : undefined
@@ -520,7 +811,12 @@ describe('avatars and voices keep their v2-shaped output for the dashboard', () 
     const calls = mockFetch([
       (c) =>
         c.url.includes('/v3/voices')
-          ? { json: { data: [{ voice_id: 'vo_1', name: 'Narrator', language: 'English' }] } }
+          ? {
+              json: {
+                data: [{ voice_id: 'vo_1', name: 'Narrator', language: 'English' }],
+                has_more: false
+              }
+            }
           : undefined
     ]);
     const voices = await createHeyGenClient('k').listVoices();
@@ -535,8 +831,9 @@ describe('no v1 or v2 endpoint is reachable from this client', () => {
       generateOk(),
       (c) => (c.url.includes('/v3/videos/') ? { json: { data: { id: 'v_1', status: 'completed' } } } : undefined),
       (c) => (c.url.endsWith('/v3/videos') && c.method === 'GET' ? { json: { data: [] } } : undefined),
-      (c) => (c.url.includes('/v3/avatars/looks') ? { json: { data: [] } } : undefined),
-      (c) => (c.url.includes('/v3/voices') ? { json: { data: [] } } : undefined)
+      (c) =>
+        c.url.includes('/v3/avatars/looks') ? { json: { data: [], has_more: false } } : undefined,
+      (c) => (c.url.includes('/v3/voices') ? { json: { data: [], has_more: false } } : undefined)
     ]);
     const client = createHeyGenClient('k');
     await client.listAvatars();
