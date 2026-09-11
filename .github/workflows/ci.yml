@@ -9,6 +9,36 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+
+    # Real PostgreSQL, because the database tests are the point.
+    #
+    # Before this, packages/db's integration suites skipped themselves whenever
+    # TEST_DATABASE_URL was unset — which was every pull request, so 22 Phase A concurrency
+    # tests had never once executed in CI. A test that never runs is documentation.
+    #
+    # Pinned to 16 to match production (infra/control-server/docker-compose.yml): the
+    # governance migrations depend on behaviour that differs across major versions, such as
+    # when a value added by ALTER TYPE ... ADD VALUE may be referenced.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rmgtest
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      # Suites provision their own database from this connection (test/support/database.ts),
+      # so parallel database suites never share a schema.
+      TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/rmgtest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

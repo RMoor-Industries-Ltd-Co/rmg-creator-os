@@ -162,6 +162,20 @@
       "when": 1788924497459,
       "tag": "0022_job_execution_safety",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789000000000,
+      "tag": "0023_governance_enums",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789000100000,
+      "tag": "0024_governance_primitives",
+      "breakpoints": true
     }
   ]
 }
