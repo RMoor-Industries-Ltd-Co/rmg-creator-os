@@ -206,6 +206,27 @@ attempt record is that step's work, not this one's.
 
 ---
 
+## The rule this track produced
+
+Two review rounds on the reconciliation code found, between them, five ways for a history
+search to end short of exhaustion and still be treated as "nothing found" — each of which
+authorizes a duplicate paid render. That is not a run of unrelated bugs; it is one idea being
+got wrong repeatedly, because the obvious way to write a bounded search loop is to return its
+accumulator.
+
+The founder has recorded the generalization as **D-J3a** in the A-Roll design
+([`aroll-candidate-canonical-design.md` §10.3.1](./aroll-candidate-canonical-design.md)):
+
+> Only a provably exhausted history search may authorize a new paid submission when prior
+> completion is uncertain. Incomplete, truncated, inconsistent, or bounded-out history must
+> fail closed.
+
+It is recorded there, not only here, because it outlives this client: it constrains
+`render_attempts` and any future provider on the same path. This client is where it was
+learned, not where it belongs.
+
+---
+
 ## Caller changes
 
 | File | Change |

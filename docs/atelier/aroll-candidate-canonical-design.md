@@ -163,7 +163,12 @@ Three facts from §1 decide the whole design:
 
 ```sql
 CREATE TYPE render_attempt_state AS ENUM
-  ('submitting','submitted','rendering','persisted','failed','abandoned');
+  ('submitting','submitted','rendering','persisted','failed',
+   -- D-J3a (§10.3.1). NOT a kind of 'failed': a failed attempt is safe to retry, and this
+   -- one is precisely the attempt we must not retry, because we could not establish whether
+   -- it already produced a paid render. It is terminal until a human resolves it.
+   'reconcile_inconclusive',
+   'abandoned');
 
 CREATE TABLE render_attempts (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -189,6 +194,15 @@ CREATE TABLE render_attempts (
   input_snapshot  jsonb NOT NULL,
 
   failure_reason  text,
+
+  -- D-J3a audit. A resubmission is authorized by the conclusion that no prior render
+  -- exists, so the search that reached that conclusion has to be recorded — otherwise a
+  -- paid call rests on reasoning nothing kept. `reconcile_outcome` is 'exhausted' (the
+  -- search completed and found nothing), 'recovered' (it found one) or 'inconclusive'.
+  reconcile_outcome     text,
+  reconcile_checked_at  timestamptz,
+  reconcile_detail      text,              -- why a search was inconclusive, in words
+
   created_at      timestamptz NOT NULL DEFAULT now(),
   completed_at    timestamptz,
   UNIQUE (production_id, segment_key, attempt_no),
@@ -204,9 +218,60 @@ CREATE TABLE render_attempts (
   CONSTRAINT submitted_attempt_has_provider_ref
     CHECK (state NOT IN ('submitted','rendering') OR provider_ref IS NOT NULL),
   CONSTRAINT failed_attempt_has_reason
-    CHECK (state <> 'failed' OR failure_reason IS NOT NULL)
+    CHECK (state <> 'failed' OR failure_reason IS NOT NULL),
+
+  CONSTRAINT reconcile_outcome_vocabulary
+    CHECK (reconcile_outcome IS NULL
+           OR reconcile_outcome IN ('exhausted','recovered','inconclusive')),
+
+  -- An inconclusive attempt must say when the search ran and why it could not resolve.
+  -- Without both, the state is indistinguishable from an attempt nobody has looked at.
+  --
+  -- NOTE the IS NOT DISTINCT FROM. Written as `reconcile_outcome = 'inconclusive'` this
+  -- CHECK passes when the column is NULL: the equality yields NULL, `NULL AND true` yields
+  -- NULL, and PostgreSQL ACCEPTS a CHECK that evaluates to NULL. The mandatory field would
+  -- then be optional in exactly the case it exists for. This is the same trap the Phase B
+  -- design records against production_jobs_gate_status, walked into a second time.
+  CONSTRAINT inconclusive_attempt_is_documented
+    CHECK (state <> 'reconcile_inconclusive'
+           OR (reconcile_outcome IS NOT DISTINCT FROM 'inconclusive'
+               AND reconcile_checked_at IS NOT NULL
+               AND reconcile_detail IS NOT NULL)),
+
+  -- E: the mirror obligation. A submission made while an earlier attempt's completion was
+  -- uncertain is authorized by the search that resolved it, so it must carry that search's
+  -- evidence. See the note below on why this is a TRIGGER and not a CHECK here.
+  CONSTRAINT reconcile_audit_is_paired
+    CHECK ((reconcile_outcome IS NULL) = (reconcile_checked_at IS NULL))
 );
 ```
+
+**Why the resubmission audit is a trigger, not a row CHECK.** An earlier draft wrote it as
+`CHECK (attempt_no = 1 OR … reconcile_outcome = 'exhausted' …)`, and that was wrong in both
+directions at once — which is worth recording, because the shape is seductive and this
+codebase has now got it wrong twice.
+
+It **rejected legitimate work**: §4.7 makes every regeneration a fresh `attempt_no + 1` row,
+so an ordinary founder-requested regeneration inserts at `submitting` with no search behind it
+— nothing was uncertain, nobody searched — and the constraint refused it. And it **exempted
+the dangerous case**: re-submitting the original `attempt_no = 1` row always satisfied
+`attempt_no = 1`, so the one submission whose authorization actually needs recording bypassed
+it entirely.
+
+The error underneath is that "is this a resubmission?" is a fact about a *transition and its
+predecessor*, not about a row. A row constraint cannot see either. So:
+
+- A **`BEFORE INSERT` trigger** on `render_attempts`: when a prior attempt exists for this
+  `(production_id, segment_key)` whose state is `reconcile_inconclusive`, refuse the insert
+  outright — that predecessor is unresolved and nothing may be submitted for the segment until
+  an operator resolves it. When the prior attempt is in any *other* non-terminal state
+  (`submitting`, `submitted`, `rendering`), require the new row to carry
+  `reconcile_outcome = 'exhausted'` with a `reconcile_checked_at`: its completion was
+  uncertain, and only a search can license starting another.
+- A prior attempt that is `persisted`, `failed` or `abandoned` is **resolved**, so a new
+  attempt after it is an ordinary regeneration and needs no audit.
+- The row-level CHECK that remains does only what a row can know: the two audit columns are
+  written together or not at all.
 
 `segment_key` is what §1.7 lacks. Without it "which take is canonical" is a question about
 timestamps; with it, it is a question about a row. Its semantics are ratified as **D-J1**
@@ -364,21 +429,31 @@ Only the provider can close it. Two cases, and the design does not pretend they 
 
 | Provider capability | Consequence for step D |
 |---|---|
-| **Client-supplied idempotency key.** The attempt id is the key; a retry returns the original render | Step D proceeds. Exactly-once against the provider |
-| **A listable/searchable render history** keyed by something we set before calling (title, metadata, external ref) | Step D proceeds. Recovery searches before submitting; at-most-one extra render in a narrow window |
+| **A non-expiring client-supplied idempotency key.** The attempt id is the key; a retry returns the original render, however late | Step D proceeds on the key alone. Exactly-once against the provider |
+| **An expiring key** (HeyGen: 24 hours) | Step D proceeds **only with searchable history as well** — past the window the key proves nothing, so it is the row below that carries recovery |
+| **A listable/searchable render history** keyed by something we set before calling (title, metadata, external ref), **with a visibility guarantee covering the retry window** (§10.3.1) | Step D proceeds. Recovery searches before submitting |
 | **Neither** | **Step D does not ship.** The paid call stays at the route, where the request's own lifetime bounds duplication |
 
-That third row is a real possible outcome, not a formality. Moving a paid call behind a queue
-without a provider-side handle trades a bounded failure for an unbounded one, and this design
-declines that trade.
+HeyGen sits in the second row, not the first: its key is real but expires (§11.2), which is why
+this design implements both mechanisms rather than either.
 
-**Which row applies is now answered, not assumed — see §11.** HeyGen's **v3** create-video
+**The last row is a real possible outcome, not a formality.** Moving a paid call behind a queue
+without a provider-side handle trades a bounded failure for an unbounded one, and this design
+declines that trade. Note that the *expiring-key* row is not a softer version of it: an
+expiring key with no history is the no-handle case once the window closes, and it is the
+history row, not the key, that carries recovery past that point.
+
+**Which row applies is now answered, not assumed — see §11.** HeyGen sits in the
+**expiring-key** row, not the non-expiring one, so it proceeds on the **history** row's terms
+and needs that row's guarantee (§10.3.1). v2 is the **no-handle** row. HeyGen's **v3** create-video
 endpoint documents an `Idempotency-Key` header ("Optional client-supplied key for safely
 retrying mutations. Subsequent calls within 24 hours that share this key replay the original
-response"), which is row 1. The **v2** endpoint this repository currently calls documents no
-such header, and v2's only handle is the `video_id` in its own response — which is exactly the
-value a crash in this window loses, so v2 alone is row 3. **Step D is therefore gated on the v3
-migration** (D-J3, §10.3).
+response"). **Twenty-four hours is an expiry**, so that places v3 in the expiring-key row, not
+the non-expiring one — the key covers the common case and the history endpoint has to cover
+the rest. The **v2** endpoint documents no such header, and v2's only handle is the `video_id`
+in its own response — exactly the value a crash in this window loses — so v2 is the no-handle
+row. **Step D is therefore gated on the v3 migration** (D-J3, §10.3) **and on the history
+guarantee the expiring-key path requires** (§10.3.1, §7.2).
 
 ### 4.4 Persistence and digest — the candidate is born here
 
@@ -611,6 +686,34 @@ become canonical; an ungated lane does, with a transition row; `DELETE /videos/:
 attempt-backed render; two approvals for one segment supersede rather than duplicate; publish
 refuses an unset pin.
 
+**Every termination branch of the history search gets its own test (D-J3a, §10.3.1).** Test 1
+above is necessary and not sufficient: it kills the worker *after* `provider_ref` is stored,
+so it reconciles by id and never enters the search at all. The branches that repeatedly
+authorized a duplicate paid call are the ones where there is no id to reconcile by, and an
+implementation could pass every test listed above while reproducing all of them. So, each
+asserting **no second paid submission**:
+
+| Branch | Assert |
+|---|---|
+| Exhausted, no exact-title match | Submits — exactly once |
+| Exhausted, only `failed` matches | Attempt and job `failed`; **no** submission |
+| Usable match on a later page | Adopts it; no submission |
+| Exact-title match with an unrecognized status or empty provider id | Fails closed |
+| `has_more: true`, no cursor | Fails closed |
+| `has_more` omitted, no cursor | Fails closed |
+| `has_more: false` **with** a cursor | Fails closed |
+| Page bound reached with pages remaining | Fails closed |
+| The search itself errors | Fails closed |
+
+And two on the state the rule creates, which are what make it more than a label:
+
+- An attempt in `reconcile_inconclusive` **cannot be retried** — not by the recovery sweep,
+  not by `POST /queue/:id/retry`, not by inserting a fresh attempt for the same segment
+  (§3.1's trigger) — until an operator records a conclusive resolution.
+- A submission made while a prior attempt's completion was uncertain **carries the audit**
+  (`reconcile_outcome = 'exhausted'` and a timestamp), and one made after a resolved
+  predecessor does not require it.
+
 All database assertions run against **real PostgreSQL via the real migrations**, per the
 standing mandate and the harness merged in `deae6a6`.
 
@@ -630,7 +733,7 @@ Two enum changes are required, and neither was in B1.1:
 
 | Enum | New value | First use |
 |---|---|---|
-| `render_attempt_state` (new type) | — created whole, so no boundary problem | §3.1's table |
+| `render_attempt_state` (new type) | — created whole (including `reconcile_inconclusive`, D-J3a §10.3.1), so no boundary problem | §3.1's table |
 | `production_job_status` (existing) | **`rendering`** (§4.2 — the job stays leased through provider render rather than being marked `done` at submission) | step D's dispatcher |
 
 `production_job_status` already carries `awaiting_approval` from B1.1's `0023`. `rendering` is a
@@ -656,9 +759,9 @@ constraint, but it must respect the two existing constraints it interacts with:
 | Step | Contents | Gate |
 |---|---|---|
 | **A** | Enum-only, no uses: `render_attempt_state` created; `production_job_status` gains `rendering` | — |
-| **B** | `render_attempts` (incl. `retain_media`, `media_purged_at`, `media_purge_reason` — D-J2), `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger, **and the production-plan segments array D-J1 requires** (`segment_key` is `NOT NULL` and has nothing to point at without it) | A deployed |
+| **B** | `render_attempts` (incl. `retain_media`, `media_purged_at`, `media_purge_reason` — D-J2; `reconcile_outcome`, `reconcile_checked_at`, `reconcile_detail` — D-J3a), `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger, **and the production-plan segments array D-J1 requires** (`segment_key` is `NOT NULL` and has nothing to point at without it) | A deployed |
 | **C** | Durable poller + persistence/digest step — behaviour-neutral until D | B deployed |
-| **D** | Move the provider call behind dispatch; attempts created at enqueue; job moves to `rendering`; `Idempotency-Key` sent as the attempt id | **Three preconditions:** a dispatcher is enabled and observed working (§4.1); C has run against production traffic; **the HeyGen v3 migration has landed** (D-J3 / §11 — v2 offers no idempotency handle, and is retired 2026-11-01 regardless) |
+| **D** | Move the provider call behind dispatch; attempts created at enqueue; job moves to `rendering`; `Idempotency-Key` sent as the attempt id | **Four preconditions:** a dispatcher is enabled and observed working (§4.1); C has run against production traffic; **the HeyGen v3 migration has landed** (D-J3 / §11 — v2 offers no idempotency handle, and is retired 2026-11-01 regardless); and **the history bound of §10.3.1 is settled** — either a documented HeyGen visibility/retention guarantee covering the retry window, or concrete age bounds chosen in its place. §11 confirms the endpoint exists; it records no such guarantee, and an empty result from a not-yet-consistent or aged-out history would otherwise authorize a paid render |
 | **E** | The approval route, step-up, evidence writes; old route refuses | D deployed |
 | **F** | Assembly enforcement; publish reads the pin | E deployed, and §7.4's adoption pass complete |
 | **G** | UI | F deployed |
@@ -834,8 +937,140 @@ canonical set of a pinned assembled output.
   not claim exactly-once as a property of the system; it claims it as a property of a bounded
   window the recovery path is built to stay inside.
 - **Step D does not ship on v2.** v2 offers neither the header nor a searchable history, which
-  is §4.3's third row — the row on which this design already committed to not shipping. The
+  is §4.3's **no-handle** row — the one on which this design already committed to not shipping. The
   v3 migration is therefore step D's second precondition, alongside an enabled dispatcher.
+
+#### 10.3.1 D-J3a — the exhausted-search rule
+
+Founder direction, 2026-09-11, after the v3 migration and two rounds of review on it
+(`27178e2`, and the follow-up fixes) surfaced five and then three real defects, most of them
+in exactly this area:
+
+> **Only a provably exhausted history search may authorize a new paid submission when prior
+> completion is uncertain. Incomplete, truncated, inconsistent, or bounded-out history must
+> fail closed.**
+
+This is a **generalization of D-J3, not a restatement of it**, and it is recorded here rather
+than only in the client because the client is the wrong place for it to live. Reconciliation
+is not "query history before retry" — that phrasing is what produced the defects. The rule is
+about which conclusions a search is entitled to reach.
+
+The distinction that matters: a search that finds nothing on the page it looked at has **not**
+established that nothing exists. Only exhaustion establishes that. And "nothing exists" is
+precisely the conclusion that authorizes spending money, so every way a search can end short
+of exhaustion has to be a failure rather than a miss:
+
+| How the search ended | Entitled to conclude | Behaviour |
+|---|---|---|
+| A **usable** match was found | That render exists | Adopt it |
+| Exhausted, and **every** exact-title match was `failed` | The prior submission ran and failed | **Mark this attempt and its job `failed`** (§4.3). Do **not** resubmit |
+| Exhausted with **no** exact-title match at all | Nothing exists | Submit |
+| An exact-title match exists but **cannot be classified** | **Nothing** | Fail closed |
+| Page bound reached with pages remaining | **Nothing** | Fail closed |
+| More pages claimed, but no cursor to follow | **Nothing** | Fail closed |
+| No explicit "no more pages" **and** no cursor | **Nothing** | Fail closed |
+| "No more pages" **contradicted by** a continuation cursor | **Nothing** | Fail closed |
+| The search itself errored | **Nothing** | Fail closed |
+
+"Exhausted" means an explicit "no more pages" **and** no continuation cursor. The two are
+independent fields that can disagree, and a response asserting the end while still offering a
+way to continue is internally inconsistent. Treating the flag as authoritative and the cursor
+as trailing noise is a guess, and what it guesses about is whether to spend money.
+
+**A usable match** is one that is *all* of: exact title (the filter is a substring match, so
+the comparison decides), a **non-empty provider id**, and a status in a **recognized
+adoptable** set — pending, processing or completed. All three, because the client's own
+`toStatusResult` maps a missing status to `'unknown'` and a missing id to `''`, and
+`HeyGenVideoStatus` admits arbitrary strings. A row with `'unknown'` is not `failed`, so a
+"not failed" test would adopt something §4.3 cannot classify; a row with an empty id would be
+adopted as a provider reference pointing at nothing.
+
+So an exact-title row that is neither adoptable nor recognizably `failed` is the
+**cannot-classify** row above: it is evidence that something happened, which forbids
+concluding nothing exists, while being too malformed to adopt. Fail closed.
+
+**Exhausted-but-all-failed is not the same as exhausted-and-empty**, and the distinction is
+the one this table previously lost. Skipping failed matches and continuing is right — a
+usable duplicate may sit on a later page — but if exhaustion arrives having seen only failed
+matches, we have *positive knowledge* that the submission ran and failed. Falling through to
+"nothing exists → submit" would re-submit the same attempt on top of a known provider
+failure. §4.3 says a confirmed failure marks the attempt and job `failed`; §4.7 says a
+regeneration is an explicit **new** attempt at `attempt_no + 1`. Both are violated by a silent
+resubmission of the existing one.
+
+Each of the last three was, at some point in the migration, implemented as "return not-found
+and carry on" — and each would have authorized a duplicate paid render. They are not exotic:
+a bounded loop that returns its accumulator is the obvious way to write the code, and it is
+wrong for this reason alone.
+
+**What this obliges of `render_attempts` (§3.1, §4.3).** When step D wires reconciliation to
+a durable attempt record, the rule travels with it:
+
+- An attempt whose reconciliation search failed closed is **not** eligible for resubmission.
+  It takes the distinct terminal state `reconcile_inconclusive` (§3.1) — "completion unknown,
+  search inconclusive" — and needs an operator decision, not a retry. It must not fall back
+  into the ordinary attempt/backoff path, which exists for failures that are safe to repeat.
+  This is why it is an enum value rather than a flavour of `failed`: `failed` is safe to
+  retry and this is precisely the attempt that is not, so collapsing them would feed it to
+  the machinery the rule exists to keep it away from.
+- The retry/sweep machinery must therefore be able to tell "this attempt failed" from "we
+  could not establish whether this attempt produced a render". Collapsing the two is the same
+  mistake one level up from the client.
+- A resubmission must record *why* it was permitted: `reconcile_outcome`,
+  `reconcile_checked_at` and, when inconclusive, `reconcile_detail` (§3.1). A paid call
+  authorized by a conclusion nothing recorded is not auditable after the fact.
+
+- **The paired `production_jobs` row needs a disposition too, and neither existing state
+  works.** An attempt-level state alone does not prevent a second paid submission, because
+  nothing that could cause one reads the attempt. Leaving the job in `rendering` (§4.2) keeps
+  the lease-and-recover machinery live, and recovery will eventually re-dispatch it. Marking
+  it `failed` is worse: §4.3 reserves `failed` for a *confirmed* provider failure, and it
+  exposes the job to `POST /queue/:id/retry`, which requeues a failed job without consulting
+  the render attempt at all — turning the state that exists to prevent a duplicate render into
+  the thing that schedules one.
+
+  So the job takes its own terminal disposition alongside the attempt's, and every control
+  path that can re-dispatch — recovery sweep, `/queue/:id/retry`, and any future operator
+  action — **must refuse a job in it** unless an operator has first recorded a conclusive
+  resolution on the attempt (moving it out of `reconcile_inconclusive` with an outcome of
+  `exhausted` or `recovered`). Refusing is the point: the operator decision is the only thing
+  that can resolve an uncertainty the system could not.
+
+  This also means issue #55's read-then-write race on `/queue/:id/retry` stops being merely
+  untidy on this path — a lost update there could requeue a job the operator just resolved.
+  It is still out of scope here, and it is named so step D does not discover it late.
+
+The same rule applies to any future provider on the same path, not only HeyGen.
+
+What a provider must offer to satisfy it is **a way to prove, at the moment of retry, whether
+the earlier submission produced a render.**
+
+A **non-expiring** idempotency key is the strongest form: if replaying it always returns the
+original response rather than rendering again, the replay *is* the proof, and no search is
+needed. That alone satisfies the rule. An **expiring** key does not, past its window — it
+proves nothing there, so it must be paired with something that does. HeyGen's key expires
+after 24 hours (§11.2), which is why this client implements both mechanisms rather than
+either.
+
+**Searchable history is the other form, but it is weaker than it looks, and §4.3's own
+wording admits it.** Exhausting pagination proves that every page the provider *currently
+exposes* was read. It does not prove that an accepted render is exposed at all: under
+eventual consistency a just-accepted submission may not be indexed yet, and under a retention
+limit an older one may have aged out. Either way the search completes, finds nothing, and
+reports an exhaustion it is not entitled to.
+
+So "exhausted" is proof **only within a window the provider guarantees**. A history endpoint
+qualifies under this rule when it documents a visibility guarantee — how soon after
+acceptance a render is findable — and a retention guarantee covering at least the longest
+interval between a submission and its reconciliation. Absent those, the implementation must
+supply the bound itself: a minimum age before an exhausted-and-empty result may authorize a
+submission, and a maximum age past which the search is treated as inconclusive rather than
+exhausted. Neither is invented here; both are step D's to derive from the provider's actual
+documented behaviour, and step D does not ship without one or the other.
+
+The provider that cannot satisfy the rule at all is the one with **neither** a non-expiring
+key **nor** a history endpoint with a usable guarantee — §4.3's last row, where "step D does
+not ship" is the correct outcome rather than a cautious default.
 
 ---
 
@@ -845,7 +1080,9 @@ canonical set of a pinned assembled output.
 > of this verification*. The v2 → v3 migration has since landed — see
 > [`heygen-v3-migration.md`](./heygen-v3-migration.md) — so the client now calls v3 throughout
 > and §11.3's deadline item is discharged. The capability findings in §11.2 are unchanged and
-> are what D-J3 rests on; step D's remaining preconditions are an enabled dispatcher and step C.
+> are what D-J3 rests on. Step D's remaining preconditions are an enabled dispatcher, step C,
+> and the §10.3.1 history bound — **this section verifies that the endpoint exists, not that
+> what it returns is complete**, and those are different claims (§7.2).
 
 Checked 2026-09-11 against `developers.heygen.com` (the current documentation host;
 `docs.heygen.com` 301-redirects there) and against this repository's own client,
@@ -860,7 +1097,7 @@ Checked 2026-09-11 against `developers.heygen.com` (the current documentation ho
 
 The only handle v2 gives back is the `video_id` in the response to the paid call — precisely
 the value lost in §4.3's dangerous window. There is no documented v2 list-by-title endpoint to
-search with instead. **On v2, the design's third row applies and step D cannot ship.**
+search with instead. **On v2, the design's no-handle row applies and step D cannot ship.**
 
 ### 11.2 What v3 provides
 
