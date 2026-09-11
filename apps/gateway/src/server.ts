@@ -29,7 +29,7 @@ import {
   type PostizPostInput
 } from './postiz.js';
 import { checkDeliveryApproval } from './approval.js';
-import { and, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
+import { and, backfillLegacyApprovals, createDb, desc, eq, enqueueJob, runMigrations, sql, tables } from '@rmg-creator-os/db';
 import {
   assertCookieSecret,
   isEmailAllowed,
@@ -262,6 +262,22 @@ if (process.env.RUN_MIGRATIONS !== 'false') {
     app.log.info('migrations applied');
   } catch (err) {
     app.log.error({ err }, 'migration failed');
+    process.exit(1);
+  }
+}
+
+// Backfill legacy productions.deliveryApprovals entries into approval_evidence as unattributed,
+// unbound history (§13 step 5, docs/atelier/phase-b-governance-primitives-design.md §10).
+// Idempotent (skips any (subject, scope) that already has a row) and safe on every boot — this
+// is deliberately run at startup, before any request is served, rather than as a one-off manual
+// script, so "before any live write path exists" is an operational guarantee rather than a step
+// someone could forget to run. Disable with BACKFILL_LEGACY_APPROVALS=false.
+if (process.env.BACKFILL_LEGACY_APPROVALS !== 'false') {
+  try {
+    const result = await backfillLegacyApprovals(db);
+    if (result.inserted > 0) app.log.info(result, 'legacy delivery approvals backfilled');
+  } catch (err) {
+    app.log.error({ err }, 'legacy approval backfill failed');
     process.exit(1);
   }
 }
