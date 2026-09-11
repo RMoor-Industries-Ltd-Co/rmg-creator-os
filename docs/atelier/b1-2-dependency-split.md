@@ -14,19 +14,20 @@ candidate exists, or which asset publish sends. Everything else proceeds.
 
 | § | Item | Why independent |
 |---|---|---|
-| 13.2 | Digest projection functions + tests | The `production` and `accord_package` projections are defined. The `render` projection belongs to the A-Roll track and is simply not written yet |
+| 13.2 | Digest projection functions + tests | The `production` and `accord_package` projections are defined, and a projection is a pure function over an input — writing and testing it does not require any production to have a populated pin (that is 13.6's problem, below). The `render` projection belongs to the A-Roll track and is simply not written yet |
 | 13.3 | Step-up credential and its dashboard prompt | Authentication, not approval semantics. A-Roll's approve route will *consume* it (A-Roll §4.5), which is an argument for landing it first |
 | 13.4 | `FOUNDER_PRINCIPALS` and the founder-set check at the write boundary | Same — identity and authority, independent of subject type |
 | 13.5 | Backfill of legacy approvals as unbound history | Operates on `productions.deliveryApprovals`, which A-Roll does not touch. Must still run **before** any live write path exists |
-| 13.6 | `approval_evidence` write path behind `PATCH /productions/:id/approvals` | The **production** subject only. Transactional with the legacy map, serialized per production row |
 | 13.9 | `workflow_transitions` written with the state change it records | Generic |
 | 13.10 | `work_items`, and the `enqueueJob` / `/queue` contract changes | Includes #56 item 11 (the parent-discriminated `EnqueueJobInput`). Accord-shaped, not A-Roll-shaped |
 | 13.11 | The waiting-for-approval surface | Lists `awaiting_approval` jobs generically. It will *show* A-Roll candidates once they exist, but needs no knowledge of them |
 | — | #56 items 2, 3, 5, 6 | Backfill inputs, rollback completeness, legacy rejections, the deploy-window quiesce runbook |
 
-**Ordering note.** 13.5 before 13.6 is not a preference: backfilling after the write path exists
-means a production re-approved in between already holds a live row, and the backfill then
-collides with `approval_evidence_live`.
+**Ordering note.** 13.5 must still land before any live write path exists — backfilling after
+one exists means a production re-approved in between already holds a live row, and the backfill
+then collides with `approval_evidence_live`. That write path is 13.6, which is blocked (below);
+the ordering constraint survives the move and is the reason 13.5 is safe to do now and unsafe to
+defer.
 
 ---
 
@@ -34,6 +35,7 @@ collides with `approval_evidence_live`.
 
 | § | Item | What it needs decided first |
 |---|---|---|
+| 13.6 | `approval_evidence` write path behind `PATCH /productions/:id/approvals` | **Corrected — this was previously listed as independent, and it is not.** The production subject's approved package is a *projection*, and Phase B §13.2/§10 put the pinned video row inside it: approval binds the exact asset publish will send, resolved through `productions.final_video_row_id`, and **a production with a null pin cannot be approved**. B1.1 shipped that column deliberately unpopulated, and populating it is 13.7 — which is blocked on A-Roll §4.8. So shipping 13.6 now would replace the one working production-approval path with one that cannot approve *any* current production. See the note below |
 | 13.7 | Populating `productions.final_video_row_id` | A-Roll §4.8 makes assembly the writer and defines it as the *assembled output*, distinct from `canonical_renders`. The column shipped in B1.1 deliberately unpopulated |
 | 13.8 | Publish reading the pin | Depends on 13.7 |
 | — | The `render` subject type and projection | A-Roll §3.4 |
@@ -44,6 +46,22 @@ collides with `approval_evidence_live`.
 | — | Rejection retention | A-Roll §4.6 |
 | — | Assembly-time verification | A-Roll §4.8 |
 | — | #56 items 9, 10 | These *are* the A-Roll track |
+
+---
+
+### Why 13.6 cannot simply be scoped around the pin
+
+The tempting fix is to ship 13.6 with the pin omitted from the projection and added later. That
+is worse than waiting. An approval's whole value is the digest it binds; a projection that
+excludes the asset produces evidence that is *cryptographically well-formed and substantively
+unbound* — it attests to copy and destination while the video underneath it is free to change.
+Every such row then has to be superseded when the pin is added, and until it is, `/health` and
+any audit read them as genuine bound approvals. Unbound history is acceptable for approvals that
+predate the mechanism (13.5's `legacy:unbound`); manufacturing more of it after the mechanism
+exists is not.
+
+The unblocking order is therefore: A-Roll §4.8 decides the pin's writer → 13.7 populates it →
+13.6 ships. Nothing in 13.6's own design is wrong; it is waiting on an input.
 
 ---
 
