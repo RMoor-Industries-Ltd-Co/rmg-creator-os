@@ -134,25 +134,52 @@ against the literal string, both ad hoc and as
 
 **This was NOT worked around.** Per this follow-up's explicit instruction, the configured Doppler
 value was not changed, and the parser was not loosened to accept a bare email list merely to
-make it pass. The expected syntax, to fix this, is `email=principalId` pairs:
+make it pass. The expected syntax, `email=principalId` pairs, was documented; a second follow-up
+investigated the correct principal id against `rmg-piaar-system`/`rmg-piaar-mcps`'s existing
+identity conventions rather than inventing one (below).
+
+### Resolved: correct principal id, and the corrected value now in Doppler
+
+`rmg-piaar-mcps/packages/identity/src/index.ts` fixes the fabric's identity shape as
+`<systemId>@<domain>` with exactly two domains, `business` and `personal` — there is no
+per-email or per-third-domain scheme anywhere in the fabric. `docs/atelier/phase-b-governance-primitives-design.md`
+§14's **Ratified Decision #1** (founder-approved 2026-09-09) states plainly: *"Human identities
+are domain-scoped. The initial founder principal is `rahm@business`."* §7 of the same document:
+*"Rahm is one person; `rahm@business` and `rahm@personal` are two capabilities that person
+holds."* Three email addresses authenticating into the same business-domain founder-gated write
+path are three **credentials** for one **capability** — not three principals. Inventing
+`rahm@business-alt` / `rahm@rmoorind`-style per-email ids would have fragmented one ratified
+principal into three and matched no existing convention.
+
+**The founder has corrected `FOUNDER_PRINCIPALS` in Doppler to:**
 
 ```
-rahm@rmasters.group=<canonical-principal-id>,rmoorindustries@gmail.com=<canonical-principal-id>,rahmind.consulting@rmoorind.com=<canonical-principal-id>
+rahm@rmasters.group=rahm@business,rmoorindustries@gmail.com=rahm@business,rahmind.consulting@rmoorind.com=rahm@business
 ```
 
-The `<canonical-principal-id>` for each identity is a decision under Contract 36 (Approval
-Authority and Founder Identity, `rmg-piaar-system`), not something this session should invent —
-`apps/gateway/test/founder.test.ts` demonstrates the corrected shape mechanically using
-placeholder ids (`rahm@business`, etc.) only to prove the parser accepts it; those exact
-placeholder strings are not a recommendation for what the real ids should be.
+Verified directly against the exact literal string (both ad hoc and as
+`apps/gateway/test/founder.test.ts`'s existing assertion, unchanged from before): **parses
+cleanly, zero malformed entries, all three emails resolve to `rahm@business`.**
 
-**Operator action required, replacing what was previously listed:**
+```
+map.size === 3
+malformed === []
+map: rahm@rmasters.group -> rahm@business
+     rmoorindustries@gmail.com -> rahm@business
+     rahmind.consulting@rmoorind.com -> rahm@business
+```
+
+One noted, non-blocking consequence of the domain-scoped model (not an ambiguity requiring a
+decision here — Contract 36 already frames it this way): approval evidence will record
+`rahm@business` as the approving principal, never which of the three emails was used for that
+particular authentication. That is the intended shape — Contract 36 asks "was this caller a
+human founder," not "which of his emails."
+
+**Operator action list, updated:**
 
 1. ~~Add `STEP_UP_COOKIE_SECRET` to Doppler~~ — done.
-2. **Re-enter `FOUNDER_PRINCIPALS` in Doppler using `email=principalId` syntax** (see above) once
-   the three canonical principal ids are decided. The current value is not silently wrong in a
-   dangerous direction — it fails closed to "no founder" — but it does not authorize the
-   identities it was clearly meant to.
+2. ~~Re-enter `FOUNDER_PRINCIPALS` in Doppler using `email=principalId` syntax~~ — done, verified
+   above.
 3. **GCP redirect URI** — no evidence in this repository that this has been done; still an
    outstanding one-time console step (add
    `https://<dashboard host>/stepup-callback.html` as an authorized redirect URI on the
@@ -160,14 +187,19 @@ placeholder strings are not a recommendation for what the real ids should be.
    even once `STEP_UP_COOKIE_SECRET` is live; it does not block this PR's operational-hardening
    merge, and does not block `FOUNDER_PRINCIPALS` resolution (an unrelated, non-interactive
    check).
+4. **Deploy #72 to production** — this is the one remaining precondition for §6/§6a below: the
+   currently-running production image predates this PR (confirmed by a fresh `GET /api/health`
+   immediately before this update — still no `readiness` field), so `/health.readiness`,
+   `deploy.sh`'s new health gate, and the live step-up plan are all necessarily **post-merge**
+   activities. They cannot be verified against a build that isn't running.
 
 ## 6. Live step-up validation plan (not executed)
 
-Not run — `STEP_UP_COOKIE_SECRET` is reportedly configured, but `FOUNDER_PRINCIPALS` currently
-parses to an empty founder set (see §5's critical finding), so step 2 below cannot pass yet
-regardless of step-up's own state, and this directive does not authorize creating a fake Founder
-approval or publishing anything. The smallest non-destructive proof, once `FOUNDER_PRINCIPALS`
-is re-entered in the correct `email=principalId` syntax and a normal deploy has run:
+Not run — `FOUNDER_PRINCIPALS` now parses correctly (above) and `STEP_UP_COOKIE_SECRET` is
+reportedly configured, but this directive does not authorize creating a fake Founder approval or
+publishing anything, and — see §6a — the code that would make any of this observable
+(`/health.readiness`) is not yet deployed. The smallest non-destructive proof, once #72 is merged
+and a normal deploy has run:
 
 1. Sign in normally (`POST /auth/google`) with the account that will be `rahm@business` in
    `FOUNDER_PRINCIPALS`. Confirm an ordinary session cookie is set and no approval-adjacent
@@ -185,6 +217,46 @@ is re-entered in the correct `email=principalId` syntax and a normal deploy has 
 
 Nothing here publishes, renders, or writes an approval. Steps 1–4 exercise routes that already
 exist; step 5 is a read-only DB check.
+
+## 6a. Pre-merge verification performed (this follow-up)
+
+What could be checked **before** merging/deploying #72, and was:
+
+- **Parser correctness against the exact corrected Doppler value** — done, see above (3/3
+  identities resolve to `rahm@business`, zero malformed).
+- **PR #72 mergeability and CI** — `mergeable_state: clean` against current `main`
+  (`8dc430c`), no merge conflict; the branch is a fast-forward-safe merge. CI (`validate`) and
+  both CodeQL jobs green on the current head (`d45f1c0`).
+- **Full regression** — `pnpm -r typecheck` (6/6 packages) and the real-Postgres suite (378/378
+  tests) pass unchanged on this branch, confirming no drift since the last run.
+- **Ordinary auth / worker fail-closed behavior** — unchanged by this follow-up (no source edits
+  to `auth.ts`, `workerAuth.ts`, `worker.ts`, or `stepup.ts` in any B1.3 commit); covered by
+  their existing, still-passing test suites (`auth.test.ts`, `workerAuth.test.ts`,
+  `worker.test.ts`, `stepup.test.ts`).
+- **Current production baseline** — a fresh, read-only `GET /api/health` immediately before this
+  update still returns `{"status":"ok",...}` with no `readiness` field, confirming the
+  currently-running image is pre-#72 (as expected — #72 is not deployed).
+
+What **cannot** be checked before merge, and why — this is sequencing, not a gap in the work:
+
+- **`/health.readiness` reporting step-up/founder as configured** — the `readiness` field is
+  code that ships *in* #72. It cannot appear in a response from a container running the
+  pre-#72 image. This becomes checkable the moment a deploy carrying #72's commit completes.
+- **Gateway stability post-deploy** — by definition, a statement about a deploy that hasn't
+  happened. `deploy.sh`'s own new health gate (§4) is exactly the mechanism that will make this
+  self-verifying on the next deploy: if the gateway is not stable, the deploy workflow fails
+  before "success" is ever reported.
+- **The live step-up validation plan (§6 above)** — needs the deployed code (for
+  `STEP_UP_CONFIGURED`/founder-resolution to be reachable) and the still-outstanding GCP
+  redirect URI (operator action #3 above) for the interactive Google flow to complete at all.
+
+**Recommendation:** merging #72 is the next required step to make the remaining checks
+possible, not a skipped step in verifying them. `deploy.yml`'s pipeline (CI → Publish Images →
+Deploy, the last stage now gated by §4's stabilization check) runs automatically on merge to
+`main`. Immediately after that deploy completes, this session will re-check `/api/health` for
+the `readiness` field and its reported values (never a value round-trip, only status words),
+confirm the deploy workflow itself reported success under the new gate, and report back before
+considering B1.3's production-activation verification fully closed.
 
 ## 7. HeyGen live read — reaffirmed, still outstanding, still separate
 
