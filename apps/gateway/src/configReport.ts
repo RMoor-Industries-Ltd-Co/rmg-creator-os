@@ -4,7 +4,7 @@
 // value: nothing in this module ever sees the raw env var, only whether it was usable.
 //
 // The report is deliberately built from the SAME facts server.ts already computes for its own
-// client construction (heygen !== null, drive !== null, Object.keys(founderPrincipals).length,
+// client construction (heygen !== null, drive !== null, founderPrincipalCount(founderPrincipals),
 // STEP_UP_CONFIGURED, WORKER_TICK_ENABLED === 'true', postizConfigured()) — it is a second view
 // of those facts, not a second source of truth for them.
 
@@ -21,7 +21,8 @@ export interface ConfigReportInput {
   authEnabled: boolean;
   /** STEP_UP_CONFIGURED from server.ts — false whenever assertStepUpCookieSecret() failed. */
   stepUpConfigured: boolean;
-  /** Object.keys(parseFounderPrincipals(...)).length */
+  /** founderPrincipalCount(parseFounderPrincipals(...).map) — NEVER Object.keys(map).length,
+   *  which is always 0 for a Map regardless of its actual size (see founder.ts). */
   founderPrincipalCount: number;
   /** WORKER_SECRET !== '' */
   workerSecretConfigured: boolean;

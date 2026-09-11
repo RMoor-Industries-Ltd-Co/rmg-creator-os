@@ -48,7 +48,7 @@ import {
   signStepUpCookie,
   STEP_UP_COOKIE
 } from './stepup.js';
-import { parseFounderPrincipals } from './founder.js';
+import { founderPrincipalCount, parseFounderPrincipals } from './founder.js';
 import { buildConfigReport } from './configReport.js';
 import {
   createDriveClient,
@@ -168,7 +168,7 @@ if (FOUNDER_PRINCIPALS_MALFORMED.length > 0) {
 const CONFIG_REPORT = buildConfigReport({
   authEnabled: AUTH_ENABLED,
   stepUpConfigured: STEP_UP_CONFIGURED,
-  founderPrincipalCount: Object.keys(FOUNDER_PRINCIPALS).length,
+  founderPrincipalCount: founderPrincipalCount(FOUNDER_PRINCIPALS),
   workerSecretConfigured: (process.env.WORKER_SECRET ?? '').trim().length > 0,
   workerTickEnabled: process.env.WORKER_TICK_ENABLED === 'true',
   postizConfigured: postizConfigured(),
