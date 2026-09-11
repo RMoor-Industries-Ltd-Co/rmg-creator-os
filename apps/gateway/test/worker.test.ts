@@ -59,3 +59,34 @@ describe('worker dispatch — behavior preservation (Sprint 1 PR 4)', () => {
     expect(out).toEqual({ resultId: 'stub-job-abc' });
   });
 });
+
+describe('worker dispatch — unimplemented capabilities fail loudly (Phase B1)', () => {
+  // Migration 0023 makes `accord_article` a legal enum value so an Accord job can be
+  // ENQUEUED without fabricating a video production. Legal to enqueue is not the same as
+  // executable: without an explicit guard, `claimNextJob` claims the row, the registry's
+  // NullRenderer fallback returns a stub id, and `runWorkerTick` marks the job `done` —
+  // reporting governed work as complete having produced nothing. A visible failure is
+  // strictly better than an invisible success.
+  it('throws for accord_article rather than returning a NullRenderer stub', async () => {
+    await expect(
+      dispatch(job('accord_article', 'internal'), { heygen: null, drive: null }, createDefaultRendererRegistry())
+    ).rejects.toThrow(/no dispatcher yet/);
+  });
+
+  it('does not silently fall through to the stub id for it', async () => {
+    // The precise regression: the pre-guard behavior resolved to a renderer and produced
+    // `stub-<jobId>`, which the tick then stored as a real resultId.
+    let out: unknown;
+    try {
+      out = await dispatch(job('accord_article', 'internal'), { heygen: null, drive: null }, createDefaultRendererRegistry());
+    } catch {
+      out = 'threw';
+    }
+    expect(out).toBe('threw');
+  });
+
+  it('leaves every implemented capability unaffected', async () => {
+    const out = await dispatch(job('broll', 'higgsfield'), { heygen: null, drive: null }, createDefaultRendererRegistry());
+    expect(out.resultId).toBeTruthy();
+  });
+});

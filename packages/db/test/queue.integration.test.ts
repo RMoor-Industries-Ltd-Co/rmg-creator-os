@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Pool } from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { fileURLToPath } from 'node:url';
 import { eq, sql } from 'drizzle-orm';
 import * as tables from '../src/schema.js';
 import {
@@ -11,6 +13,7 @@ import {
   cancelJob
 } from '../src/queue.js';
 import type { Database } from '../src/client.js';
+import { provisionDatabase } from './support/database.js';
 
 // Database-backed integration tests. Concurrency semantics (FOR UPDATE SKIP LOCKED, partial
 // unique indexes, lease expiry against now()) cannot be proven against a mock — the whole
@@ -19,8 +22,8 @@ import type { Database } from '../src/client.js';
 // Skipped automatically when TEST_DATABASE_URL is unset, so the default `pnpm test` and CI
 // stay green without a database. Set it to run them:
 //   TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432/rmgtest pnpm test
-const URL = process.env.TEST_DATABASE_URL;
-const d = URL ? describe : describe.skip;
+const DB_URL = process.env.TEST_DATABASE_URL;
+const d = DB_URL ? describe : describe.skip;
 
 d('production queue — execution safety (Phase A)', () => {
   let pool: Pool;
@@ -28,35 +31,23 @@ d('production queue — execution safety (Phase A)', () => {
   const PROD_ID = 'prod-queue-test';
 
   beforeAll(async () => {
-    pool = new Pool({ connectionString: URL });
+    // Own database: suites run in parallel and this one is not read-only, so sharing one
+    // schema raced the governance suite's from-empty migration run.
+    const url = await provisionDatabase('queue');
+    pool = new Pool({ connectionString: url ?? DB_URL });
     db = drizzle(pool, { schema: tables }) as unknown as Database;
 
-    // Minimal schema: only what these tests touch, mirroring the real migrations.
-    await db.execute(sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
-    await db.execute(sql`DO $$ BEGIN
-      CREATE TYPE production_job_status AS ENUM ('queued','running','done','failed','cancelled');
-    EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
-    await db.execute(sql`DO $$ BEGIN
-      CREATE TYPE production_job_capability AS ENUM ('aroll','broll','lipsync','audio','thumbnail','poster');
-    EXCEPTION WHEN duplicate_object THEN NULL; END $$`);
-    await db.execute(sql`CREATE TABLE IF NOT EXISTS productions (
-      id text PRIMARY KEY, brand text NOT NULL, output_kind text NOT NULL DEFAULT 'post',
-      topic text NOT NULL, script_status text NOT NULL DEFAULT 'draft',
-      stage text NOT NULL DEFAULT 'script', status text NOT NULL DEFAULT 'active',
-      emotion_locked boolean NOT NULL DEFAULT false,
-      created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`);
-    await db.execute(sql`CREATE TABLE IF NOT EXISTS production_jobs (
-      id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-      production_id text NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
-      capability production_job_capability NOT NULL, provider text NOT NULL,
-      payload jsonb NOT NULL DEFAULT '{}', status production_job_status NOT NULL DEFAULT 'queued',
-      priority int NOT NULL DEFAULT 10, attempt int NOT NULL DEFAULT 0,
-      max_attempts int NOT NULL DEFAULT 2, result_id text, error text,
-      locked_until timestamptz, worker_id text, idempotency_key text,
-      enqueued_at timestamptz NOT NULL DEFAULT now(), started_at timestamptz, completed_at timestamptz)`);
-    // The migration under test: the PARTIAL unique index is what makes dedupe race-safe.
-    await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS production_jobs_idempotency_key_uniq
-      ON production_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL`);
+    // The REAL migrations, not a hand-written subset.
+    //
+    // This suite used to build a minimal schema by hand. That was wrong in a way only a
+    // schema change revealed: when Phase B1 added columns to `production_jobs`, the Drizzle
+    // model began selecting columns the hand-written table did not have and every test here
+    // failed with `column does not exist` — drift the mirror could never detect, because it
+    // only ever described what its author remembered to copy.
+    //
+    // Applying the migrations makes the schema under test the schema that ships, so this
+    // suite fails when a migration is broken rather than when someone forgets a mirror.
+    await migrate(db, { migrationsFolder: fileURLToPath(new URL('../drizzle', import.meta.url)) });
     await db.execute(sql`INSERT INTO productions (id, brand, topic) VALUES (${PROD_ID}, 'vlog', 't')
       ON CONFLICT (id) DO NOTHING`);
   });
