@@ -861,18 +861,44 @@ third shape: **run once, then gate the output.** The descriptor therefore carrie
 
 ```sql
 ALTER TABLE production_jobs ADD COLUMN gate_phase text;  -- 'pre_dispatch' | 'post_render'
+
+-- The phase is part of the descriptor, not an optional annotation. Adding the column without
+-- these three changes — which an earlier revision did — leaves the database accepting a gated
+-- descriptor with no phase, an invalid phase, or a phase rewritten after enqueue, while the
+-- prose promises rejection.
+ALTER TABLE production_jobs DROP CONSTRAINT production_jobs_gate_complete;
+ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_complete
+  CHECK (num_nonnulls(gate_origin, gate_subject_type, gate_subject_id, gate_scope, gate_phase)
+         IN (0, 5));
+
+ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_phase_vocabulary
+  CHECK (gate_phase IS NULL OR gate_phase IN ('pre_dispatch','post_render'));
 ```
+
+`gate_phase` also joins the frozen set in `production_jobs_gate_descriptor_frozen` (§4.1):
+retargeting a job from `post_render` to `pre_dispatch`, or the reverse, after enqueue is exactly
+the kind of quiet rewrite the freeze exists to prevent.
 
 - `pre_dispatch` — today's behaviour. The job is inserted `awaiting_approval` and never runs
   until approving evidence exists.
-- `post_render` — the job **runs normally**, and its *output* is held: on success the worker
-  records the render as a **candidate** and the job completes without the output becoming
-  canonical. Nothing downstream may consume it until the gate clears.
+- `post_render` — the job **runs normally**, and its *output* is held.
 
-`gate_resolution = 'gated'` continues to mean "a descriptor is present"; `gate_phase` says
-where the gate bites. A descriptor with no phase is incomplete and rejected, on the same
-all-or-nothing principle as the existing four fields — otherwise the ambiguity that made this
-finding possible reappears as a NULL.
+**And §4.1's own rules have to branch on the phase, which adding a column did not accomplish.**
+An earlier revision added `gate_phase` and left §4.1 saying that *every* gated job is inserted
+directly as `awaiting_approval`, with a claim predicate that admits a gated job only when
+approving evidence already exists. Under those unchanged rules a `post_render` job still never
+reaches HeyGen — the column would exist and change nothing. Each of the four readers branches:
+
+| Reader | `pre_dispatch` | `post_render` |
+|---|---|---|
+| `enqueueJob` | insert `awaiting_approval` | insert **`queued`** — the job is meant to run |
+| `claimNextJob` | claimable only with live approving evidence + pre-dispatch revalidation | claimable **normally**; no evidence exists yet and none is required to run |
+| `POST /queue/:id/retry` | refuses without live approving evidence | permitted — a retry re-renders a candidate, which is generation, not approval |
+| stale-gate sweep | returns a `queued` job to `awaiting_approval` when its gate stops holding | **does not apply**; a post-render gate constrains the output, not the run |
+
+The invariant that survives both phases is the one that matters: **a gated job's output is never
+consumed by anything downstream until its gate clears.** `pre_dispatch` achieves that by not
+running; `post_render` by holding the result.
 
 **2. There is no subject a post-render approval can be about.** §3.2 defines subjects as
 `production | accord_package` and §3.5 defines digest projections only for those. D-I item 4
@@ -893,7 +919,89 @@ A third subject type, with its own projection:
 The projection deliberately excludes the production's approval fields. That is what breaks the
 circularity: a render's digest is a fact about the render, computable the moment it exists.
 
-**3. Rejection must retain, and today's route destroys.** D-I item 3 preserves rejected outputs
+**3. "On success" is not "when the render exists" — the queue's `done` means *submitted*.**
+`dispatch` returns as soon as `client.generateVideo` yields a `videoId`, and the worker
+immediately marks the job `done` with that id as `resultId` (`worker.ts:54-62, 138-145`). The
+actual HeyGen render finishes **later**, and its URL and Drive bytes are only obtained when
+something polls `GET /heygen/videos/:id` (`server.ts:407-425`). So a candidate recorded "on
+success" would be recorded **before any rendered asset or checksum exists** — and D-I item 4
+binds approval to the exact rendered asset and its digest. There would be nothing to bind to.
+
+A durable completion phase is therefore part of this work, not an assumed precondition:
+
+1. dispatch submits and stores the provider id — the job is **not** `done`;
+2. a **`rendering`** state holds the job while a durable poller (the worker's own loop, on the
+   same lease-and-recover machinery Phase A built, never an in-process timer that dies with the
+   request) waits for provider completion;
+3. on completion the bytes are fetched, persisted to Drive, and **checksummed**;
+4. only then is the render recorded as a **candidate** and the post-render gate opened;
+5. provider failure or timeout fails the job normally, with no candidate.
+
+Steps 3–4 are the bar: **no candidate exists until its digest does.** This also supplies the
+reconciliation point §3.6(a) needs — a job holding a provider id but no persisted result is
+precisely the "uncertain request" a crash recovery must query rather than resubmit.
+
+**4. `canonical_render_id` needs somewhere to live.** An earlier revision named the pin and gave
+it no column, relation or migration, while §10 still added only the singular
+`productions.final_video_row_id`. A production can have several speaking segments, so a single
+column cannot express the mapping assembly must verify. A keyed relation, assigned to the same
+migration as the rest of the candidate model:
+
+```sql
+CREATE TABLE canonical_renders (
+  production_id text NOT NULL REFERENCES productions(id) ON DELETE CASCADE,
+  segment_key   text NOT NULL,          -- which speaking segment this render is canonical FOR
+  video_id      text NOT NULL REFERENCES videos(id),
+  evidence_id   uuid NOT NULL REFERENCES approval_evidence(id),
+  content_digest text NOT NULL,          -- the digest the approval bound to (§3.6(c).2)
+  recorded_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (production_id, segment_key)
+);
+```
+
+The primary key is the invariant: **one canonical render per segment**, so "which take is
+canonical" cannot be ambiguous. `evidence_id` is `NOT NULL` because a row here *is* the claim
+that a human approved this render — a canonical render with no evidence is the state D-I item 7
+forbids, and making the column nullable would make that state representable.
+
+**5. The live approval route is the bypass, and constraining deletion does not close it.**
+`POST /videos/:id/approve` (`server.ts:2044-2069`) is what the A-Roll UI calls. It flips
+`videos.approved`, clears the sibling flags, and **advances the production to `post`** — with no
+step-up authentication, no founder check, no `render` evidence, and no digest. Left in place it
+is a complete end-run around the post-render gate: an operator approves a candidate exactly as
+they do today and the gate never sees it. Worse, it is the *only* path the UI has, so without
+replacing it there is no way to clear a post-render gate at all.
+
+B1 therefore **moves this route onto the evidence path** rather than adding a gate beside it:
+
+- for a render carrying a `post_render` gate, `POST /videos/:id/approve` requires session +
+  step-up + founder-set membership, exactly as `PATCH /productions/:id/approvals` does (§7.1,
+  §7.2) — the same authority bar, because it is the same kind of decision;
+- it writes `render`-subject evidence bound to the candidate's content digest, and inserts or
+  supersedes the `canonical_renders` row, **in one transaction** with the `videos.approved` flag
+  the existing UI reads;
+- the production stage advance stays, but becomes a consequence of the evidence write rather
+  than a separate effect that can happen without one;
+- for an ungated render the route keeps today's behaviour, so non-speaking lanes are untouched.
+
+`PATCH /productions/:id/approvals` remains the **production/package** approval path. These are
+two different subjects and they legitimately have two routes; what they may not have is two
+different authority bars.
+
+**6. Assembly must verify the bytes it actually reads, not the ones it was promised.**
+`POST` assembly returns immediately after starting `renderAssembly` in the background
+(`server.ts:1816-1834`), and that task later re-reads each video row and downloads its
+then-current bytes (`server.ts:1747-1768`). A canonical-and-evidence check at the route would
+therefore pass, and a Drive replacement between the request and the background download would
+still bake unapproved frames into the final row — the identical time-of-check/time-of-use shape
+§3.5 found at the publish boundary, one layer lower.
+
+The check moves to the read: `renderAssembly` verifies each source against
+`canonical_renders.content_digest` **as it downloads**, and aborts the assembly rather than
+continuing on a mismatch. §12 gains the race test — mutate the source after the assembly request
+and before the download, and assert the assembly fails.
+
+**7. Rejection must retain, and today's route destroys.** D-I item 3 preserves rejected outputs
 as non-canonical evidence. The existing rejection path is `DELETE /videos/:id`
 (`server.ts:2073-2085`), which deletes the Drive object **and** the row. An operator rejecting a
 candidate through the current UI would destroy the exact artifact the decision requires keeping,
@@ -1833,7 +1941,13 @@ would have aborted on deploy, not in review.
 | 25 | Rollback strands paused jobs | Paused work migrated or cancelled before the schema is removed (§10) |
 | 26 | Caption, platform or schedule changed after approval | Digest covers the whole outbound package; publish sends the approved snapshot (§3.5) |
 | 27 | Paid A-Roll render fires before any gate can pause it | **Closed by ratified decision 10 (D-I) as an accepted cost, not as a mitigation.** A-Roll spend is deliberately ungated because a render must exist to be judged; the compensating control is downstream and absolute — no speaking-character output becomes canonical, continues to assembly, or publishes without human approval bound to its digest (§3.6(a)) |
-| 79 | An unreviewed or rejected render becomes the final-video reference | `final_video_row_id` may only name a candidate carrying live approving evidence bound to that asset's digest; candidates are explicit rows, so canonicity is recorded rather than inferred from `updatedAt` (§3.6(b), D-I items 7–8) |
+| 79 | An unreviewed or rejected render becomes the final-video reference | Two pins, two checks: `canonical_renders` may only name a render carrying live approving evidence bound to its digest, and **assembly refuses any speaking input that is not canonical**, verifying the digest at the moment it downloads. `final_video_row_id` names the assembled output only (§3.6(b), §3.6(c).4–6) |
+| 86 | `POST /videos/:id/approve` approves a gated render with no step-up and no evidence | The route moves onto the evidence path for gated renders — same authority bar as production approval, writing `render` evidence and the canonical row in one transaction (§3.6(c).5) |
+| 87 | A candidate is recorded before the render exists, so approval binds to nothing | A `rendering` state and durable polling; the candidate is created only after bytes are persisted and checksummed (§3.6(c).3) |
+| 88 | Drive bytes replaced between the assembly request and the background download | `renderAssembly` verifies each source against `canonical_renders.content_digest` **as it downloads** and aborts on mismatch (§3.6(c).6) |
+| 89 | A `post_render` job never runs, because the gate rules only know how to block | Enqueue, claim, retry and the sweep each branch on `gate_phase` (§3.6(c).1) |
+| 90 | A gated descriptor carries no phase, an invalid phase, or a rewritten one | `gate_phase` joins the completeness CHECK, gains a vocabulary CHECK, and joins the frozen set (§3.6(c).1) |
+| 91 | Two renders both claim to be canonical for one segment | `canonical_renders` is keyed on `(production_id, segment_key)`; `evidence_id` is NOT NULL, so a canonical render with no approval is not representable (§3.6(c).4) |
 | 81 | A crash between provider acceptance and `resultId` persisting causes a second paid render | Provider idempotency token, or reconcile-before-retry against a pre-persisted attempt id; the queue's completed-row dedupe cannot see an in-flight call (§3.6(a)) |
 | 82 | An unapproved speaking render is consumed by assembly | Assembly refuses unless every speaking input is a `canonical_render_id`; checked at assembly, not publish, because after assembly the frames are no longer separable (§3.6(b)) |
 | 83 | A post-render gate is impossible to express, so policy picks "no gate" | `gate_phase` distinguishes `pre_dispatch` from `post_render`; a descriptor without a phase is incomplete and rejected (§3.6(c)) |
@@ -2079,8 +2193,20 @@ gets the test that fails against today's code:
 | 8, attempts are explicit | Two renders for the same segment both persist as distinct attempt rows; approving the second leaves the first intact and non-canonical |
 | §3.6(a), at-least-once is honest | Simulate a crash after the provider accepts and before `resultId` persists; assert the recovery path does **not** issue a second unguarded paid call — it either carries the idempotency token or reconciles first |
 
-The last row is the one most worth writing early. It is the only test here that costs real money
-when it fails in production rather than in CI.
+Six more from the second review of this amendment, each against a path confirmed in code:
+
+| Requirement | Test |
+|---|---|
+| The approve route is not a bypass | `POST /videos/:id/approve` on a gated render **without** step-up is refused; with step-up it writes `render` evidence and the `canonical_renders` row in the same transaction as the `videos.approved` flag, and neither lands without the other |
+| A candidate exists only once its bytes do | A job whose provider call returns an id but whose render has not completed produces **no** candidate and **no** open gate; the candidate appears only after the bytes are persisted and checksummed |
+| Assembly binds to bytes, not promises | Request assembly, replace the Drive object **before** the background download, assert the assembly **aborts** — the race the route-level check cannot see |
+| A `post_render` job actually runs | Enqueue a `post_render`-gated job and assert a worker claims and dispatches it without any evidence existing; the identical job at `pre_dispatch` is not claimable |
+| The phase cannot be omitted or rewritten | A descriptor missing `gate_phase` is rejected; an invalid value is rejected; changing the phase after enqueue is refused by the freeze trigger |
+| One canonical render per segment | Two approvals for the same `(production_id, segment_key)` — the second supersedes rather than duplicating; a `canonical_renders` insert with no `evidence_id` is impossible |
+
+The provider-crash row above and the assembly-race row here are the two worth writing first.
+Both are only reachable by deliberately interleaving operations, which means neither will ever
+be found by accident — and the first costs real money each time it fires in production.
 
 **Deliberate negative tests.** Every clause of contract 36 that says *never* gets a test proving
 the never. A control with no test proving it fails is not a control. **And at least one positive
@@ -2117,13 +2243,16 @@ tested only by what it forbids can be a control that forbids everything.
    reading the map, or update the one key in place with `jsonb_set` inside the transaction rather
    than round-tripping the whole object. The evidence rows would be correct and the projection
    wrong, which is the worst shape for a bug that only the UI shows.
-7. **The two inherited §3.6 items, now resolved by D-I** — the consistent final-video pin
-   populated by both producers, pointing at the *approved canonical* render; and the A-Roll
-   treatment, which is candidate generation plus a post-render gate rather than a spend gate.
-   Both gate step 8. **The candidate / canonical model layers on top of steps 1–6, never with
-   them** (founder direction): primitives first, A-Roll behaviour after. The HeyGen route
-   refactor — moving the provider call behind dispatch for execution safety, D-I item 10 — is
-   its own PR and is explicitly **not** the first B1 PR.
+7. **The two inherited §3.6 items, now resolved by D-I** — and the resolution is larger than
+   a pin. `final_video_row_id` names the **assembled output**; `canonical_renders` names the
+   approved candidate per speaking segment; **assembly** is where an unapproved input is
+   refused, verifying the digest as it downloads. A-Roll is candidate generation plus a
+   post-render gate, which additionally requires a provider-completion phase (the queue's
+   `done` currently means *submitted*), a phase-aware enqueue/claim/retry, and moving
+   `POST /videos/:id/approve` onto the evidence path — see §3.6(c). **All of it layers on top
+   of steps 1–6, never with them** (founder direction): primitives first, A-Roll behaviour
+   after. The HeyGen route refactor — moving the provider call behind dispatch for leased,
+   recoverable execution, D-I item 10 — is its own PR and is explicitly **not** the first B1 PR.
 8. Widen `checkDeliveryApproval`; publish reads evidence, sends the **approved snapshot** of the
    whole outbound package, and resolves the video by the pin rather than by `updatedAt`.
 9. `workflow_transitions`, written in the same transaction as the state change it records, with
@@ -2193,8 +2322,14 @@ earlier sections were written on:
 8. **Multiple render attempts are represented explicitly** — attempts are rows, not overwrites.
 9. The additional wait is an **accepted quality-control cost** until lip-sync reliability
    materially improves.
-10. HeyGen execution still moves **behind worker dispatch** — for idempotent, recoverable
-    execution safety, **not** for pre-generation approval.
+10. HeyGen execution still moves **behind worker dispatch** — for **leased, recoverable,
+    at-least-once** execution safety, **not** for pre-generation approval. *Recorded as
+    ratified with the word "idempotent"; corrected here on review because leaving it would
+    direct an implementer to rely on the queue's completed-row dedupe and resubmit blindly
+    after a crash. Genuine idempotency across the provider boundary requires a provider token
+    or reconcile-before-retry, which §3.6(a) makes a requirement of this work. The founder's
+    intent — execution safety rather than pre-generation approval — is unchanged; only the
+    overstated adjective is.*
 
 The reasoning worth preserving: **you cannot usefully approve a lip-sync render you have not
 seen.** Pre-generation approval would have judged the script, avatar and voice while the thing
