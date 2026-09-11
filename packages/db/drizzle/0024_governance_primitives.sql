@@ -24,7 +24,12 @@ CREATE TABLE IF NOT EXISTS signing_keys (
   activated_at timestamptz NOT NULL DEFAULT now(),
   revoked_at   timestamptz,
   CONSTRAINT revoked_has_timestamp
-    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+    CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+  -- Pairing without ordering still admits revoked_at < activated_at — an impossible trust
+  -- interval. The lifecycle trigger then freezes both, so the nonsense is permanent in the
+  -- audit record, which is precisely where it matters.
+  CONSTRAINT revoked_after_activated
+    CHECK (revoked_at IS NULL OR revoked_at >= activated_at)
 );
 
 -- Revocation is one-way in STATUS and in EXISTENCE. One-way status alone is not enough: a
@@ -129,9 +134,14 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
   -- particular outbound package at all, which is the opposite of what the digest binding is
   -- for. Legacy backfilled rows are exempt: they are history, and they deliberately fail the
   -- digest check anyway, so they can never open a gate.
+  -- The legacy exemption is narrowed to rows that ALSO carry the unbound digest. Keying it
+  -- on `asserted_role` alone trusted a caller-supplied label: a positive row could claim to
+  -- be legacy, omit the package, carry the subject's CURRENT digest, stay live, and satisfy
+  -- every publication-gate predicate. The exemption exists for history that can never open a
+  -- gate, so it is tied to the thing that makes that true.
   CONSTRAINT approved_package_required_for_positive_decisions
     CHECK (decision NOT IN ('approved','approved_with_note')
-           OR asserted_role = 'legacy-unattributed'
+           OR (asserted_role = 'legacy-unattributed' AND revision_digest = 'legacy:unbound')
            OR approved_package IS NOT NULL),
 
   -- Bounded to the exact-integer range of a JS number. The Drizzle model reads this column
@@ -204,6 +214,13 @@ DECLARE cur approval_evidence%ROWTYPE;
 BEGIN
   SELECT * INTO cur FROM approval_evidence WHERE id = NEW.id;
   IF NOT FOUND THEN RETURN NULL; END IF;
+  -- Checked BEFORE the early return: a live row must not name a successor. Returning early
+  -- on `superseded_at IS NULL` skipped this, so an INSERT could create a live row whose
+  -- superseded_by pointed at an unrelated record — and the append-only trigger then made
+  -- that pointer unrepairable.
+  IF cur.superseded_at IS NULL AND cur.superseded_by IS NOT NULL THEN
+    RAISE EXCEPTION 'approval_evidence %: a live row may not name a successor', cur.id;
+  END IF;
   IF cur.superseded_at IS NULL THEN RETURN NULL; END IF;
   IF cur.superseded_by IS NULL THEN
     RAISE EXCEPTION 'approval_evidence %: superseded_at set with no successor', cur.id;
@@ -258,7 +275,14 @@ CREATE TABLE IF NOT EXISTS workflow_transitions (
   asserted_role  text NOT NULL,
   source_system  text NOT NULL,
   auth_context   jsonb NOT NULL DEFAULT '{}',
-  occurred_at    timestamptz NOT NULL DEFAULT now()
+  occurred_at    timestamptz NOT NULL DEFAULT now(),
+
+  -- Same coherence rule as approval_evidence, and for a stronger reason: these rows are
+  -- immutable the instant they are written, so a transition recorded as founder-authorized
+  -- while naming a machine actor can never be corrected. Defense in depth, not authorization
+  -- (ratified decision 7) — a caller can still label itself 'human'.
+  CONSTRAINT transition_founder_is_human
+    CHECK (asserted_role <> 'founder' OR principal_kind = 'human')
 );
 
 CREATE INDEX IF NOT EXISTS workflow_transitions_subject
@@ -415,6 +439,12 @@ CREATE TRIGGER publication_intents_no_truncate BEFORE TRUNCATE ON publication_in
 -- ---------------------------------------------------------------------------------------
 
 ALTER TABLE production_jobs ADD COLUMN IF NOT EXISTS work_item_id uuid REFERENCES work_items(id) ON DELETE CASCADE;
+
+-- An unindexed FK means every work_items delete (ON DELETE CASCADE) and every work-item
+-- queue filter scans the whole job table, while the sibling production_id path is indexed.
+-- Partial: the column is NULL on every video job, which is nearly all of them.
+CREATE INDEX IF NOT EXISTS production_jobs_work_item
+  ON production_jobs (work_item_id) WHERE work_item_id IS NOT NULL;
 ALTER TABLE production_jobs ALTER COLUMN production_id DROP NOT NULL;
 
 DO $$ BEGIN
@@ -473,7 +503,14 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- such restriction and is equivalent here.
 DO $$ BEGIN
   ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_gate_status
-    CHECK (status::text <> 'awaiting_approval' OR gate_origin IS NOT NULL);
+    -- NOTE the IS NOT DISTINCT FROM. Written as `gate_resolution = 'gated'` this CHECK
+    -- evaluates to NULL when the column is NULL, and PostgreSQL ACCEPTS a CHECK that
+    -- evaluates to NULL — so the unresolved case, the one this constraint exists to catch,
+    -- would have passed. The same trap the note-required constraint above documents; it was
+    -- reintroduced here and caught by a test, not by re-reading.
+    CHECK (status::text <> 'awaiting_approval'
+           OR (gate_origin IS NOT NULL
+               AND gate_resolution IS NOT DISTINCT FROM 'gated'));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- The descriptor is frozen once written. The CHECKs above constrain a row's SHAPE, not its
@@ -527,3 +564,26 @@ CREATE INDEX IF NOT EXISTS production_jobs_status_enqueued
 -- ---------------------------------------------------------------------------------------
 
 ALTER TABLE productions ADD COLUMN IF NOT EXISTS final_video_row_id text REFERENCES videos(id);
+
+-- The pin must name a video BELONGING TO THIS PRODUCTION.
+--
+-- The foreign key proves only that the video row exists, and `videos.production_id` is
+-- nullable (ad-hoc Studio renders have none). Production A could therefore pin a video owned
+-- by production B, or an ownerless one, and the database would accept it — so once approval
+-- and publish resolve through this pin, they could bind or send another production's content.
+CREATE OR REPLACE FUNCTION productions_final_video_owned() RETURNS trigger AS $$
+DECLARE owner_id text;
+BEGIN
+  IF NEW.final_video_row_id IS NULL THEN RETURN NEW; END IF;
+  SELECT production_id INTO owner_id FROM videos WHERE id = NEW.final_video_row_id;
+  IF owner_id IS DISTINCT FROM NEW.id THEN
+    RAISE EXCEPTION 'productions %: video % belongs to %, not this production',
+      NEW.id, NEW.final_video_row_id, COALESCE(owner_id, '(no production)');
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS productions_final_video_owned ON productions;
+CREATE TRIGGER productions_final_video_owned
+  BEFORE INSERT OR UPDATE OF final_video_row_id ON productions
+  FOR EACH ROW EXECUTE FUNCTION productions_final_video_owned();

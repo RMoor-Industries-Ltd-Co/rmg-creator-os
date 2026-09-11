@@ -104,6 +104,15 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
         /one-way/);
     });
 
+    it('refuses a revocation timestamp earlier than activation', async () => {
+      // Pairing without ordering admits an impossible trust interval, and the lifecycle
+      // trigger then freezes both timestamps — so the nonsense would be permanent.
+      await refused(() => db.execute(sql`
+        INSERT INTO signing_keys(key_id,domain,public_key,status,activated_at,revoked_at)
+        VALUES ('k-backwards','d','pk','revoked', now(), now() - interval '1 day')`),
+        /revoked_after_activated/);
+    });
+
     it('freezes the lifecycle timestamps that record the trust window', async () => {
       await refused(
         () => db.execute(sql`UPDATE signing_keys SET activated_at=now() WHERE key_id='k-live'`),
@@ -172,6 +181,38 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
         approved_package: null, asserted_role: 'legacy-unattributed',
         principal_kind: 'processor', decided_at: null, revision_digest: 'legacy:unbound'
       })).resolves.toBeTruthy();
+    });
+
+    it('ties the legacy package exemption to the unbound digest', async () => {
+      // Keyed on asserted_role alone, the exemption trusted a caller-supplied label: a row
+      // could claim to be legacy, omit the package, carry the subject's CURRENT digest, stay
+      // live, and satisfy every gate predicate.
+      await expect(ins({
+        approved_package: null, asserted_role: 'legacy-unattributed',
+        principal_kind: 'processor', decided_at: null, revision_digest: 'a-real-digest'
+      })).rejects.toThrow();
+      await expect(ins({
+        approved_package: null, asserted_role: 'legacy-unattributed',
+        principal_kind: 'processor', decided_at: null, revision_digest: 'legacy:unbound'
+      })).resolves.toBeTruthy();
+    });
+
+    it('refuses a LIVE row that already names a successor', async () => {
+      // The deferred check returned early whenever superseded_at was null, skipping this —
+      // and the append-only trigger would then have made the bad pointer unrepairable.
+      const a = await ins({ subject_id: 'p-livesucc' });
+      const aid = (a.rows[0] as { id: string }).id;
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO approval_evidence (subject_type,subject_id,scope,revision_digest,decision,
+             principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at,
+             approved_package,superseded_by)
+           VALUES ('production','p-livesucc2','vlog','d1','approved','rahm','human','founder',
+                   'rmg-creator-os',1,now(),'{}'::jsonb,$1)`, [aid]);
+        await refused(() => client.query('COMMIT'), /live row may not name a successor/);
+      } finally { client.release(); }
     });
 
     it('bounds decision_seq to the exact-integer range the model reads it with', async () => {
@@ -318,11 +359,31 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
         .resolves.toBeTruthy();
     });
 
-    it('requires a gate descriptor for a job at rest in awaiting_approval', async () => {
+    it('requires a complete gated descriptor for a job at rest in awaiting_approval', async () => {
       const r = await job(``, ``);
       const id = (r.rows[0] as { id: string }).id;
       await expect(db.execute(sql`UPDATE production_jobs SET status='awaiting_approval' WHERE id=${id}`))
         .rejects.toThrow();
+      // A descriptor alone is not enough: gate_resolution NULL means UNRESOLVED, and an
+      // unresolved job is unclaimable — so a paused job in that state would be stranded
+      // while also being represented as gated. Both must agree.
+      const r2 = await job(`,gate_origin,gate_subject_type,gate_subject_id,gate_scope`,
+                           `,'r','production','s3','vlog'`);
+      const id2 = (r2.rows[0] as { id: string }).id;
+      await expect(db.execute(sql`UPDATE production_jobs SET status='awaiting_approval' WHERE id=${id2}`))
+        .rejects.toThrow();
+      const r3 = await job(`,gate_origin,gate_subject_type,gate_subject_id,gate_scope,gate_resolution`,
+                           `,'r','production','s4','vlog','gated'`);
+      const id3 = (r3.rows[0] as { id: string }).id;
+      await expect(db.execute(sql`UPDATE production_jobs SET status='awaiting_approval' WHERE id=${id3}`))
+        .resolves.toBeTruthy();
+    });
+
+    it('indexes work_item_id, so cascade deletes and filters are not full scans', async () => {
+      const r = await db.execute(sql`
+        SELECT indexdef FROM pg_indexes
+         WHERE tablename = 'production_jobs' AND indexname = 'production_jobs_work_item'`);
+      expect(r.rows.length).toBe(1);
     });
 
     it('requires exactly one parent — never both, never neither', async () => {
@@ -336,6 +397,42 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
       const wid = (w.rows[0] as { id: string }).id;
       await expect(db.execute(sql`INSERT INTO production_jobs (work_item_id,capability,provider)
                                   VALUES (${wid},'accord_article','internal')`)).resolves.toBeTruthy();
+    });
+  });
+
+  // ── productions.final_video_row_id ──────────────────────────────────────────────────
+  describe('the final-video pin', () => {
+    it('refuses a video belonging to another production, or to none', async () => {
+      // videos.production_id is nullable (ad-hoc Studio renders), and the FK proves only
+      // that the row exists — so without this, production A could pin B's video and publish
+      // would later resolve the wrong content through it.
+      await db.execute(sql`INSERT INTO productions (id,brand,topic) VALUES ('pin-a','vlog','t'),
+                           ('pin-b','vlog','t') ON CONFLICT DO NOTHING`);
+      await db.execute(sql`
+        INSERT INTO videos (id,production_id,heygen_video_id,avatar_id) VALUES
+          ('vid-of-b','pin-b','hg1','av1'), ('vid-orphan',NULL,'hg2','av2')
+        ON CONFLICT DO NOTHING`);
+      await refused(() => db.execute(sql`UPDATE productions SET final_video_row_id='vid-of-b'
+                                         WHERE id='pin-a'`), /belongs to pin-b/);
+      await refused(() => db.execute(sql`UPDATE productions SET final_video_row_id='vid-orphan'
+                                         WHERE id='pin-a'`), /no production/);
+      await db.execute(sql`INSERT INTO videos (id,production_id,heygen_video_id,avatar_id)
+                           VALUES ('vid-of-a','pin-a','hg3','av3') ON CONFLICT DO NOTHING`);
+      await expect(db.execute(sql`UPDATE productions SET final_video_row_id='vid-of-a'
+                                  WHERE id='pin-a'`)).resolves.toBeTruthy();
+    });
+  });
+
+  // ── workflow_transitions ────────────────────────────────────────────────────────────
+  describe('workflow_transitions', () => {
+    it('refuses a founder-attributed transition naming a machine actor', async () => {
+      // These rows are immutable the instant they are written, so an incoherent one can
+      // never be corrected — the same constraint matters more here than on evidence.
+      await refused(() => db.execute(sql`
+        INSERT INTO workflow_transitions (subject_type,subject_id,to_state,principal_id,
+          principal_kind,asserted_role,source_system)
+        VALUES ('production','p1','queued','bot','agent'::principal_kind,'founder','rmg-creator-os')`),
+        /transition_founder_is_human/);
     });
   });
 
