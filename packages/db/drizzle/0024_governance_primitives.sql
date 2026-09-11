@@ -337,8 +337,16 @@ CREATE TABLE IF NOT EXISTS publication_intents (
   remote_post_id   text,
   claimed_at       timestamptz NOT NULL DEFAULT now(),
   closed_at        timestamptz,
+  -- BIDIRECTIONAL, deliberately. One direction ('published' needs an id) still allowed the
+  -- dangerous shape: a publisher that received a remote id and then hit a LOCAL error could
+  -- store the row as 'failed' while keeping the id. That row leaves the open-intent index
+  -- immediately, so a retry may post a second time even though the first post is KNOWN to
+  -- exist. Once an id is known, the only honest phases are 'published' (it went out) or
+  -- 'unknown' (it may have, and the slot stays held until someone establishes which).
   CONSTRAINT published_has_remote_id
-    CHECK (phase <> 'published' OR remote_post_id IS NOT NULL)
+    CHECK (phase <> 'published' OR remote_post_id IS NOT NULL),
+  CONSTRAINT remote_id_implies_published_or_unknown
+    CHECK (remote_post_id IS NULL OR phase IN ('published','unknown'))
 );
 
 -- One open intent per (subject, scope): a second concurrent publish collides on the index
@@ -575,7 +583,10 @@ CREATE OR REPLACE FUNCTION productions_final_video_owned() RETURNS trigger AS $$
 DECLARE owner_id text;
 BEGIN
   IF NEW.final_video_row_id IS NULL THEN RETURN NEW; END IF;
-  SELECT production_id INTO owner_id FROM videos WHERE id = NEW.final_video_row_id;
+  -- FOR UPDATE: an unlocked read could be overtaken by a concurrent reparent committing
+  -- between this check and this statement, leaving the pin valid at check time and wrong at
+  -- commit time. Locking the video row serialises the two.
+  SELECT production_id INTO owner_id FROM videos WHERE id = NEW.final_video_row_id FOR UPDATE;
   IF owner_id IS DISTINCT FROM NEW.id THEN
     RAISE EXCEPTION 'productions %: video % belongs to %, not this production',
       NEW.id, NEW.final_video_row_id, COALESCE(owner_id, '(no production)');
@@ -587,3 +598,26 @@ DROP TRIGGER IF EXISTS productions_final_video_owned ON productions;
 CREATE TRIGGER productions_final_video_owned
   BEFORE INSERT OR UPDATE OF final_video_row_id ON productions
   FOR EACH ROW EXECUTE FUNCTION productions_final_video_owned();
+
+-- Ownership has to hold over TIME, not only at the moment of pinning.
+--
+-- Checking only writes to productions.final_video_row_id left the other side open:
+-- videos.production_id is mutable, so `UPDATE videos SET production_id = 'B'` (or NULL)
+-- after a valid pin silently leaves production A pointing at someone else's video — the
+-- exact state the pin check exists to prevent, reached from the opposite direction.
+CREATE OR REPLACE FUNCTION videos_reparent_guard() RETURNS trigger AS $$
+DECLARE pinned_by text;
+BEGIN
+  IF NEW.production_id IS NOT DISTINCT FROM OLD.production_id THEN RETURN NEW; END IF;
+  SELECT id INTO pinned_by FROM productions WHERE final_video_row_id = OLD.id;
+  IF pinned_by IS NOT NULL AND NEW.production_id IS DISTINCT FROM pinned_by THEN
+    RAISE EXCEPTION
+      'videos %: cannot reparent — production % pins it as its final video', OLD.id, pinned_by;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS videos_reparent_guard ON videos;
+CREATE TRIGGER videos_reparent_guard
+  BEFORE UPDATE OF production_id ON videos
+  FOR EACH ROW EXECUTE FUNCTION videos_reparent_guard();

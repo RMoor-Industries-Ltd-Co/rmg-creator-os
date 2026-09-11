@@ -421,6 +421,19 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
       await expect(db.execute(sql`UPDATE productions SET final_video_row_id='vid-of-a'
                                   WHERE id='pin-a'`)).resolves.toBeTruthy();
     });
+
+    it('refuses to reparent a video that a production pins', async () => {
+      // Ownership has to hold over time. Checking only the productions side left the other
+      // direction open: reparenting the video after a valid pin reaches the same bad state.
+      await refused(() => db.execute(sql`UPDATE videos SET production_id='pin-b'
+                                         WHERE id='vid-of-a'`), /pins it as its final video/);
+      await refused(() => db.execute(sql`UPDATE videos SET production_id=NULL
+                                         WHERE id='vid-of-a'`), /pins it as its final video/);
+      // Unpinning releases it.
+      await db.execute(sql`UPDATE productions SET final_video_row_id=NULL WHERE id='pin-a'`);
+      await expect(db.execute(sql`UPDATE videos SET production_id='pin-b' WHERE id='vid-of-a'`))
+        .resolves.toBeTruthy();
+    });
   });
 
   // ── workflow_transitions ────────────────────────────────────────────────────────────
@@ -512,6 +525,23 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
                            WHERE id=${id}`);
       await expect(db.execute(sql`DELETE FROM publication_intents WHERE id=${id}`))
         .resolves.toBeTruthy();
+    });
+
+    it('refuses to release the slot once a remote post id is known', async () => {
+      // The one-directional check allowed 'failed' WITH an id: the row leaves the open index
+      // while a remote post is known to exist, so a retry can post a second time.
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE subject_id='p-pub'`);
+      await refused(() => db.execute(sql`
+        INSERT INTO publication_intents (subject_type,subject_id,scope,evidence_id,
+          revision_digest,phase,lease_expires_at,remote_post_id)
+        VALUES ('production','p-pub','vlog',${evidenceId},'d1',
+                'failed'::publication_intent_phase, now() + interval '60 s', 'remote-123')`),
+        /remote_id_implies_published_or_unknown/);
+      // 'unknown' with an id is the honest shape, and it holds the slot.
+      await expect(intent('unknown', 'remote-123')).resolves.toBeTruthy();
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', remote_post_id=NULL,
+                           closed_at=now() WHERE subject_id='p-pub'`);
     });
 
     it('refuses a published intent with no remote post id', async () => {
