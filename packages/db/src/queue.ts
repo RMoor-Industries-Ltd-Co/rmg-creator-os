@@ -241,6 +241,56 @@ export async function findCompletedByIdempotencyKey(
   return rows.find((r) => r.id !== excludeJobId);
 }
 
+export interface AwaitingApprovalEntry {
+  jobId: string;
+  capability: typeof productionJobs.$inferSelect['capability'];
+  productionId: string | null;
+  workItemId: string | null;
+  /** WHAT is waiting on WHOM (§13 step 11) — the gate's own descriptor, written atomically at
+   *  enqueue from server-side policy (never caller input) and frozen thereafter by trigger, so
+   *  this is exactly what the gate itself recorded, not a re-derivation. */
+  gateOrigin: string | null;
+  gateSubjectType: string | null;
+  gateSubjectId: string | null;
+  gateScope: string | null;
+  /** SINCE WHEN (§13 step 11). Approximated as `enqueued_at` — exact for a job gated at
+   *  enqueue time (the only path that exists today; there is no live writer that moves an
+   *  already-`queued` job into `awaiting_approval` later — §13 step 6/B1.5 step 12 are both
+   *  still blocked, see docs/atelier/b1-2-dependency-split.md). Once a write path exists that
+   *  can transition a job into this state after it was already queued, the accurate source
+   *  becomes the most recent `workflow_transitions` row for this job with `to_state =
+   *  'awaiting_approval'` (recordWorkflowTransition, packages/db/src/transitions.ts) — this
+   *  function does not attempt that join yet because nothing writes such a row. */
+  waitingSince: Date;
+}
+
+/**
+ * The waiting-for-approval surface (§13 step 11): every job currently paused in
+ * `awaiting_approval`, oldest first — "an approval queue nobody can see is a durable pause that
+ * behaves like a lost job." Read-only; does not require the (still-blocked) approval write path
+ * to exist, only that a row can legitimately be AT REST in this status, which the schema and its
+ * completeness CHECK already allow (governance.migration.test.ts exercises that CHECK directly).
+ */
+export async function listAwaitingApproval(db: Database, limit = 100): Promise<AwaitingApprovalEntry[]> {
+  const rows = await db
+    .select({
+      jobId: productionJobs.id,
+      capability: productionJobs.capability,
+      productionId: productionJobs.productionId,
+      workItemId: productionJobs.workItemId,
+      gateOrigin: productionJobs.gateOrigin,
+      gateSubjectType: productionJobs.gateSubjectType,
+      gateSubjectId: productionJobs.gateSubjectId,
+      gateScope: productionJobs.gateScope,
+      waitingSince: productionJobs.enqueuedAt
+    })
+    .from(productionJobs)
+    .where(eq(productionJobs.status, 'awaiting_approval'))
+    .orderBy(productionJobs.enqueuedAt)
+    .limit(limit);
+  return rows;
+}
+
 export type CancelOutcome =
   | { outcome: 'cancelled'; job: typeof productionJobs.$inferSelect }
   | { outcome: 'not_found' }

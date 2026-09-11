@@ -10,9 +10,16 @@ export {
   recoverStaleJobs,
   findCompletedByIdempotencyKey,
   cancelJob,
+  listAwaitingApproval,
   DEFAULT_LEASE_SECONDS
 } from './queue.js';
-export type { EnqueueJobInput, EnqueueResult, StaleRecovery, CancelOutcome } from './queue.js';
+export type {
+  EnqueueJobInput,
+  EnqueueResult,
+  StaleRecovery,
+  CancelOutcome,
+  AwaitingApprovalEntry
+} from './queue.js';
 export { computeProductionDigest, computeAccordPackageDigest } from './digest.js';
 export type {
   ProductionDigestInput,
