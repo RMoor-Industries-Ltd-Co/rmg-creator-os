@@ -226,11 +226,27 @@ CREATE TABLE render_attempts (
 
   -- An inconclusive attempt must say when the search ran and why it could not resolve.
   -- Without both, the state is indistinguishable from an attempt nobody has looked at.
+  --
+  -- NOTE the IS NOT DISTINCT FROM. Written as `reconcile_outcome = 'inconclusive'` this
+  -- CHECK passes when the column is NULL: the equality yields NULL, `NULL AND true` yields
+  -- NULL, and PostgreSQL ACCEPTS a CHECK that evaluates to NULL. The mandatory field would
+  -- then be optional in exactly the case it exists for. This is the same trap the Phase B
+  -- design records against production_jobs_gate_status, walked into a second time.
   CONSTRAINT inconclusive_attempt_is_documented
     CHECK (state <> 'reconcile_inconclusive'
-           OR (reconcile_outcome = 'inconclusive'
+           OR (reconcile_outcome IS NOT DISTINCT FROM 'inconclusive'
                AND reconcile_checked_at IS NOT NULL
-               AND reconcile_detail IS NOT NULL))
+               AND reconcile_detail IS NOT NULL)),
+
+  -- E: the mirror obligation. A resubmission is authorized by an exhausted search, so an
+  -- attempt that has been RE-submitted must carry the evidence of the search that permitted
+  -- it. Without this, a paid retry is indistinguishable from a first submission — and
+  -- §10.3.1's "record why it was permitted" would be prose with nothing enforcing it.
+  CONSTRAINT resubmission_records_its_authorization
+    CHECK (attempt_no = 1
+           OR state NOT IN ('submitting','submitted','rendering')
+           OR (reconcile_outcome IS NOT DISTINCT FROM 'exhausted'
+               AND reconcile_checked_at IS NOT NULL))
 );
 ```
 
@@ -390,9 +406,13 @@ Only the provider can close it. Two cases, and the design does not pretend they 
 
 | Provider capability | Consequence for step D |
 |---|---|
-| **Client-supplied idempotency key.** The attempt id is the key; a retry returns the original render | Step D proceeds. Exactly-once against the provider |
-| **A listable/searchable render history** keyed by something we set before calling (title, metadata, external ref) | Step D proceeds. Recovery searches before submitting; at-most-one extra render in a narrow window |
+| **A non-expiring client-supplied idempotency key.** The attempt id is the key; a retry returns the original render, however late | Step D proceeds on the key alone. Exactly-once against the provider |
+| **An expiring key** (HeyGen: 24 hours) | Step D proceeds **only with searchable history as well** — past the window the key proves nothing, so it is the row below that carries recovery |
+| **A listable/searchable render history** keyed by something we set before calling (title, metadata, external ref), **with a visibility guarantee covering the retry window** (§10.3.1) | Step D proceeds. Recovery searches before submitting |
 | **Neither** | **Step D does not ship.** The paid call stays at the route, where the request's own lifetime bounds duplication |
+
+HeyGen sits in the second row, not the first: its key is real but expires (§11.2), which is why
+this design implements both mechanisms rather than either.
 
 That third row is a real possible outcome, not a formality. Moving a paid call behind a queue
 without a provider-side handle trades a bounded failure for an unbounded one, and this design
@@ -885,27 +905,41 @@ of exhaustion has to be a failure rather than a miss:
 
 | How the search ended | Entitled to conclude | Behaviour |
 |---|---|---|
-| A **usable** match was found (exact title, not `failed`) | It exists | Adopt it |
-| Explicit "no more pages" **and** no continuation cursor | Nothing exists | Submit |
+| A **usable** match was found | That render exists | Adopt it |
+| Exhausted, and **every** exact-title match was `failed` | The prior submission ran and failed | **Mark this attempt and its job `failed`** (§4.3). Do **not** resubmit |
+| Exhausted with **no** exact-title match at all | Nothing exists | Submit |
+| An exact-title match exists but **cannot be classified** | **Nothing** | Fail closed |
 | Page bound reached with pages remaining | **Nothing** | Fail closed |
 | More pages claimed, but no cursor to follow | **Nothing** | Fail closed |
 | No explicit "no more pages" **and** no cursor | **Nothing** | Fail closed |
 | "No more pages" **contradicted by** a continuation cursor | **Nothing** | Fail closed |
 | The search itself errored | **Nothing** | Fail closed |
 
-Two rows deserve their exact wording, because a looser version of each was written first and
-was wrong:
+"Exhausted" means an explicit "no more pages" **and** no continuation cursor. The two are
+independent fields that can disagree, and a response asserting the end while still offering a
+way to continue is internally inconsistent. Treating the flag as authoritative and the cursor
+as trailing noise is a guess, and what it guesses about is whether to spend money.
 
-- **"usable"**, not merely "found". An exact-title match whose own status is `failed` is
-  something to supersede, not inherit (§4.6, §4.7). Adopting one binds the attempt to a
-  provider reference that produced nothing. A failed match therefore does **not** end the
-  search: it is skipped, and the search continues to exhaustion, because a usable duplicate
-  may sit on a later page.
-- **"and no continuation cursor"**, not just the flag. The two signals are independent
-  fields, so they can disagree, and a response asserting the end while still offering a way
-  to continue is internally inconsistent — which this rule says fails closed. Treating the
-  flag as authoritative and the cursor as trailing noise is a guess, and the thing it guesses
-  about is whether to spend money.
+**A usable match** is one that is *all* of: exact title (the filter is a substring match, so
+the comparison decides), a **non-empty provider id**, and a status in a **recognized
+adoptable** set — pending, processing or completed. All three, because the client's own
+`toStatusResult` maps a missing status to `'unknown'` and a missing id to `''`, and
+`HeyGenVideoStatus` admits arbitrary strings. A row with `'unknown'` is not `failed`, so a
+"not failed" test would adopt something §4.3 cannot classify; a row with an empty id would be
+adopted as a provider reference pointing at nothing.
+
+So an exact-title row that is neither adoptable nor recognizably `failed` is the
+**cannot-classify** row above: it is evidence that something happened, which forbids
+concluding nothing exists, while being too malformed to adopt. Fail closed.
+
+**Exhausted-but-all-failed is not the same as exhausted-and-empty**, and the distinction is
+the one this table previously lost. Skipping failed matches and continuing is right — a
+usable duplicate may sit on a later page — but if exhaustion arrives having seen only failed
+matches, we have *positive knowledge* that the submission ran and failed. Falling through to
+"nothing exists → submit" would re-submit the same attempt on top of a known provider
+failure. §4.3 says a confirmed failure marks the attempt and job `failed`; §4.7 says a
+regeneration is an explicit **new** attempt at `attempt_no + 1`. Both are violated by a silent
+resubmission of the existing one.
 
 Each of the last three was, at some point in the migration, implemented as "return not-found
 and carry on" — and each would have authorized a duplicate paid render. They are not exotic:
@@ -932,19 +966,34 @@ a durable attempt record, the rule travels with it:
 The same rule applies to any future provider on the same path, not only HeyGen.
 
 What a provider must offer to satisfy it is **a way to prove, at the moment of retry, whether
-the earlier submission produced a render.** Searchable history is one way. A durable
-idempotency key is another and a better one: if replaying it always returns the original
-response rather than rendering again, the replay *is* the proof, and no search is needed.
-That is §4.3's first row, and it remains sufficient on its own.
+the earlier submission produced a render.**
 
-HeyGen needs both only because its key expires after 24 hours (§11.2). Past that window the
-key proves nothing, and history becomes the only remaining handle — which is why this client
-implements both.
+A **non-expiring** idempotency key is the strongest form: if replaying it always returns the
+original response rather than rendering again, the replay *is* the proof, and no search is
+needed. That alone satisfies the rule. An **expiring** key does not, past its window — it
+proves nothing there, so it must be paired with something that does. HeyGen's key expires
+after 24 hours (§11.2), which is why this client implements both mechanisms rather than
+either.
 
-So the provider that cannot satisfy the rule is the one with **neither** a durable idempotency
-guarantee **nor** searchable history — §4.3's third row, where "step D does not ship" is the
-correct outcome rather than a cautious default. A provider whose idempotency never expires
-needs no history endpoint and is not excluded.
+**Searchable history is the other form, but it is weaker than it looks, and §4.3's own
+wording admits it.** Exhausting pagination proves that every page the provider *currently
+exposes* was read. It does not prove that an accepted render is exposed at all: under
+eventual consistency a just-accepted submission may not be indexed yet, and under a retention
+limit an older one may have aged out. Either way the search completes, finds nothing, and
+reports an exhaustion it is not entitled to.
+
+So "exhausted" is proof **only within a window the provider guarantees**. A history endpoint
+qualifies under this rule when it documents a visibility guarantee — how soon after
+acceptance a render is findable — and a retention guarantee covering at least the longest
+interval between a submission and its reconciliation. Absent those, the implementation must
+supply the bound itself: a minimum age before an exhausted-and-empty result may authorize a
+submission, and a maximum age past which the search is treated as inconclusive rather than
+exhausted. Neither is invented here; both are step D's to derive from the provider's actual
+documented behaviour, and step D does not ship without one or the other.
+
+The provider that cannot satisfy the rule at all is the one with **neither** a non-expiring
+key **nor** a history endpoint with a usable guarantee — §4.3's last row, where "step D does
+not ship" is the correct outcome rather than a cautious default.
 
 ---
 
