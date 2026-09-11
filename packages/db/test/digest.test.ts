@@ -30,8 +30,8 @@ function baseInput(): ProductionDigestInput {
       type: 'scheduled',
       date: '2026-09-15T14:00:00Z',
       posts: [
-        { platform: 'tiktok', caption: 'tt caption', hashtags: ['#a', '#b'] },
-        { platform: 'instagram', caption: 'ig caption', hashtags: ['#c'] }
+        { platform: 'tiktok', integrationId: 'integ_tt_1', caption: 'tt caption', hashtags: ['#a', '#b'] },
+        { platform: 'instagram', integrationId: 'integ_ig_1', caption: 'ig caption', hashtags: ['#c'] }
       ]
     }
   };
@@ -54,13 +54,20 @@ describe('computeProductionDigest — stability', () => {
     expect(computeProductionDigest(a)).toBe(computeProductionDigest(b));
   });
 
-  it('does not depend on hashtag order within a post', () => {
+  it('is insensitive to duplicate-platform assembly order (same content, reversed)', () => {
+    // The posts table carries no uniqueness constraint on (production_id, platform); two
+    // same-platform rows are a real possible input. A comparator that only orders by platform
+    // leaves ties in caller-assembly order, which makes the array's order matter again for
+    // exactly the pair it's supposed to be irrelevant for — the case this test pins.
     const a = baseInput();
+    a.outboundPackage.platforms = ['tiktok', 'tiktok'];
+    a.outboundPackage.posts = [
+      { platform: 'tiktok', integrationId: 'integ_a', caption: 'first', hashtags: ['#x'] },
+      { platform: 'tiktok', integrationId: 'integ_b', caption: 'second', hashtags: ['#y'] }
+    ];
     const b = baseInput();
-    b.outboundPackage.posts = b.outboundPackage.posts.map((p) => ({
-      ...p,
-      hashtags: [...p.hashtags].reverse()
-    }));
+    b.outboundPackage.platforms = ['tiktok', 'tiktok'];
+    b.outboundPackage.posts = [...a.outboundPackage.posts].reverse();
     expect(computeProductionDigest(a)).toBe(computeProductionDigest(b));
   });
 
@@ -104,15 +111,32 @@ describe('computeProductionDigest — sensitivity to approval-relevant fields', 
       }
     ],
     [
+      // The reconnect/reorder case §3.5 names: matchIntegration() picks the first enabled
+      // integration at publish time, so the SAME platform resolving to a different account
+      // afterward must invalidate an approval that bound the earlier resolution.
+      'a post integrationId, platform and hashtags otherwise unchanged',
+      (i) => {
+        i.outboundPackage.posts[0]!.integrationId = 'integ_tt_2';
+      }
+    ],
+    [
       'a post hashtag',
       (i) => {
         i.outboundPackage.posts[0]!.hashtags = ['#a', '#different'];
       }
     ],
     [
+      // apps/gateway/src/server.ts joins hashtags in stored order into the outbound caption —
+      // `#a #b` and `#b #a` are different transmitted bytes, so reordering must not be free.
+      'a post hashtag order, same hashtags',
+      (i) => {
+        i.outboundPackage.posts[0]!.hashtags = [...i.outboundPackage.posts[0]!.hashtags].reverse();
+      }
+    ],
+    [
       'a post added',
       (i) => {
-        i.outboundPackage.posts.push({ platform: 'x', caption: 'new', hashtags: [] });
+        i.outboundPackage.posts.push({ platform: 'x', integrationId: 'integ_x_1', caption: 'new', hashtags: [] });
         i.outboundPackage.platforms.push('x');
       }
     ]

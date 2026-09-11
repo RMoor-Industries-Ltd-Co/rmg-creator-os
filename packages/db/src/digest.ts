@@ -59,16 +59,34 @@ function digest(shape: unknown): string {
  *  step 6's job, not this module's. */
 export interface OutboundPost {
   platform: string;
+  /** The **resolved** Postiz integration this post targets, captured at approval time.
+   *  §3.5: "the approved package records the resolved integration identity, and publish sends
+   *  to that exact destination or refuses — it does not re-resolve." `matchIntegration()`
+   *  (`apps/gateway/src/postiz.ts`) picks the *first* enabled integration matching a platform
+   *  alias at publish time; reconnect, reorder or add a second account for the same platform
+   *  afterward and an unpinned approval would silently redirect to a different profile with the
+   *  digest unchanged. Required, not nullable — a platform with no resolved integration has no
+   *  destination to approve, so it cannot be part of an approved package (the write path
+   *  refusing to approve such a platform is §13 step 6's concern, not this type's). */
+  integrationId: string;
   caption: string | null;
+  /** In the **exact order they will be transmitted**. §3.5 covers "the exact bytes that will be
+   *  sent" and the publisher joins this array in stored order into the outbound caption
+   *  (`apps/gateway/src/server.ts`: `(row?.hashtags ?? []).join(' ')`) — `#a #b` and `#b #a` are
+   *  different bytes on the wire. Sorting them here, as an earlier draft did, would let a
+   *  reordering that changes what actually gets posted pass as the same approval; only the
+   *  *posts* array (which platform's post is listed where) is caller-order noise, not this. */
   hashtags: string[];
 }
 
 /** The complete outbound package as of the moment of approval. `platforms`/`type`/`date` do not
  *  exist as production-scoped data today (§3.5: "not properties of the production at all") —
- *  they arrive with the approval action once §13 step 6 lands. Order in `posts` and `platforms`
- *  does not matter to the caller and must not matter to the digest, so this module sorts both
- *  before hashing; changing a caption, a hashtag, the platform set, the publish type, or the
- *  date changes the digest, and reordering either array alone does not. */
+ *  they arrive with the approval action once §13 step 6 lands. `posts` and `platforms` are
+ *  logically sets — which platform a post belongs to determines its content, not the position
+ *  it happens to occupy in an array assembled from a DB query — so this module normalizes both
+ *  before hashing: reordering either array alone does not change the digest, but changing a
+ *  caption, a hashtag (or its order — see `OutboundPost`), an integration, the platform set, the
+ *  publish type, or the date does. */
 export interface OutboundPackage {
   platforms: string[];
   type: string;
@@ -109,9 +127,22 @@ export interface ProductionDigestInput {
  *  `updated_at`, `stage`, `status`, or any field not listed in §3.5, all of which must remain
  *  free to change post-approval without invalidating the approval. */
 export function computeProductionDigest(input: ProductionDigestInput): string {
+  // Hashtags are NOT sorted — see OutboundPost.hashtags. Posts ARE normalized by platform, but
+  // the `posts` table carries no uniqueness constraint on (production_id, platform), so two
+  // entries can legitimately share a platform (e.g. a concurrent PUT racing an insert). A
+  // comparator that only orders by platform leaves same-platform entries in whatever order the
+  // caller happened to assemble them, which makes THIS array's order matter again for exactly
+  // the pairs it's supposed to be irrelevant for. The tie-break is the full canonicalized post,
+  // so two arrays differing only in the order they were assembled always sort identically
+  // regardless of duplicate platforms, while genuinely different posts still hash differently.
   const posts = [...input.outboundPackage.posts]
-    .map((p) => ({ platform: p.platform, caption: p.caption, hashtags: [...p.hashtags].sort() }))
-    .sort((a, b) => (a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0));
+    .map((p) => ({ platform: p.platform, integrationId: p.integrationId, caption: p.caption, hashtags: [...p.hashtags] }))
+    .sort((a, b) => {
+      if (a.platform !== b.platform) return a.platform < b.platform ? -1 : 1;
+      const ak = JSON.stringify(canonicalize(a));
+      const bk = JSON.stringify(canonicalize(b));
+      return ak < bk ? -1 : ak > bk ? 1 : 0;
+    });
   const platforms = [...input.outboundPackage.platforms].sort();
 
   return digest({
