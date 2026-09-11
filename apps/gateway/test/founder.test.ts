@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isFounder, parseFounderPrincipals, resolveFounderPrincipal } from '../src/founder.js';
+import { founderPrincipalCount, isFounder, parseFounderPrincipals, resolveFounderPrincipal } from '../src/founder.js';
 
 // Founder-set authorization (docs/atelier/phase-b-governance-primitives-design.md §7.2, ratified
 // decision 2) — the third, separate check from session + step-up: being allowlisted and fresh is
@@ -132,5 +132,33 @@ describe('isFounder', () => {
 
   it('is false against an empty founder set', () => {
     expect(isFounder('rahm@rmasters.group', parseFounderPrincipals(undefined).map)).toBe(false);
+  });
+});
+
+describe('founderPrincipalCount', () => {
+  // Regression test for the exact defect that shipped in B1.3: server.ts computed
+  // `Object.keys(FOUNDER_PRINCIPALS).length` for the startup/readiness report — `Object.keys()`
+  // on a Map ALWAYS returns [] regardless of how many entries it has, so `readiness.founder_approval`
+  // reported `disabled_no_principals` in production even with a correctly-configured, correctly
+  // -parsing FOUNDER_PRINCIPALS (verified live: readiness showed the bug while the map itself,
+  // per this same parser, was non-empty). This test would have failed against the old
+  // `Object.keys(map).length` expression and passes against `map.size`.
+
+  it('counts a Map correctly, unlike Object.keys(map).length (which is always 0)', () => {
+    const { map } = parseFounderPrincipals(
+      'rahm@rmasters.group=rahm@business,rmoorindustries@gmail.com=rahm@business,rahmind.consulting@rmoorind.com=rahm@business'
+    );
+    // The defect, demonstrated directly: this is what server.ts used to compute.
+    expect(Object.keys(map).length).toBe(0);
+    // The fix: Map.prototype.size reports the actual entry count.
+    expect(founderPrincipalCount(map)).toBe(3);
+  });
+
+  it('is 0 for an empty founder set', () => {
+    expect(founderPrincipalCount(parseFounderPrincipals(undefined).map)).toBe(0);
+  });
+
+  it('counts one entry for a single mapping', () => {
+    expect(founderPrincipalCount(parseFounderPrincipals('rahm@rmasters.group=rahm@business').map)).toBe(1);
   });
 });

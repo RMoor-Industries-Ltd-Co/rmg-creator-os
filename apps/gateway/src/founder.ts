@@ -76,3 +76,24 @@ export function resolveFounderPrincipal(
 export function isFounder(email: string | undefined, founderPrincipals: Map<string, string>): boolean {
   return resolveFounderPrincipal(email, founderPrincipals) !== undefined;
 }
+
+/**
+ * How many principals are in the founder set — for reporting only (configReport.ts's
+ * `founder_approval` capability status), never for authorization itself.
+ *
+ * Exists to put one correct call site between the map and anything that counts it.
+ * `Object.keys(aMap)` always returns `[]` regardless of a Map's actual contents — `Object.keys`
+ * enumerates an object's own enumerable string-keyed properties, and a `Map`'s entries are not
+ * those; they live in the engine's internal slot. `founderPrincipals.size` is correct.
+ *
+ * This is exactly the bug B1.3 shipped: `server.ts` computed
+ * `Object.keys(FOUNDER_PRINCIPALS).length` for the startup/readiness report, which is `0` for
+ * ANY non-empty Map — so `readiness.founder_approval` reported `disabled_no_principals` even
+ * with a correctly-configured, correctly-parsing `FOUNDER_PRINCIPALS` in production. The
+ * authorization path itself (`resolveFounderPrincipal` / `isFounder`, both `.get()`-based) was
+ * never affected — this was a reporting-only defect, not an authorization gap in either
+ * direction. See docs/atelier/audits/incident-2026-09-11-founder-principal-count-object-keys.md.
+ */
+export function founderPrincipalCount(founderPrincipals: Map<string, string>): number {
+  return founderPrincipals.size;
+}
