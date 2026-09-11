@@ -113,20 +113,26 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
 
   // ── approval_evidence ───────────────────────────────────────────────────────────────
   describe('approval_evidence', () => {
+    // A positive decision must carry the package it authorizes, so the default here does —
+    // otherwise every helper call would be exercising the legacy exemption by accident.
+    const PKG = { platforms: ['x'], caption: 'c', type: 'post', date: '2026-01-01' };
+
     const ins = (over: Record<string, unknown> = {}) => {
       const v = {
         subject_type: 'production', subject_id: 'p-' + Math.random().toString(36).slice(2),
         scope: 'vlog', revision_digest: 'd1', decision: 'approved', notes: null,
         principal_id: 'rahm@business', principal_kind: 'human', asserted_role: 'founder',
-        source_system: 'rmg-creator-os', decision_seq: 1, decided_at: new Date(), ...over
+        source_system: 'rmg-creator-os', decision_seq: 1, decided_at: new Date(),
+        approved_package: PKG, ...over
       } as Record<string, unknown>;
       return db.execute(sql`
         INSERT INTO approval_evidence
           (subject_type,subject_id,scope,revision_digest,decision,notes,principal_id,
-           principal_kind,asserted_role,source_system,decision_seq,decided_at)
+           principal_kind,asserted_role,source_system,decision_seq,decided_at,approved_package)
         VALUES (${v.subject_type},${v.subject_id},${v.scope},${v.revision_digest},${v.decision},
                 ${v.notes},${v.principal_id},${sql.raw(`'${v.principal_kind}'::principal_kind`)},
-                ${v.asserted_role},${v.source_system},${v.decision_seq},${v.decided_at})
+                ${v.asserted_role},${v.source_system},${v.decision_seq},${v.decided_at},
+                ${v.approved_package === null ? null : JSON.stringify(v.approved_package)})
         RETURNING id`);
     };
 
@@ -151,6 +157,45 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
     // Ratified decision 7, stated as a NEGATIVE on purpose.
     it('ACCEPTS a falsified principal_kind — the constraint is not authorization', async () => {
       await expect(ins({ principal_id: 'a-lying-bot', principal_kind: 'human' })).resolves.toBeTruthy();
+    });
+
+    it('requires an approved package for a live positive decision', async () => {
+      // Without this, an 'approved' row satisfies decision, liveness, digest and key
+      // predicates while authorizing no particular outbound package at all.
+      await expect(ins({ approved_package: null })).rejects.toThrow();
+      await expect(ins({ decision: 'approved_with_note', notes: 'n', approved_package: null }))
+        .rejects.toThrow();
+      // Non-approving decisions have nothing to authorize, so they are exempt.
+      await expect(ins({ decision: 'rejected', approved_package: null })).resolves.toBeTruthy();
+      // Legacy history is exempt too — it deliberately fails the digest check anyway.
+      await expect(ins({
+        approved_package: null, asserted_role: 'legacy-unattributed',
+        principal_kind: 'processor', decided_at: null, revision_digest: 'legacy:unbound'
+      })).resolves.toBeTruthy();
+    });
+
+    it('bounds decision_seq to the exact-integer range the model reads it with', async () => {
+      // The Drizzle model uses mode:'number'; beyond 2^53-1 adjacent ordinals collapse on
+      // read and the monotonic-ordering rule silently stops holding.
+      await expect(ins({ decision_seq: 9007199254740992 })).rejects.toThrow();
+      await expect(ins({ decision_seq: -1 })).rejects.toThrow();
+      await expect(ins({ decision_seq: 9007199254740991 })).resolves.toBeTruthy();
+    });
+
+    it('validates supersession coherence on INSERT, not only on UPDATE', async () => {
+      // The append-only trigger fires on UPDATE/DELETE only, so an INSERT was the one moment
+      // a malformed lineage could be written — and immutability then makes it permanent.
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `INSERT INTO approval_evidence (subject_type,subject_id,scope,revision_digest,decision,
+             principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at,
+             approved_package,superseded_at)
+           VALUES ('production','p-badinsert','vlog','d1','approved','rahm','human','founder',
+                   'rmg-creator-os',1,now(),'{}'::jsonb,now())`);
+        await expect(client.query('COMMIT')).rejects.toThrow(/no successor/);
+      } finally { client.release(); }
     });
 
     it('requires decided_at except for legacy-unattributed backfill rows', async () => {
@@ -300,9 +345,10 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
     beforeAll(async () => {
       const r = await db.execute(sql`
         INSERT INTO approval_evidence (subject_type,subject_id,scope,revision_digest,decision,
-          principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at)
+          principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at,
+          approved_package)
         VALUES ('production','p-pub','vlog','d1','approved','rahm','human','founder',
-                'rmg-creator-os',1,now()) RETURNING id`);
+                'rmg-creator-os',1,now(),'{}'::jsonb) RETURNING id`);
       evidenceId = (r.rows[0] as { id: string }).id;
     });
 
@@ -327,6 +373,48 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
       await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
                            WHERE subject_id='p-pub'`);
       await expect(intent('claimed')).resolves.toBeTruthy();
+    });
+
+    it('refuses evidence belonging to a different subject or scope', async () => {
+      // The foreign key proves only that the row exists. Without this, an intent for subject
+      // B could reference subject A's live evidence and copy A's digest — uniqueness and
+      // withdrawal coordination on B, while the fence validates A.
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE subject_id='p-pub'`);
+      await refused(() => db.execute(sql`
+        INSERT INTO publication_intents (subject_type,subject_id,scope,evidence_id,
+          revision_digest,phase,lease_expires_at)
+        VALUES ('production','a-different-production','vlog',${evidenceId},'d1',
+                'claimed'::publication_intent_phase, now() + interval '60 s')`),
+        /is for production\/p-pub/);
+    });
+
+    it('refuses a digest that disagrees with the evidence it names', async () => {
+      await refused(() => db.execute(sql`
+        INSERT INTO publication_intents (subject_type,subject_id,scope,evidence_id,
+          revision_digest,phase,lease_expires_at)
+        VALUES ('production','p-pub','vlog',${evidenceId},'a-different-digest',
+                'claimed'::publication_intent_phase, now() + interval '60 s')`),
+        /digest does not match/);
+    });
+
+    it('refuses to delete an OPEN intent, so the slot is never released silently', async () => {
+      const r = await intent('claimed');
+      const id = (r.rows[0] as { id: string }).id;
+      await refused(() => db.execute(sql`DELETE FROM publication_intents WHERE id=${id}`),
+        /may not be deleted/);
+      // 'unknown' holds the slot hardest: the remote outcome is unresolved, so admitting a
+      // second claim could duplicate a post that in fact went out.
+      await db.execute(sql`UPDATE publication_intents SET phase='unknown' WHERE id=${id}`);
+      await refused(() => db.execute(sql`DELETE FROM publication_intents WHERE id=${id}`),
+        /may not be deleted/);
+      await refused(() => db.execute(sql`TRUNCATE publication_intents CASCADE`),
+        /TRUNCATE is not permitted/);
+      // A closed intent is ordinary data again.
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE id=${id}`);
+      await expect(db.execute(sql`DELETE FROM publication_intents WHERE id=${id}`))
+        .resolves.toBeTruthy();
     });
 
     it('refuses a published intent with no remote post id', async () => {

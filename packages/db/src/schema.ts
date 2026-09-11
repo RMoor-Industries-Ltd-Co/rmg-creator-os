@@ -226,7 +226,10 @@ export const productionJobStatus = pgEnum('production_job_status', [
   'running',
   'done',
   'failed',
-  'cancelled'
+  'cancelled',
+  /** Phase B1 (migration 0023). Durable pause for gated work. Invisible to Phase A's claim
+   *  (`status = 'queued'`) and recovery (`status = 'running'`) queries by construction. */
+  'awaiting_approval'
 ]);
 
 export const productionJobCapability = pgEnum('production_job_capability', [
@@ -235,15 +238,20 @@ export const productionJobCapability = pgEnum('production_job_capability', [
   'lipsync',
   'audio',
   'thumbnail',
-  'poster'
+  'poster',
+  /** Phase B1 (migration 0023). Enqueueable so an Accord job needs no fake video parent;
+   *  NOT executable — `dispatch` throws for it until a real dispatcher exists, rather than
+   *  letting the NullRenderer fallback mark unperformed work `done`. */
+  'accord_article'
 ]);
 
 /** A discrete unit of work in the production pipeline — claimed and executed by the worker. */
 export const productionJobs = pgTable('production_jobs', {
   id: uuid('id').primaryKey().defaultRandom(),
-  productionId: text('production_id')
-    .notNull()
-    .references(() => productions.id, { onDelete: 'cascade' }),
+  /** Nullable since migration 0024: a job has exactly one parent, either a production or a
+   *  work item, enforced by the `production_jobs_one_parent` CHECK. Every pre-0024 row has
+   *  a production, so no existing row or query changes. */
+  productionId: text('production_id').references(() => productions.id, { onDelete: 'cascade' }),
   capability: productionJobCapability('capability').notNull(),
   provider: text('provider').notNull(),
   payload: jsonb('payload').$type<Record<string, unknown>>().notNull().default({}),
@@ -360,6 +368,11 @@ export const approvalEvidence = pgTable('approval_evidence', {
   /** Monotonic per (subject, scope). Freshness is not ordering: two assertions minted inside
    *  one age window can arrive out of order, and without an ordinal the older approval would
    *  supersede the newer rejection. */
+  /** `mode: 'number'` is safe **because the database bounds it** — migration 0024 constrains
+   *  the column to `[0, 2^53-1]`, the exact-integer range of a JS number. Without that bound
+   *  a value above `Number.MAX_SAFE_INTEGER` would round on read and adjacent ordinals could
+   *  collapse, silently breaking the monotonic ordering this column exists for. Raising the
+   *  ceiling means switching to `mode: 'bigint'` and widening the CHECK together. */
   decisionSeq: bigint('decision_seq', { mode: 'number' }).notNull(),
   /** When the DECISION was made, as distinct from when Creator OS recorded it. NULL only for
    *  legacy backfilled rows, whose original decision time is genuinely unknown — writing the

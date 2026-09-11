@@ -32,6 +32,14 @@ type WorkerClients = {
 // now routed through a Renderer (NullRenderer), which reproduces their exact prior output.
 // Exported only for the dispatch-behavior tests (apps/gateway/test/worker.test.ts) — not a
 // new public surface for other modules to call.
+/**
+ * Capabilities that exist in the database enum but cannot yet be executed.
+ *
+ * Kept as data rather than an inline check so that adding a dispatcher means deleting one
+ * line here — and so the set is greppable from the migration that introduced the value.
+ */
+const UNIMPLEMENTED_CAPABILITIES = new Set<string>(['accord_article']);
+
 export async function dispatch(
   job: ProductionJob,
   clients: WorkerClients,
@@ -60,6 +68,21 @@ export async function dispatch(
       title: p.title,
     });
     return { resultId: videoId };
+  }
+
+  // Capabilities whose enum value exists but which have no real dispatcher yet. Migration
+  // 0023 adds `accord_article` so an Accord job can be ENQUEUED (§3.4) — but the registry's
+  // fallback is a NullRenderer, which returns a stub id, and `runWorkerTick` would then mark
+  // the job `done`. A governed job reported as complete having produced nothing is strictly
+  // worse than one that fails: the failure is visible and the false success is not.
+  //
+  // So the enum value being legal must not imply the work is performable. This throws, which
+  // takes the job down the normal failure path (attempt/backoff, then `failed` with a reason)
+  // instead of the silent-success path.
+  if (UNIMPLEMENTED_CAPABILITIES.has(capability)) {
+    throw new Error(
+      `capability '${capability}' has no dispatcher yet — enqueueing is supported, execution is not`
+    );
   }
 
   const renderer = renderers.resolve(capability, provider);

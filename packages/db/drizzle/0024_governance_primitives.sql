@@ -122,7 +122,25 @@ CREATE TABLE IF NOT EXISTS approval_evidence (
     CHECK ((signing_key_id IS NULL) = (assertion_id IS NULL)),
 
   CONSTRAINT decided_at_required_unless_legacy
-    CHECK (decided_at IS NOT NULL OR asserted_role = 'legacy-unattributed')
+    CHECK (decided_at IS NOT NULL OR asserted_role = 'legacy-unattributed'),
+
+  -- An APPROVING decision must name what it approves. Without this a live 'approved' row can
+  -- satisfy every gate predicate — decision, liveness, digest, key — while authorizing no
+  -- particular outbound package at all, which is the opposite of what the digest binding is
+  -- for. Legacy backfilled rows are exempt: they are history, and they deliberately fail the
+  -- digest check anyway, so they can never open a gate.
+  CONSTRAINT approved_package_required_for_positive_decisions
+    CHECK (decision NOT IN ('approved','approved_with_note')
+           OR asserted_role = 'legacy-unattributed'
+           OR approved_package IS NOT NULL),
+
+  -- Bounded to the exact-integer range of a JS number. The Drizzle model reads this column
+  -- with `mode: 'number'`; above 2^53-1 a bigint rounds on read, and two adjacent ordinals
+  -- could collapse into one — silently defeating the monotonic ordering the column exists
+  -- for. Bounding it in the database makes the model's representation exact by construction
+  -- rather than by hoping the domain never counts that high.
+  CONSTRAINT decision_seq_exact_in_js
+    CHECK (decision_seq >= 0 AND decision_seq <= 9007199254740991)
 );
 
 -- Exactly one live decision per (subject, scope). Concurrent decisions collide at the
@@ -208,9 +226,16 @@ BEGIN
   RETURN NULL;
 END $$ LANGUAGE plpgsql;
 
+-- AFTER INSERT OR UPDATE, not UPDATE alone.
+--
+-- The append-only trigger fires only on UPDATE/DELETE and this one fired only after UPDATE,
+-- so a caller could INSERT a row already carrying `superseded_at` with no successor, or a
+-- live row whose `superseded_by` points at an unrelated record — bypassing every lineage
+-- check at the one moment nothing was watching. Worse, immutability then prevents repairing
+-- it: the malformed row is permanent.
 DROP TRIGGER IF EXISTS approval_evidence_supersession_complete ON approval_evidence;
 CREATE CONSTRAINT TRIGGER approval_evidence_supersession_complete
-  AFTER UPDATE ON approval_evidence
+  AFTER INSERT OR UPDATE ON approval_evidence
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION approval_evidence_supersession_complete();
 
@@ -303,6 +328,59 @@ CREATE UNIQUE INDEX IF NOT EXISTS publication_intents_open
 CREATE INDEX IF NOT EXISTS publication_intents_evidence
   ON publication_intents (evidence_id);
 
+-- The evidence must be evidence FOR THIS SUBJECT.
+--
+-- The foreign key above proves only that `evidence_id` exists. Nothing stopped an intent for
+-- subject B from referencing live evidence for subject A and copying A's digest: uniqueness
+-- and withdrawal coordination would then operate on B while the publication fence validated
+-- A — the fence passing on a decision that was never about the thing being published.
+CREATE OR REPLACE FUNCTION publication_intents_evidence_coherent() RETURNS trigger AS $$
+DECLARE e approval_evidence%ROWTYPE;
+BEGIN
+  SELECT * INTO e FROM approval_evidence WHERE id = NEW.evidence_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'publication_intents: evidence % does not exist', NEW.evidence_id;
+  END IF;
+  IF e.subject_type IS DISTINCT FROM NEW.subject_type
+     OR e.subject_id IS DISTINCT FROM NEW.subject_id
+     OR e.scope      IS DISTINCT FROM NEW.scope THEN
+    RAISE EXCEPTION 'publication_intents: evidence % is for %/%/%, not %/%/%',
+      NEW.evidence_id, e.subject_type, e.subject_id, e.scope,
+      NEW.subject_type, NEW.subject_id, NEW.scope;
+  END IF;
+  IF e.revision_digest IS DISTINCT FROM NEW.revision_digest THEN
+    RAISE EXCEPTION 'publication_intents: digest does not match evidence %', NEW.evidence_id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS publication_intents_coherent ON publication_intents;
+CREATE TRIGGER publication_intents_coherent
+  BEFORE INSERT OR UPDATE ON publication_intents
+  FOR EACH ROW EXECUTE FUNCTION publication_intents_evidence_coherent();
+
+-- An OPEN intent holds the uniqueness slot on purpose, and 'unknown' holds it hardest: the
+-- remote outcome is unresolved, so admitting a second claim could duplicate a post that in
+-- fact went out. A cleanup path or a stray statement deleting such a row would release the
+-- slot silently. The slot is released only by moving to a terminal phase, never by deletion.
+CREATE OR REPLACE FUNCTION publication_intents_no_open_delete() RETURNS trigger AS $$
+BEGIN
+  IF OLD.phase IN ('claimed','transmitting','unknown') THEN
+    RAISE EXCEPTION
+      'publication_intents %: an open intent (%) may not be deleted — close it to a terminal phase',
+      OLD.id, OLD.phase;
+  END IF;
+  RETURN OLD;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS publication_intents_open_no_delete ON publication_intents;
+CREATE TRIGGER publication_intents_open_no_delete
+  BEFORE DELETE ON publication_intents
+  FOR EACH ROW EXECUTE FUNCTION publication_intents_no_open_delete();
+
+-- TRUNCATE is covered too, alongside the other governance tables below — the shared guard
+-- function is defined there, and CREATE TRIGGER requires it to already exist.
+
 -- ---------------------------------------------------------------------------------------
 -- TRUNCATE guards.
 -- Row-level DELETE triggers DO NOT FIRE for TRUNCATE, and Creator OS runs migrations and
@@ -326,6 +404,10 @@ CREATE TRIGGER workflow_transitions_no_truncate BEFORE TRUNCATE ON workflow_tran
 
 DROP TRIGGER IF EXISTS signing_keys_no_truncate ON signing_keys;
 CREATE TRIGGER signing_keys_no_truncate BEFORE TRUNCATE ON signing_keys
+  FOR EACH STATEMENT EXECUTE FUNCTION governance_table_no_truncate();
+
+DROP TRIGGER IF EXISTS publication_intents_no_truncate ON publication_intents;
+CREATE TRIGGER publication_intents_no_truncate BEFORE TRUNCATE ON publication_intents
   FOR EACH STATEMENT EXECUTE FUNCTION governance_table_no_truncate();
 
 -- ---------------------------------------------------------------------------------------
