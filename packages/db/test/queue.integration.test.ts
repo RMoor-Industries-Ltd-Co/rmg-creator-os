@@ -10,7 +10,8 @@ import {
   claimNextJob,
   recoverStaleJobs,
   findCompletedByIdempotencyKey,
-  cancelJob
+  cancelJob,
+  listAwaitingApproval
 } from '../src/queue.js';
 import type { Database } from '../src/client.js';
 import { provisionDatabase } from './support/database.js';
@@ -335,6 +336,67 @@ d('production queue — execution safety (Phase A)', () => {
       await expect(
         enqueueJob(db, { productionId: PROD_ID, capability: 'accord_article', provider: 'accord' })
       ).rejects.toThrow();
+    });
+  });
+
+  // ---- listAwaitingApproval — the waiting-for-approval surface (§13 step 11) --------------
+  //
+  // No live path writes a job into `awaiting_approval` yet — the gate write path (§13 step 6)
+  // and the gate-aware claim/backfill machinery (B1.5 step 12) both stay blocked on the A-Roll
+  // pin (docs/atelier/b1-2-dependency-split.md). So these tests put a row at rest in that
+  // status directly via SQL, the same way governance.migration.test.ts's own coverage of the
+  // gate-completeness CHECK does — this suite is testing the READ surface, which needs only
+  // that a row can legitimately exist in this state, not that anything live produces one yet.
+  describe('listAwaitingApproval', () => {
+    async function putAwaitingApproval(overrides: {
+      id?: string;
+      gateSubjectId: string;
+      enqueuedAt?: Date;
+    }) {
+      const { job } = await add({ idempotencyKey: overrides.id ?? `await-${overrides.gateSubjectId}` });
+      await db.execute(sql`
+        UPDATE production_jobs SET
+          status = 'awaiting_approval',
+          gate_origin = 'policy',
+          gate_subject_type = 'production',
+          gate_subject_id = ${overrides.gateSubjectId},
+          gate_scope = 'hvn',
+          gate_resolution = 'gated'
+          ${overrides.enqueuedAt ? sql`, enqueued_at = ${overrides.enqueuedAt}` : sql``}
+        WHERE id = ${job.id}::uuid
+      `);
+      return job.id;
+    }
+
+    it('lists a job at rest in awaiting_approval, exposing what/on whom/since when', async () => {
+      const jobId = await putAwaitingApproval({ gateSubjectId: 'prod-x' });
+      const entries = await listAwaitingApproval(db);
+      const entry = entries.find((e) => e.jobId === jobId);
+      expect(entry).toMatchObject({
+        gateOrigin: 'policy',
+        gateSubjectType: 'production',
+        gateSubjectId: 'prod-x',
+        gateScope: 'hvn'
+      });
+      expect(entry!.waitingSince).toBeInstanceOf(Date);
+    });
+
+    it('excludes jobs in every other status', async () => {
+      const { job: queuedJob } = await add({ idempotencyKey: 'not-awaiting' });
+      const entries = await listAwaitingApproval(db);
+      expect(entries.find((e) => e.jobId === queuedJob.id)).toBeUndefined();
+    });
+
+    it('orders oldest-waiting first', async () => {
+      const older = new Date(Date.now() - 60_000);
+      const newer = new Date();
+      const olderId = await putAwaitingApproval({ gateSubjectId: 'prod-older', enqueuedAt: older });
+      const newerId = await putAwaitingApproval({ gateSubjectId: 'prod-newer', enqueuedAt: newer });
+      const entries = await listAwaitingApproval(db);
+      const olderIndex = entries.findIndex((e) => e.jobId === olderId);
+      const newerIndex = entries.findIndex((e) => e.jobId === newerId);
+      expect(olderIndex).toBeGreaterThanOrEqual(0);
+      expect(newerIndex).toBeGreaterThan(olderIndex);
     });
   });
 });

@@ -3,7 +3,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { and, eq, sql } from '@rmg-creator-os/db';
-import { tables, cancelJob } from '@rmg-creator-os/db';
+import { tables, cancelJob, listAwaitingApproval } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
 
 export function registerQueueRoutes(app: FastifyInstance, db: Database) {
@@ -61,6 +61,15 @@ export function registerQueueRoutes(app: FastifyInstance, db: Database) {
             .orderBy(tables.productionJobs.enqueuedAt);
 
     return { jobs };
+  });
+
+  // GET /queue/awaiting-approval — the waiting-for-approval surface (§13 step 11): every job
+  // at rest in `awaiting_approval`, oldest first, with what is waiting (capability, parent),
+  // on whom (the gate descriptor), and since when. Static route, registered before the
+  // `/queue/:id` param route so `awaiting-approval` is never parsed as a job id.
+  app.get('/queue/awaiting-approval', async () => {
+    const entries = await listAwaitingApproval(db);
+    return { entries };
   });
 
   // GET /queue/:id — single job
