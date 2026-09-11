@@ -7,15 +7,18 @@ import { tables, cancelJob } from '@rmg-creator-os/db';
 import type { Database } from '@rmg-creator-os/db';
 
 export function registerQueueRoutes(app: FastifyInstance, db: Database) {
-  // GET /queue — list jobs, optional ?production_id=&status=&capability=
+  // GET /queue — list jobs, optional ?production_id=&work_item_id=&status=&capability=
   app.get<{
-    Querystring: { production_id?: string; status?: string; capability?: string };
+    Querystring: { production_id?: string; work_item_id?: string; status?: string; capability?: string };
   }>('/queue', async (request) => {
-    const { production_id, status, capability } = request.query;
+    const { production_id, work_item_id, status, capability } = request.query;
 
     const conditions = [];
     if (production_id) {
       conditions.push(eq(tables.productionJobs.productionId, production_id));
+    }
+    if (work_item_id) {
+      conditions.push(eq(tables.productionJobs.workItemId, work_item_id));
     }
     if (status) {
       // Support comma-separated status values

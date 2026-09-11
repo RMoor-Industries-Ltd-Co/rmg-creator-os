@@ -271,4 +271,70 @@ d('production queue — execution safety (Phase A)', () => {
   it('reports not_found for an unknown job', async () => {
     expect(await cancelJob(db, '00000000-0000-0000-0000-000000000000')).toEqual({ outcome: 'not_found' });
   });
+
+  // ---- EnqueueJobInput's parent-discriminated union (§3.4, issue #56 item 11) -------------
+  //
+  // Before this union existed, an Accord (work-item-parented) job was impossible to enqueue at
+  // all — EnqueueJobInput required productionId and had no workItemId, so the only way to
+  // enqueue accord_article work was to fabricate a video production, the exact shortcut §3.4
+  // rejects. These tests prove both the valid work-item shape now works, and that the union's
+  // "exactly one parent" rule is enforced at the application boundary (enqueueJob throws) as
+  // well as at the database (production_jobs_one_parent / production_jobs_parent_matches_capability).
+  describe('EnqueueJobInput — work-item parent', () => {
+    async function newWorkItem(): Promise<string> {
+      const [row] = await db
+        .insert(tables.workItems)
+        .values({ kind: 'accord_article', brand: 'hvn' })
+        .returning();
+      return row!.id;
+    }
+
+    it('enqueues a work-item-parented job with the accord_article capability', async () => {
+      const workItemId = await newWorkItem();
+      const { job } = await enqueueJob(db, { workItemId, capability: 'accord_article', provider: 'accord' });
+      expect(job.productionId).toBeNull();
+      expect(job.workItemId).toBe(workItemId);
+      expect(job.capability).toBe('accord_article');
+    });
+
+    it('rejects a call supplying BOTH productionId and workItemId', async () => {
+      const workItemId = await newWorkItem();
+      await expect(
+        enqueueJob(db, {
+          // @ts-expect-error — deliberately violating the union to prove the runtime guard,
+          // not just the compile-time one, refuses this.
+          productionId: PROD_ID,
+          workItemId,
+          capability: 'accord_article',
+          provider: 'accord'
+        })
+      ).rejects.toThrow(/exactly one of productionId or workItemId/);
+    });
+
+    it('rejects a call supplying NEITHER productionId nor workItemId', async () => {
+      await expect(
+        enqueueJob(db, {
+          // @ts-expect-error — deliberately violating the union to prove the runtime guard.
+          capability: 'accord_article',
+          provider: 'accord'
+        })
+      ).rejects.toThrow(/exactly one of productionId or workItemId/);
+    });
+
+    it('the database rejects a work-item parent paired with a non-accord_article capability', async () => {
+      // production_jobs_parent_matches_capability: (capability = 'accord_article') = (work_item_id IS NOT NULL).
+      // A work-item job carrying any other capability violates the biconditional.
+      const workItemId = await newWorkItem();
+      await expect(enqueueJob(db, { workItemId, capability: 'broll', provider: 'stock' })).rejects.toThrow();
+    });
+
+    it('the database rejects the accord_article capability paired with a production parent', async () => {
+      // The other half of the same biconditional — fabricating a video parent for Accord work
+      // is exactly the shortcut §3.4 rejects, and the database refuses it even if application
+      // code somehow constructed this pairing.
+      await expect(
+        enqueueJob(db, { productionId: PROD_ID, capability: 'accord_article', provider: 'accord' })
+      ).rejects.toThrow();
+    });
+  });
 });
