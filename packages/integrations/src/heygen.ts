@@ -100,7 +100,9 @@ export interface HeyGenVideoStatusResult {
 
 export interface HeyGenVideoListPage {
   videos: HeyGenVideoStatusResult[];
-  hasMore: boolean;
+  /** `undefined` when the server omitted `has_more` — deliberately distinct from `false`,
+   *  which is the server asserting the result set ended. Only the latter proves exhaustion. */
+  hasMore: boolean | undefined;
   nextToken?: string;
 }
 
@@ -259,18 +261,31 @@ export function assertDerivableIdempotencyKey(key: string): void {
  * a duplicate paid render. An earlier pass got this right in one place and not the other,
  * which is why the rule now lives in one function instead of two inline conditions.
  *
- * - `done` — the server says there is nothing more. Stop; the result set is complete.
- * - `more` — there is more and we have the cursor to fetch it.
- * - `inconsistent` — the server says there is more but gave no cursor. We cannot continue and
- *   we cannot honestly call the result complete, so the caller must fail rather than guess.
+ * - `done` — the server **said** there is nothing more. Stop; the result set is complete.
+ * - `more` — there may be more and we have the cursor to fetch it.
+ * - `inconsistent` — exhaustion is not established and we cannot continue. The caller must
+ *   fail rather than guess.
+ *
+ * **An omitted `has_more` is not `has_more: false`.** Only an explicit `false` is the server
+ * asserting exhaustion; an absent field asserts nothing, and absence of the authoritative
+ * flag is not proof that the result set ended. Collapsing the two with a falsy check — which
+ * this function did until a review caught it — lets a missing field authorize the one
+ * conclusion that spends money. So an omitted flag is resolved by whether we can keep
+ * reading: with a cursor we follow it, without one we fail closed.
+ *
+ * This is D-J3a applied at the level of a single page:
+ * only a *proven* end licenses "there is nothing more".
  */
 function pageState(hasMore: boolean | undefined, nextToken: string | undefined):
   | 'done'
   | 'more'
   | 'inconsistent' {
-  // `has_more` is the authoritative signal; a token echoed alongside `has_more: false` is
+  // Explicit `false` is the only assertion of exhaustion. A token echoed alongside it is
   // trailing state, not an invitation to keep reading.
-  if (!hasMore) return 'done';
+  if (hasMore === false) return 'done';
+  // Either `has_more: true`, or the flag was omitted. In both cases a cursor means we can
+  // keep reading, and reading further is always safe — it can only make the result more
+  // complete. Without a cursor we can neither continue nor claim the set ended.
   return nextToken ? 'more' : 'inconsistent';
 }
 
@@ -388,8 +403,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       if (state === 'done') return out as Array<Record<string, unknown>> & T[];
       if (state === 'inconsistent') {
         throw new HeyGenError(
-          `HeyGen ${path}: has_more is set but no next_token was returned — refusing to return ` +
-            `a partial catalog as if it were complete`
+          `HeyGen ${path}: cannot establish that the catalog ended — no next_token, and no ` +
+            `explicit has_more:false; refusing to return a partial catalog as if it were complete`
         );
       }
     }
@@ -547,7 +562,10 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       }>(`/v3/videos${query ? `?${query}` : ''}`);
       return {
         videos: (j.data ?? []).map((d) => toStatusResult(d)),
-        hasMore: Boolean(j.has_more),
+        // Passed through, NOT coerced with Boolean(): `undefined` and `false` mean different
+        // things to `pageState`, and flattening them here would erase the distinction before
+        // it ever reaches the decision.
+        hasMore: j.has_more,
         nextToken: j.next_token ?? undefined
       };
     },
@@ -619,8 +637,9 @@ export async function reconcileBeforeRetry(
       if (state === 'done') return undefined;
       if (state === 'inconsistent') {
         throw new HeyGenError(
-          `reconcileBeforeRetry: history for ${JSON.stringify(reconcileByTitle)} reports more ` +
-            `pages but returned no cursor; refusing to resubmit a paid render on an incomplete search`
+          `reconcileBeforeRetry: cannot establish that history for ` +
+            `${JSON.stringify(reconcileByTitle)} was exhausted — no cursor to continue, and no ` +
+            `explicit has_more:false; refusing to resubmit a paid render on an unproven search`
         );
       }
     }

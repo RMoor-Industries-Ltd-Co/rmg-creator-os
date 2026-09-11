@@ -286,6 +286,24 @@ as complete or spending money on a render.
 Finding 8 is the `undefined`-versus-empty-string distinction, the mirror of the empty-key bug
 found in the first draft of this port. A supplied-and-wrong key is not an absent one.
 
+### A third round — the same distinction, one level down
+
+| # | Finding | Why it mattered |
+|---|---|---|
+| 9 | An **omitted** `has_more` was read as `has_more: false` | An absent flag asserts nothing; treating it as the server asserting exhaustion lets a missing field authorize a paid render. `listVideos()` compounded it by coercing `undefined` to `false` before the decision ever saw it |
+
+`pageState()` now treats **only an explicit `false`** as exhaustion. An omitted flag is
+resolved by whether we can keep reading: with a cursor, follow it — reading further is always
+safe and can only make the result more complete; without one, fail closed. And
+`HeyGenVideoListPage.hasMore` is `boolean | undefined`, passed through rather than coerced,
+because flattening the two at the boundary erases the distinction before the rule can apply it.
+
+Worth noting what this round was: **the same `undefined`-is-not-`false` confusion as finding 8,
+one level down.** Finding 8 was an empty string mistaken for an absent key; finding 9 is an
+absent flag mistaken for a negative one. Both are a falsy check standing in for a decision
+about what the caller actually said. That is the shape to watch for in the `render_attempts`
+work, not the specific fields.
+
 ## Verification
 
 `pnpm typecheck` and `pnpm lint` clean; the full suite runs against real Postgres.
