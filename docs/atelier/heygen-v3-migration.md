@@ -264,6 +264,28 @@ follow-up, together with one the review did not name:
 Findings 2 and 4 are the serious pair: both end in a duplicate charge on a paid API, which is
 the failure D-J3 was written to prevent. Finding 1 is the only one visible to a user.
 
+### A second round, on the fixes themselves
+
+Reviewing those fixes produced three more, all real, and two of them the *same* mistake the
+fixes were correcting:
+
+| # | Finding | Why it mattered |
+|---|---|---|
+| 6 | Hitting the catalog page bound returned the partial list as if complete | The truncation bug of finding 1, reintroduced at a higher page count and equally invisible |
+| 7 | `has_more: true` with no `next_token` was read as "exhausted" | In the recovery paths, submits a paid render on a search that is demonstrably incomplete |
+| 8 | An empty supplied `idempotencyKey` took the "no key" branch | `generateVideo` rejects an empty key; this path could accept one and return `recovered`, so the same malformed input was fatal on one entry point and fine on the other |
+
+Findings 6 and 7 have one cause: **the rule for "is there another page" was applied correctly
+to the history search and not to the catalog reader.** Two inline conditions, one of which had
+been thought through. It is now a single shared `pageState()` returning `done` / `more` /
+`inconsistent`, and *both* readers fail on `inconsistent` and on exhausting their page bound.
+The principle both now encode: **only an exhausted search licenses the conclusion that
+something does not exist**, and that conclusion is what authorizes either presenting a catalog
+as complete or spending money on a render.
+
+Finding 8 is the `undefined`-versus-empty-string distinction, the mirror of the empty-key bug
+found in the first draft of this port. A supplied-and-wrong key is not an absent one.
+
 ## Verification
 
 `pnpm typecheck` and `pnpm lint` clean; the full suite runs against real Postgres.

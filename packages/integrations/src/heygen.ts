@@ -250,6 +250,30 @@ export function assertDerivableIdempotencyKey(key: string): void {
   assertIdempotencyKey(key, IDEMPOTENCY_KEY_MAX - DERIVED_KEY_SUFFIX_BUDGET);
 }
 
+/**
+ * What a page's `has_more` / `next_token` pair means for the next iteration.
+ *
+ * Both paginated readers here — the catalogs and the reconciliation history search — must
+ * answer this the same way, because both have the same failure mode: presenting a partial
+ * result as a complete one. The first silently loses avatars; the second silently authorizes
+ * a duplicate paid render. An earlier pass got this right in one place and not the other,
+ * which is why the rule now lives in one function instead of two inline conditions.
+ *
+ * - `done` — the server says there is nothing more. Stop; the result set is complete.
+ * - `more` — there is more and we have the cursor to fetch it.
+ * - `inconsistent` — the server says there is more but gave no cursor. We cannot continue and
+ *   we cannot honestly call the result complete, so the caller must fail rather than guess.
+ */
+function pageState(hasMore: boolean | undefined, nextToken: string | undefined):
+  | 'done'
+  | 'more'
+  | 'inconsistent' {
+  // `has_more` is the authoritative signal; a token echoed alongside `has_more: false` is
+  // trailing state, not an invitation to keep reading.
+  if (!hasMore) return 'done';
+  return nextToken ? 'more' : 'inconsistent';
+}
+
 // --- Client ---------------------------------------------------------------------------------
 
 export function createHeyGenClient(apiKey: string): HeyGenClient {
@@ -337,7 +361,11 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
    * loads once and filters client-side) it makes an avatar past the cut simply unselectable.
    *
    * `maxPages` is a safety stop, not a product limit: without it a server that kept returning
-   * a token would loop forever. It is set well above any plausible catalog.
+   * a token would loop forever. It is set well above any plausible catalog — and **reaching
+   * it throws**. Returning what had accumulated would hand back a partial catalog that looks
+   * exactly like a complete one, which is the truncation bug this function exists to fix,
+   * reintroduced at a higher page count. The same applies to a server that claims more pages
+   * without giving a cursor.
    */
   async function listAll<T>(
     path: string,
@@ -356,11 +384,19 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       }>(`${path}?${params.toString()}`);
       out.push(...(j.data ?? []));
       token = j.next_token ?? undefined;
-      // Stop on either signal: a server that sets `has_more` but no token, or a token with
-      // no `has_more`, would otherwise loop or truncate depending on which one we trusted.
-      if (!token || !j.has_more) break;
+      const state = pageState(j.has_more, token);
+      if (state === 'done') return out as Array<Record<string, unknown>> & T[];
+      if (state === 'inconsistent') {
+        throw new HeyGenError(
+          `HeyGen ${path}: has_more is set but no next_token was returned — refusing to return ` +
+            `a partial catalog as if it were complete`
+        );
+      }
     }
-    return out as Array<Record<string, unknown>> & T[];
+    throw new HeyGenError(
+      `HeyGen ${path}: more than ${maxPages} pages of ${pageSize} — refusing to return a ` +
+        `partial catalog as if it were complete`
+    );
   }
 
   const client: HeyGenClient = {
@@ -577,7 +613,16 @@ export async function reconcileBeforeRetry(
       const usable = exact.find((v) => v.status !== 'failed');
       if (usable) return usable.videoId;
       token = result.nextToken;
-      if (!token || !result.hasMore) return undefined;
+      const state = pageState(result.hasMore, token);
+      // Only `done` licenses "no prior render exists" — the one conclusion that lets a paid
+      // render be submitted. An inconsistent page has not established it.
+      if (state === 'done') return undefined;
+      if (state === 'inconsistent') {
+        throw new HeyGenError(
+          `reconcileBeforeRetry: history for ${JSON.stringify(reconcileByTitle)} reports more ` +
+            `pages but returned no cursor; refusing to resubmit a paid render on an incomplete search`
+        );
+      }
     }
     // Ran out of pages before exhausting the result set. Returning `undefined` here would
     // claim "no prior render exists", which is not what we established — so say so instead
@@ -589,11 +634,18 @@ export async function reconcileBeforeRetry(
     );
   };
 
+  // A key that was SUPPLIED must be valid, even though the search path would not have sent
+  // it anywhere. `generateVideo` rejects an empty key; letting this function accept one and
+  // return `recovered` would mean the same malformed input is fatal on one entry point and
+  // silently fine on the other. Validate before searching, and distinguish "not supplied"
+  // (undefined) from "supplied and wrong" ('').
+  if (idempotencyKey !== undefined) assertIdempotencyKey(idempotencyKey);
+
   // Search first whenever the idempotency key cannot protect this call: either the caller
-  // told us it has expired, or there is no key at all. Without a key a lost response is
-  // exactly the unrecoverable double-charge this helper exists to close, so "no key" must
-  // mean "search", not "submit and hope".
-  if (assumeKeyExpired || !idempotencyKey) {
+  // told us it has expired, or none was supplied. Without a key a lost response is exactly
+  // the unrecoverable double-charge this helper exists to close, so "no key" must mean
+  // "search", not "submit and hope".
+  if (assumeKeyExpired || idempotencyKey === undefined) {
     const existing = await findExisting();
     if (existing) return { videoId: existing, outcome: 'recovered' };
   }

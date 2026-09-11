@@ -456,6 +456,37 @@ describe('reconcile before retry', () => {
     expect(generateVideo).toHaveBeenCalledOnce();
   });
 
+  it('refuses to submit when history claims more pages but returns no cursor', async () => {
+    // Same rule as the page bound: only an exhausted search licenses "no prior render
+    // exists", which is the conclusion that authorizes spending money.
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: true, nextToken: undefined });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-12', assumeKeyExpired: true })
+    ).rejects.toThrow(/no cursor/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty supplied key instead of treating it as absent', async () => {
+    // `generateVideo` throws on an empty key. If this path quietly searched and returned
+    // `recovered`, the same malformed input would be fatal on one entry point and fine on
+    // the other. Supplied-and-wrong is not the same as not-supplied.
+    const generateVideo = vi.fn();
+    const listVideos = vi.fn().mockResolvedValue({
+      videos: [{ videoId: 'v_prior', status: 'completed', title: 'attempt-13' }],
+      hasMore: false
+    });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-13', idempotencyKey: '' })
+    ).rejects.toThrow(/invalid Idempotency-Key/);
+    expect(listVideos).not.toHaveBeenCalled();
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
   it('rethrows a non-409 failure rather than silently adopting something', async () => {
     const generateVideo = vi.fn().mockRejectedValue(new HeyGenError('boom', 500, {}));
     const listVideos = vi.fn();
@@ -639,6 +670,28 @@ describe('catalog pagination — v2 returned everything in one response', () => 
     const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
     await createHeyGenClient('k').listAvatars();
     expect(calls).toHaveLength(1);
+  });
+
+  it('throws rather than returning a partial catalog when the page bound is hit', async () => {
+    // Returning what accumulated would be the truncation bug this function fixes, back again
+    // at a higher page count — and indistinguishable from a complete catalog to the caller.
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/avatars/looks')
+          ? { json: { data: [{ id: 'lk_x' }], has_more: true, next_token: 'endless' } }
+          : undefined
+    ]);
+    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(/partial catalog/);
+  });
+
+  it('throws when the server claims more pages but returns no cursor', async () => {
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/voices')
+          ? { json: { data: [{ voice_id: 'vo_1' }], has_more: true, next_token: null } }
+          : undefined
+    ]);
+    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(/no next_token/);
   });
 });
 
