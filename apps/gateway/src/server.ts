@@ -126,9 +126,28 @@ await app.register(cookie, { secret: COOKIE_SECRET });
 
 // Step-up authentication (docs/atelier/phase-b-governance-primitives-design.md §7.1) — a second,
 // independently-keyed credential distinct from COOKIE_SECRET/rmg_sess. See stepup.ts.
+//
+// Fails closed WITHOUT crashing the process — same shape as WORKER_SECRET (workerAuth.ts): a
+// missing/default secret in production refuses only the step-up route itself
+// (STEP_UP_CONFIGURED gates it below), never the whole gateway. An earlier version of this
+// called assertStepUpCookieSecret() directly at module scope, which throws — since that runs
+// before Fastify starts listening, the thrown error took down every route (health, session
+// auth, everything), not just step-up, the moment AUTH_ENABLED=true shipped with no
+// STEP_UP_COOKIE_SECRET configured yet. Step-up has no live write-path caller today (§13 step 6
+// is blocked), so there is nothing this secret currently protects that justifies that blast
+// radius — the crash bought no security, only an outage.
 const STEP_UP_COOKIE_SECRET = process.env.STEP_UP_COOKIE_SECRET ?? DEV_STEP_UP_COOKIE_SECRET;
 const STEP_UP_MAX_AGE_SECONDS = parseStepUpMaxAgeSeconds(process.env.STEP_UP_MAX_AGE_SECONDS);
-assertStepUpCookieSecret(STEP_UP_COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
+let STEP_UP_CONFIGURED = true;
+try {
+  assertStepUpCookieSecret(STEP_UP_COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
+} catch (err) {
+  STEP_UP_CONFIGURED = false;
+  app.log.error(
+    { err },
+    'STEP_UP_COOKIE_SECRET is not safely configured — POST /auth/google/step-up will refuse (503) until it is set. See CLAUDE.md\'s Doppler gap table. Ordinary session auth is unaffected.'
+  );
+}
 
 // Founder-set authorization (§7.2) — a THIRD, separate check from session + step-up: being
 // allowlisted and being fresh does not mean being the founder. Own config, never AUTH_ALLOWED_EMAILS;
@@ -201,6 +220,9 @@ app.post<{ Body: { credential?: string } }>(
   '/auth/google/step-up',
   { config: { rateLimit: AUTH_RATE_LIMIT } },
   async (request, reply) => {
+    if (!STEP_UP_CONFIGURED) {
+      return reply.code(503).send({ error: 'step-up authentication is not configured on this server' });
+    }
     const credential = request.body?.credential;
     if (!credential) return reply.code(400).send({ error: 'missing credential' });
     try {
