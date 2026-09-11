@@ -23,8 +23,7 @@ import { and, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 /** How long a claim is held before the job is presumed abandoned. */
 export const DEFAULT_LEASE_SECONDS = 900;
 
-export type EnqueueJobInput = {
-  productionId: string;
+type EnqueueJobFields = {
   capability: typeof productionJobs.$inferInsert['capability'];
   provider: string;
   payload?: Record<string, unknown>;
@@ -34,6 +33,19 @@ export type EnqueueJobInput = {
    *  returned and nothing new is inserted. Omit it to keep the pre-Phase-A behavior. */
   idempotencyKey?: string;
 };
+
+/**
+ * A job has exactly one parent — a production, or (Phase B1, §3.4) a work item — never both,
+ * never neither. Before this union existed, `EnqueueJobInput` required a non-null
+ * `productionId` and exposed no `workItemId`, so `{ productionId, capability: 'accord_article' }`
+ * TYPE-CHECKED (fabricating a video parent for a non-video job — precisely the shortcut §3.4
+ * rejects) while the valid work-item shape was impossible to express through this API at all
+ * (issue #56 item 11). `workItemId?: undefined` / `productionId?: undefined` on the opposite
+ * branch is what makes the two variants mutually exclusive at the type level — an object
+ * literal supplying both, or neither, fails to compile against either branch.
+ */
+export type EnqueueJobInput = EnqueueJobFields &
+  ({ productionId: string; workItemId?: undefined } | { productionId?: undefined; workItemId: string });
 
 export type EnqueueResult = {
   job: typeof productionJobs.$inferSelect;
@@ -49,8 +61,22 @@ export type EnqueueResult = {
  * job's payload, which would silently change work already queued or completed.
  */
 export async function enqueueJob(db: Database, input: EnqueueJobInput): Promise<EnqueueResult> {
+  // Defense in depth beyond the type: a caller that builds `input` dynamically (JS, a
+  // spread, an `as` cast) is not protected by the union's compile-time exclusivity. Failing
+  // loudly here — rather than silently preferring one field or letting the database's
+  // `production_jobs_one_parent` CHECK report a less legible error — keeps the "exactly one
+  // parent" rule visible at the API boundary where a caller can actually act on it.
+  const hasProductionId = input.productionId !== undefined && input.productionId !== null;
+  const hasWorkItemId = input.workItemId !== undefined && input.workItemId !== null;
+  if (hasProductionId === hasWorkItemId) {
+    throw new Error(
+      `enqueueJob: exactly one of productionId or workItemId is required (got productionId=${JSON.stringify(input.productionId)}, workItemId=${JSON.stringify(input.workItemId)})`
+    );
+  }
+
   const values = {
-    productionId: input.productionId,
+    productionId: hasProductionId ? input.productionId : null,
+    workItemId: hasWorkItemId ? input.workItemId : null,
     capability: input.capability,
     provider: input.provider,
     payload: input.payload ?? {},
