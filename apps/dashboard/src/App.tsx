@@ -8,6 +8,7 @@ import { navigate, usePath } from './router';
 import { Studio } from './Studio';
 import { AdIndex } from './AdIndex';
 import { Login } from './Login';
+import { StepUpPrompt } from './StepUp';
 import { setUnauthorizedHandler } from './authClient';
 import { useLoadingBar } from './loading';
 
@@ -149,6 +150,7 @@ export function App() {
           </>
         )}
       </footer>
+      {clientId && <StepUpPrompt clientId={clientId} />}
     </main>
   );
 }

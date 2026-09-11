@@ -38,6 +38,16 @@ import {
   SESSION_REQUIRED_CODE
 } from './auth.js';
 import {
+  assertStepUpCookieSecret,
+  DEV_STEP_UP_COOKIE_SECRET,
+  extractAuthTime,
+  parseStepUpMaxAgeSeconds,
+  remainingStepUpWindowSeconds,
+  checkAuthTimeFreshness,
+  signStepUpCookie,
+  STEP_UP_COOKIE
+} from './stepup.js';
+import {
   createDriveClient,
   createHeyGenClient,
   createHiggsfieldClient,
@@ -107,6 +117,12 @@ const SESSION_COOKIE = 'rmg_sess';
 assertCookieSecret(COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
 await app.register(cookie, { secret: COOKIE_SECRET });
 
+// Step-up authentication (docs/atelier/phase-b-governance-primitives-design.md §7.1) — a second,
+// independently-keyed credential distinct from COOKIE_SECRET/rmg_sess. See stepup.ts.
+const STEP_UP_COOKIE_SECRET = process.env.STEP_UP_COOKIE_SECRET ?? DEV_STEP_UP_COOKIE_SECRET;
+const STEP_UP_MAX_AGE_SECONDS = parseStepUpMaxAgeSeconds(process.env.STEP_UP_MAX_AGE_SECONDS);
+assertStepUpCookieSecret(STEP_UP_COOKIE_SECRET, { authEnabled: AUTH_ENABLED, nodeEnv: process.env.NODE_ENV });
+
 // isPublicRoute + the allowlist/cookie-secret helpers live in ./auth.ts (unit-tested).
 if (AUTH_ENABLED) {
   app.addHook('onRequest', async (request, reply) => {
@@ -149,6 +165,54 @@ app.post<{ Body: { credential?: string } }>('/auth/google', async (request, repl
       maxAge: 60 * 60 * 24 * 30
     });
     return { email: t.email };
+  } catch (err) {
+    return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
+  }
+});
+
+// Verify a *deliberately fresh* Google ID token (client requests max_age=900, prompt=login) and
+// mint the second, short-lived rmg_stepup credential (§7.1). Requires no existing rmg_sess —
+// freshness is verified against the session's email only at write time (§13 step 6, not yet
+// built) via verifyStepUpCookie(). Distinct failure shape from /auth/google: an auth_time claim
+// that is missing, too old, or in the future is refused outright, never accepted by falling back
+// to iat.
+app.post<{ Body: { credential?: string } }>('/auth/google/step-up', async (request, reply) => {
+  const credential = request.body?.credential;
+  if (!credential) return reply.code(400).send({ error: 'missing credential' });
+  try {
+    const res = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    if (!res.ok) return reply.code(401).send({ error: 'invalid token' });
+    const t = (await res.json()) as { aud?: string; email?: string; email_verified?: string; auth_time?: string };
+    if (t.aud !== GOOGLE_CLIENT_ID) return reply.code(401).send({ error: 'wrong audience' });
+    if (t.email_verified !== 'true' || !t.email) return reply.code(401).send({ error: 'email not verified' });
+    if (!isEmailAllowed(t.email, ALLOWED_EMAILS)) return reply.code(403).send({ error: 'not authorized', code: NOT_ALLOWLISTED_CODE });
+    const authTime = extractAuthTime(t);
+    if (authTime === undefined) {
+      return reply.code(401).send({ error: 'token carries no auth_time claim; re-authenticate' });
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const { fresh, ageSeconds } = checkAuthTimeFreshness(authTime, nowSeconds, STEP_UP_MAX_AGE_SECONDS);
+    if (!fresh) {
+      return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
+    }
+    const remaining = remainingStepUpWindowSeconds(ageSeconds, STEP_UP_MAX_AGE_SECONDS);
+    if (remaining === null) {
+      return reply.code(401).send({ error: 'authentication is not fresh; re-authenticate' });
+    }
+    const email = t.email.toLowerCase();
+    const stepUpId = randomUUID();
+    reply.setCookie(
+      STEP_UP_COOKIE,
+      signStepUpCookie({ email, stepUpId, authTime }, STEP_UP_COOKIE_SECRET),
+      {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: remaining
+      }
+    );
+    return { email, stepUpId };
   } catch (err) {
     return reply.code(502).send({ error: `auth error: ${(err as Error).message}` });
   }
