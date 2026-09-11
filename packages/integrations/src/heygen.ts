@@ -21,7 +21,14 @@
 const HEYGEN_BASE = 'https://api.heygen.com';
 
 /** HeyGen's documented bound on `Idempotency-Key`: 1-255 chars from this set. */
-const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_\-:.]{1,255}$/;
+const IDEMPOTENCY_KEY_MAX = 255;
+const IDEMPOTENCY_KEY_CHARS = /^[A-Za-z0-9_\-:.]+$/;
+
+/** The longest suffix `createPhotoAvatar` appends to a caller's base key (`:avatar`). A base
+ *  key is validated against `255 - this`, so a key that passes at the public boundary cannot
+ *  produce an over-length header on the second derived call — which previously left an
+ *  uploaded asset orphaned between a step that succeeded and a step that could not be made. */
+const DERIVED_KEY_SUFFIX_BUDGET = ':avatar'.length;
 
 // --- Public types ------------------------------------------------------------------------
 //
@@ -156,9 +163,17 @@ export interface ReconciledRequestOptions extends RequestOptions {
    *  to be unique to this attempt — a bare production title is not. */
   reconcileByTitle: string;
   /** Skip straight to the search. Callers set this when the attempt is older than HeyGen's
-   *  24-hour replay window, where the idempotency key no longer protects anything. */
+   *  24-hour replay window, where the idempotency key no longer protects anything.
+   *
+   *  Omitting `idempotencyKey` entirely has the same effect: with no key the submission is
+   *  unprotected, so the search runs first rather than risking a duplicate paid render. */
   assumeKeyExpired?: boolean;
 }
+
+/** Page size and page bound for the history search. The bound is a safety stop against an
+ *  endless token chain, not a product limit — and being hit is an error, not a miss. */
+const RECONCILE_PAGE_SIZE = 100;
+const RECONCILE_MAX_PAGES = 20;
 
 export interface ReconciledResult {
   videoId: string;
@@ -195,6 +210,14 @@ const ASPECT_RATIOS: Array<{ ratio: HeyGenAspectRatio; value: number }> = [
  * 1280x720 to 16:9 at 720p — so today's renders are unchanged in shape. An unusual dimension
  * is snapped rather than rejected, because refusing it would turn a working call into a 4xx
  * for a difference the provider would have absorbed anyway.
+ *
+ * **The tier is read off the SHORT edge, not the long one.** A tier name is a vertical-pixel
+ * count in landscape (1080p is 1920x1080) and the same count on the narrow axis in portrait
+ * (1080p is 1080x1920) — in both the number is the short edge. Reading the long edge instead
+ * assumes every tier is 16:9 and silently downgrades anything squarer: 1080x1080 is a 1:1
+ * frame that genuinely needs the 1080p tier, but its longest edge is 1080, which is below the
+ * 1920 a long-edge rule would demand, so it would be cut to 720p and lose a third of its
+ * pixels without saying so.
  */
 export function dimensionToFormat(dimension: { width: number; height: number }): {
   aspectRatio: HeyGenAspectRatio;
@@ -209,17 +232,22 @@ export function dimensionToFormat(dimension: { width: number; height: number }):
   for (const candidate of ASPECT_RATIOS) {
     if (Math.abs(candidate.value - target) < Math.abs(best.value - target)) best = candidate;
   }
-  const longest = Math.max(width, height);
-  const resolution: HeyGenResolution = longest >= 3840 ? '4k' : longest >= 1920 ? '1080p' : '720p';
+  const shortest = Math.min(width, height);
+  const resolution: HeyGenResolution = shortest >= 2160 ? '4k' : shortest >= 1080 ? '1080p' : '720p';
   return { aspectRatio: best.ratio, resolution };
 }
 
-function assertIdempotencyKey(key: string): void {
-  if (!IDEMPOTENCY_KEY_PATTERN.test(key)) {
+function assertIdempotencyKey(key: string, maxLength = IDEMPOTENCY_KEY_MAX): void {
+  if (key.length < 1 || key.length > maxLength || !IDEMPOTENCY_KEY_CHARS.test(key)) {
     throw new HeyGenError(
-      `invalid Idempotency-Key ${JSON.stringify(key)}: must be 1-255 chars matching [A-Za-z0-9_-:.]`
+      `invalid Idempotency-Key ${JSON.stringify(key)}: must be 1-${maxLength} chars matching [A-Za-z0-9_-:.]`
     );
   }
+}
+
+/** Validate a caller's base key with room for the per-step suffix already reserved. */
+export function assertDerivableIdempotencyKey(key: string): void {
+  assertIdempotencyKey(key, IDEMPOTENCY_KEY_MAX - DERIVED_KEY_SUFFIX_BUDGET);
 }
 
 // --- Client ---------------------------------------------------------------------------------
@@ -300,12 +328,45 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
     };
   }
 
+  /**
+   * Follow v3's `next_token` until the catalog is exhausted.
+   *
+   * v2's `/v2/avatars` and `/v2/voices` returned everything in one response; v3 paginates,
+   * with a per-page cap of 50 for looks and 100 for voices. A single page is therefore not a
+   * port of the old behaviour — it is a silent truncation, and on the avatar picker (which
+   * loads once and filters client-side) it makes an avatar past the cut simply unselectable.
+   *
+   * `maxPages` is a safety stop, not a product limit: without it a server that kept returning
+   * a token would loop forever. It is set well above any plausible catalog.
+   */
+  async function listAll<T>(
+    path: string,
+    pageSize: number,
+    maxPages = 40
+  ): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    let token: string | undefined;
+    for (let page = 0; page < maxPages; page += 1) {
+      const params = new URLSearchParams({ limit: String(pageSize) });
+      if (token) params.set('token', token);
+      const j = await req<{
+        data?: Array<Record<string, unknown>>;
+        has_more?: boolean;
+        next_token?: string | null;
+      }>(`${path}?${params.toString()}`);
+      out.push(...(j.data ?? []));
+      token = j.next_token ?? undefined;
+      // Stop on either signal: a server that sets `has_more` but no token, or a token with
+      // no `has_more`, would otherwise loop or truncate depending on which one we trusted.
+      if (!token || !j.has_more) break;
+    }
+    return out as Array<Record<string, unknown>> & T[];
+  }
+
   const client: HeyGenClient = {
     async listAvatars() {
-      const j = await req<{ data?: Array<Record<string, unknown>> }>(
-        '/v3/avatars/looks?limit=50'
-      );
-      return (j.data ?? []).map((a) => ({
+      const looks = await listAll('/v3/avatars/looks', 50);
+      return looks.map((a) => ({
         avatar_id: String(a.id ?? ''),
         avatar_name: (a.name as string | undefined) ?? undefined,
         gender: (a.gender as string | undefined) ?? undefined,
@@ -314,8 +375,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
     },
 
     async listVoices() {
-      const j = await req<{ data?: Array<Record<string, unknown>> }>('/v3/voices?limit=100');
-      return (j.data ?? []).map((v) => ({
+      const voices = await listAll('/v3/voices', 100);
+      return voices.map((v) => ({
         voice_id: String(v.voice_id ?? ''),
         name: (v.name as string | undefined) ?? undefined,
         language: (v.language as string | undefined) ?? undefined,
@@ -330,6 +391,10 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
     async createPhotoAvatar(bytes, mimeType, opts = {}) {
       const timeoutMs = opts.timeoutMs ?? 120_000;
       const pollIntervalMs = opts.pollIntervalMs ?? 2_000;
+      // Validate the BASE key up front, with the per-step suffix budget reserved. Checking
+      // only the derived keys as they are used would let the asset upload succeed and the
+      // avatar creation fail on length, stranding an uploaded asset with nothing to attach.
+      if (opts.idempotencyKey !== undefined) assertDerivableIdempotencyKey(opts.idempotencyKey);
 
       const form = new FormData();
       form.append('file', new Blob([new Uint8Array(bytes)], { type: mimeType }), 'upload');
@@ -492,19 +557,43 @@ export async function reconcileBeforeRetry(
     throw new HeyGenError('reconcileBeforeRetry: reconcileByTitle is required');
   }
 
+  // Walk every page, not just the first. `title` is a SUBSTRING filter, so a short title can
+  // match far more rows than the attempt's own — and the exact match may sit on page three.
+  // Stopping at page one turns "not found yet" into "not found", and the consequence of that
+  // mistake is a second paid render, which is the one thing this function exists to prevent.
   const findExisting = async (): Promise<string | undefined> => {
-    const page = await client.listVideos({ title: reconcileByTitle, limit: 100 });
-    // `title` is a substring filter, so an exact comparison is required on the way back out —
-    // otherwise a title that is a prefix of another attempt's would adopt the wrong render.
-    const exact = page.videos.filter((v) => v.title === reconcileByTitle);
-    if (exact.length === 0) return undefined;
-    // Prefer a render that is alive or done over one that failed: a failed prior attempt is
-    // not something to adopt, it is something to supersede.
-    const usable = exact.find((v) => v.status !== 'failed') ?? undefined;
-    return usable?.videoId;
+    let token: string | undefined;
+    for (let page = 0; page < RECONCILE_MAX_PAGES; page += 1) {
+      const result = await client.listVideos({
+        title: reconcileByTitle,
+        limit: RECONCILE_PAGE_SIZE,
+        token
+      });
+      // An exact comparison on the way back out — otherwise a title that is a prefix of
+      // another attempt's would adopt the wrong render.
+      const exact = result.videos.filter((v) => v.title === reconcileByTitle);
+      // Prefer a render that is alive or done over one that failed: a failed prior attempt
+      // is not something to adopt, it is something to supersede.
+      const usable = exact.find((v) => v.status !== 'failed');
+      if (usable) return usable.videoId;
+      token = result.nextToken;
+      if (!token || !result.hasMore) return undefined;
+    }
+    // Ran out of pages before exhausting the result set. Returning `undefined` here would
+    // claim "no prior render exists", which is not what we established — so say so instead
+    // of letting a bounded search authorize a duplicate paid call.
+    throw new HeyGenError(
+      `reconcileBeforeRetry: history search for ${JSON.stringify(reconcileByTitle)} exceeded ` +
+        `${RECONCILE_MAX_PAGES} pages without resolving; refusing to resubmit a paid render on an ` +
+        `incomplete search`
+    );
   };
 
-  if (assumeKeyExpired) {
+  // Search first whenever the idempotency key cannot protect this call: either the caller
+  // told us it has expired, or there is no key at all. Without a key a lost response is
+  // exactly the unrecoverable double-charge this helper exists to close, so "no key" must
+  // mean "search", not "submit and hope".
+  if (assumeKeyExpired || !idempotencyKey) {
     const existing = await findExisting();
     if (existing) return { videoId: existing, outcome: 'recovered' };
   }
