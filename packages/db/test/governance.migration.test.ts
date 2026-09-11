@@ -398,6 +398,20 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
       await expect(db.execute(sql`INSERT INTO production_jobs (work_item_id,capability,provider)
                                   VALUES (${wid},'accord_article','internal')`)).resolves.toBeTruthy();
     });
+
+    it('pairs the capability with the RIGHT parent, not just any one parent', async () => {
+      // Counting parents is not pairing them. Both of these satisfy the XOR while attaching
+      // work to a subject that cannot represent it.
+      const w = await db.execute(sql`INSERT INTO work_items (kind,brand) VALUES ('accord_article','hvn')
+                                     RETURNING id`);
+      const wid = (w.rows[0] as { id: string }).id;
+      await refused(() => db.execute(sql`INSERT INTO production_jobs (production_id,capability,provider)
+                                         VALUES ('pj-prod','accord_article','internal')`),
+        /parent_matches_capability/);
+      await refused(() => db.execute(sql`INSERT INTO production_jobs (work_item_id,capability,provider)
+                                         VALUES (${wid},'aroll','heygen')`),
+        /parent_matches_capability/);
+    });
   });
 
   // ── productions.final_video_row_id ──────────────────────────────────────────────────
@@ -420,6 +434,14 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
                            VALUES ('vid-of-a','pin-a','hg3','av3') ON CONFLICT DO NOTHING`);
       await expect(db.execute(sql`UPDATE productions SET final_video_row_id='vid-of-a'
                                   WHERE id='pin-a'`)).resolves.toBeTruthy();
+    });
+
+    it('refuses to rename a production out from under its own pin', async () => {
+      // `UPDATE OF final_video_row_id` did not fire on an id change, and videos.production_id
+      // is plain text with no updating FK — so a rename left the pin naming a video the
+      // renamed production no longer owns.
+      await refused(() => db.execute(sql`UPDATE productions SET id='pin-a-renamed'
+                                         WHERE id='pin-a'`), /belongs to pin-a/);
     });
 
     it('refuses to reparent a video that a production pins', async () => {
@@ -538,15 +560,62 @@ d('Phase B1 governance primitives — real migrations, real Postgres', () => {
         VALUES ('production','p-pub','vlog',${evidenceId},'d1',
                 'failed'::publication_intent_phase, now() + interval '60 s', 'remote-123')`),
         /remote_id_implies_published_or_unknown/);
-      // 'unknown' with an id is the honest shape, and it holds the slot.
+      // 'unknown' with an id is the honest shape, and it holds the slot. Resolving it
+      // upward to 'published' is the only way to close it — the id cannot be cleared.
       await expect(intent('unknown', 'remote-123')).resolves.toBeTruthy();
-      await db.execute(sql`UPDATE publication_intents SET phase='failed', remote_post_id=NULL,
-                           closed_at=now() WHERE subject_id='p-pub'`);
+      await db.execute(sql`UPDATE publication_intents SET phase='published', closed_at=now()
+                           WHERE subject_id='p-pub' AND remote_post_id IS NOT NULL`);
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE subject_id='p-pub' AND remote_post_id IS NULL`);
+    });
+
+    it('refuses to clear or change a remote post id once it is known', async () => {
+      // A CHECK sees the resulting row, not the transition: 'failed' + NULL passed both
+      // constraints while dropping the row out of the open index, admitting a retry although
+      // a remote post was known to exist.
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE subject_id='p-pub' AND remote_post_id IS NULL`);
+      const r = await intent('unknown', 'remote-known');
+      const id = (r.rows[0] as { id: string }).id;
+      await refused(() => db.execute(sql`UPDATE publication_intents
+                                         SET phase='failed', remote_post_id=NULL WHERE id=${id}`),
+        /already known and cannot be changed/);
+      await refused(() => db.execute(sql`UPDATE publication_intents
+                                         SET remote_post_id='something-else' WHERE id=${id}`),
+        /already known and cannot be changed/);
+      // Resolving it upward is the legitimate move.
+      await expect(db.execute(sql`UPDATE publication_intents SET phase='published',
+                                  closed_at=now() WHERE id=${id}`)).resolves.toBeTruthy();
+    });
+
+    it('refuses to retarget an OPEN intent', async () => {
+      // Retargeting every identity field together keeps the row coherent — the coherence
+      // trigger still passes — while vacating the slot held for the publication in flight.
+      const other = await db.execute(sql`
+        INSERT INTO approval_evidence (subject_type,subject_id,scope,revision_digest,decision,
+          principal_id,principal_kind,asserted_role,source_system,decision_seq,decided_at,
+          approved_package)
+        VALUES ('production','p-other','vlog','d9','approved','rahm','human','founder',
+                'rmg-creator-os',1,now(),'{}'::jsonb) RETURNING id`);
+      const otherId = (other.rows[0] as { id: string }).id;
+      const r = await intent('claimed');
+      const id = (r.rows[0] as { id: string }).id;
+      await refused(() => db.execute(sql`UPDATE publication_intents
+        SET subject_id='p-other', evidence_id=${otherId}, revision_digest='d9' WHERE id=${id}`),
+        /may not be retargeted/);
+      await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
+                           WHERE id=${id}`);
     });
 
     it('refuses a published intent with no remote post id', async () => {
+      // Close every open intent first, resolving any that already carry an id upward — the
+      // id is immutable, so 'published' is the only terminal phase available to them.
+      await db.execute(sql`UPDATE publication_intents SET phase='published', closed_at=now()
+                           WHERE subject_id='p-pub' AND remote_post_id IS NOT NULL
+                             AND phase IN ('claimed','transmitting','unknown')`);
       await db.execute(sql`UPDATE publication_intents SET phase='failed', closed_at=now()
-                           WHERE subject_id='p-pub'`);
+                           WHERE subject_id='p-pub' AND remote_post_id IS NULL
+                             AND phase IN ('claimed','transmitting','unknown')`);
       await expect(intent('published', null)).rejects.toThrow();
     });
   });

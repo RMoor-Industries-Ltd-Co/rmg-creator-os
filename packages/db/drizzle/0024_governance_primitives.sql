@@ -405,6 +405,41 @@ BEGIN
   RETURN OLD;
 END $$ LANGUAGE plpgsql;
 
+-- A CHECK constrains the SHAPE of a row; these two rules are about the TRANSITION between
+-- shapes, which a CHECK cannot see. Both gaps let an intent release the uniqueness slot
+-- while a publication was, or may have been, already out.
+CREATE OR REPLACE FUNCTION publication_intents_transition_guard() RETURNS trigger AS $$
+BEGIN
+  -- 1. A known remote post id is permanent. Without this, `SET phase='failed',
+  --    remote_post_id=NULL` passes both CHECKs as a resulting shape, drops the row out of
+  --    the open-intent index, and admits a retry although a remote post is known to exist.
+  IF OLD.remote_post_id IS NOT NULL
+     AND NEW.remote_post_id IS DISTINCT FROM OLD.remote_post_id THEN
+    RAISE EXCEPTION
+      'publication_intents %: remote_post_id % is already known and cannot be changed or cleared',
+      OLD.id, OLD.remote_post_id;
+  END IF;
+
+  -- 2. An OPEN intent's identity is frozen. Retargeting subject/scope/evidence/digest
+  --    together keeps the row internally coherent (the coherence trigger still passes) while
+  --    vacating the slot held for the publication actually in flight — so a second intent for
+  --    the original subject becomes insertable and can post a duplicate.
+  IF OLD.phase IN ('claimed','transmitting','unknown')
+     AND (NEW.subject_type, NEW.subject_id, NEW.scope, NEW.evidence_id, NEW.revision_digest)
+         IS DISTINCT FROM
+         (OLD.subject_type, OLD.subject_id, OLD.scope, OLD.evidence_id, OLD.revision_digest) THEN
+    RAISE EXCEPTION
+      'publication_intents %: an open intent (%) may not be retargeted', OLD.id, OLD.phase;
+  END IF;
+
+  RETURN NEW;
+END $$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS publication_intents_transitions ON publication_intents;
+CREATE TRIGGER publication_intents_transitions
+  BEFORE UPDATE ON publication_intents
+  FOR EACH ROW EXECUTE FUNCTION publication_intents_transition_guard();
+
 DROP TRIGGER IF EXISTS publication_intents_open_no_delete ON publication_intents;
 CREATE TRIGGER publication_intents_open_no_delete
   BEFORE DELETE ON publication_intents
@@ -458,6 +493,17 @@ ALTER TABLE production_jobs ALTER COLUMN production_id DROP NOT NULL;
 DO $$ BEGIN
   ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_one_parent
     CHECK (num_nonnulls(production_id, work_item_id) = 1);
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- ...and the RIGHT parent for the capability. Counting parents is not the same as pairing
+-- them: `enqueueJob({ productionId, capability: 'accord_article' })` now type-checks, and a
+-- raw insert can hang a video capability off a work item. Both satisfy the XOR above while
+-- attaching work to a subject that cannot represent it — breaking filtering, cascade
+-- ownership and later dispatch. ::text because the enum value is added in this same
+-- transaction chain (see the gate-status CHECK for the full explanation).
+DO $$ BEGIN
+  ALTER TABLE production_jobs ADD CONSTRAINT production_jobs_parent_matches_capability
+    CHECK ((capability::text = 'accord_article') = (work_item_id IS NOT NULL));
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- The gate descriptor. Four fields, written atomically by enqueueJob from SERVER-SIDE policy
@@ -594,9 +640,13 @@ BEGIN
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
 
+-- Fires on `id` as well as on the pin. `UPDATE OF final_video_row_id` alone missed the last
+-- mutation path: renaming a production leaves `videos.production_id` holding the OLD id
+-- (it is plain text with no updating foreign key), so the pin silently points at a video the
+-- renamed production no longer owns.
 DROP TRIGGER IF EXISTS productions_final_video_owned ON productions;
 CREATE TRIGGER productions_final_video_owned
-  BEFORE INSERT OR UPDATE OF final_video_row_id ON productions
+  BEFORE INSERT OR UPDATE OF final_video_row_id, id ON productions
   FOR EACH ROW EXECUTE FUNCTION productions_final_video_owned();
 
 -- Ownership has to hold over TIME, not only at the moment of pinning.
