@@ -270,19 +270,31 @@ export function assertDerivableIdempotencyKey(key: string): void {
  * asserting exhaustion; an absent field asserts nothing, and absence of the authoritative
  * flag is not proof that the result set ended. Collapsing the two with a falsy check — which
  * this function did until a review caught it — lets a missing field authorize the one
- * conclusion that spends money. So an omitted flag is resolved by whether we can keep
- * reading: with a cursor we follow it, without one we fail closed.
+ * conclusion that spends money.
+ *
+ * **And the two signals must agree.** They are independent fields, so a response can assert
+ * the end while still handing back a cursor to continue from. An earlier version treated the
+ * flag as authoritative and the cursor as trailing noise; that is a guess, and what it
+ * guesses about is whether to spend money. Exhaustion therefore requires *both* an explicit
+ * "no more" and nothing left to follow.
  *
  * This is D-J3a applied at the level of a single page:
  * only a *proven* end licenses "there is nothing more".
+ *
+ * | `has_more` | cursor | state |
+ * |---|---|---|
+ * | `false` | absent | `done` — the only proven end |
+ * | `false` | present | `inconsistent` — the response contradicts itself |
+ * | `true` | present | `more` |
+ * | `true` | absent | `inconsistent` — claims more, gives no way to get it |
+ * | omitted | present | `more` — absence proves nothing, and we *can* keep reading |
+ * | omitted | absent | `inconsistent` — nothing asserts the end, nothing to follow |
  */
 function pageState(hasMore: boolean | undefined, nextToken: string | undefined):
   | 'done'
   | 'more'
   | 'inconsistent' {
-  // Explicit `false` is the only assertion of exhaustion. A token echoed alongside it is
-  // trailing state, not an invitation to keep reading.
-  if (hasMore === false) return 'done';
+  if (hasMore === false) return nextToken ? 'inconsistent' : 'done';
   // Either `has_more: true`, or the flag was omitted. In both cases a cursor means we can
   // keep reading, and reading further is always safe — it can only make the result more
   // complete. Without a cursor we can neither continue nor claim the set ended.

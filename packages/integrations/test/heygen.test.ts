@@ -519,6 +519,18 @@ describe('reconcile before retry', () => {
     expect(generateVideo).not.toHaveBeenCalled();
   });
 
+  it('refuses to submit when history says "no more" but still returns a cursor', async () => {
+    const generateVideo = vi.fn().mockResolvedValue({ videoId: 'v_dupe' });
+    const listVideos = vi
+      .fn()
+      .mockResolvedValue({ videos: [], hasMore: false, nextToken: 'contradiction' });
+    const client = fakeClient({ generateVideo, listVideos });
+    await expect(
+      reconcileBeforeRetry(client, opts, { reconcileByTitle: 'attempt-16', assumeKeyExpired: true })
+    ).rejects.toThrow(/cannot establish/);
+    expect(generateVideo).not.toHaveBeenCalled();
+  });
+
   it('rethrows a non-409 failure rather than silently adopting something', async () => {
     const generateVideo = vi.fn().mockRejectedValue(new HeyGenError('boom', 500, {}));
     const listVideos = vi.fn();
@@ -698,9 +710,23 @@ describe('catalog pagination — v2 returned everything in one response', () => 
     expect(voices.map((v) => v.voice_id)).toEqual(['vo_1', 'vo_2']);
   });
 
-  it('stops when has_more is false even if a token is still echoed', async () => {
+  it('refuses a page that says "no more" while still handing back a cursor', async () => {
+    // The two signals are independent and here they disagree. Treating the flag as
+    // authoritative and the cursor as trailing noise is a guess, and on the reconciliation
+    // path what it guesses about is whether to spend money. Exhaustion needs both.
+    mockFetch([
+      (c) =>
+        c.url.includes('/v3/avatars/looks')
+          ? { json: { data: [{ id: 'lk_1' }], has_more: false, next_token: 'still-here' } }
+          : undefined
+    ]);
+    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(/cannot establish/);
+  });
+
+  it('completes on an explicit no-more with no cursor — the one proven end', async () => {
     const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
-    await createHeyGenClient('k').listAvatars();
+    const avatars = await createHeyGenClient('k').listAvatars();
+    expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1']);
     expect(calls).toHaveLength(1);
   });
 

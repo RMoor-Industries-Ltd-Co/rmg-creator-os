@@ -304,6 +304,31 @@ absent flag mistaken for a negative one. Both are a falsy check standing in for 
 about what the caller actually said. That is the shape to watch for in the `render_attempts`
 work, not the specific fields.
 
+### And the two signals must agree
+
+Reviewing the D-J3a write-up surfaced the last case: a page may assert `has_more: false`
+while still returning a cursor. The client treated the flag as authoritative and the cursor
+as trailing noise. That is a guess, and on the reconciliation path what it guesses about is
+whether to spend money — so exhaustion now requires **both** an explicit "no more" **and**
+nothing left to follow.
+
+| `has_more` | cursor | state |
+|---|---|---|
+| `false` | absent | `done` — the only proven end |
+| `false` | present | `inconsistent` |
+| `true` | present | `more` |
+| `true` | absent | `inconsistent` |
+| omitted | present | `more` — absence proves nothing, and we *can* keep reading |
+| omitted | absent | `inconsistent` |
+
+**One risk this deliberately accepts.** If HeyGen ever echoes the request token back in
+`next_token` on a final page, the catalog reads now throw where they previously returned. The
+documented field is "pagination cursor for subsequent pages", `string | null`, so a non-null
+value on a last page would itself be a contract violation — but this has not been observed
+against the live API either way. The trade is a visible, immediate read failure against a
+silent duplicate charge, and the unpaid live read mandated before any paid render (below) is
+exactly the check that would surface it.
+
 ## Verification
 
 `pnpm typecheck` and `pnpm lint` clean; the full suite runs against real Postgres.
