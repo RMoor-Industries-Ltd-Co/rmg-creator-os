@@ -76,6 +76,21 @@ The unblocking order is therefore: A-Roll §4.8 decides the pin's writer → 13.
 
 ---
 
+## Founder decisions D-J1 – D-J3 (2026-09-11) and what they change here
+
+Recorded in the A-Roll design's §10. Two touch this split:
+
+- **D-J1 (segment identity)** adds a production-plan change — a segments array with stable
+  stored ids — to the A-Roll track's step B. It is **not** a B1.2 item and does not unblock
+  any row above; it is named here only so nobody lands a plan change from the B1.2 side.
+- **D-J3 (retry semantics)** puts the **HeyGen v2 → v3 migration** in front of step D. That
+  migration is mandatory anyway — v2 is retired 2026-11-01 — and it is **not** A-Roll work:
+  it touches every HeyGen call in the repository. It does not depend on anything blocked
+  below, so it can be scheduled independently of this split, and should be, given the date.
+- **D-J2 (retention)** is entirely inside the A-Roll track. Nothing here moves.
+
+---
+
 ## Standing constraints, unchanged
 
 `WORKER_TICK_ENABLED` remains unset. B2 is entirely out of scope: no `hvnglobalco-com` changes,

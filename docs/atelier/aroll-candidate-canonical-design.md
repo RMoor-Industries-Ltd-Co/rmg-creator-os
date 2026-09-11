@@ -209,7 +209,10 @@ CREATE TABLE render_attempts (
 ```
 
 `segment_key` is what §1.7 lacks. Without it "which take is canonical" is a question about
-timestamps; with it, it is a question about a row.
+timestamps; with it, it is a question about a row. Its semantics are ratified as **D-J1**
+(§10.1): a **stable logical identifier for a speaking segment, stored on the production plan**
+— never an attempt id, never a provider id, and never derived from mutable text such as the
+script body.
 
 `provider_ref` is populated **before** the paid call returns where the provider supports a
 client-supplied id, and immediately after where it does not — it is the handle §4.3's
@@ -369,8 +372,13 @@ That third row is a real possible outcome, not a formality. Moving a paid call b
 without a provider-side handle trades a bounded failure for an unbounded one, and this design
 declines that trade.
 
-*Blocking question for the founder (§9.1):* which of the three rows applies. It must be answered
-against HeyGen's current API **before step D is scheduled**, not during it.
+**Which row applies is now answered, not assumed — see §11.** HeyGen's **v3** create-video
+endpoint documents an `Idempotency-Key` header ("Optional client-supplied key for safely
+retrying mutations. Subsequent calls within 24 hours that share this key replay the original
+response"), which is row 1. The **v2** endpoint this repository currently calls documents no
+such header, and v2's only handle is the `video_id` in its own response — which is exactly the
+value a crash in this window loses, so v2 alone is row 3. **Step D is therefore gated on the v3
+migration** (D-J3, §10.3).
 
 ### 4.4 Persistence and digest — the candidate is born here
 
@@ -449,8 +457,24 @@ evidence digest stays checkable for as long as the evidence does.
 Behaviour is unchanged for renders with no attempt row — the ad-hoc Studio path the route was
 written for.
 
-Retention costs Drive storage. That cost is the point: evidence you have deleted is not
-evidence.
+Retention costs Drive storage. Indefinite hot storage for every rejected take is not the
+answer either, so the horizon is **tiered rather than binary** — D-J2, §10.2. In short: the
+record is permanent, the bytes are not.
+
+- The `render_attempts` row, its `content_digest`, `input_snapshot`, provenance, rejection
+  reason and `approval_evidence` row are retained **indefinitely**. Nothing in this section
+  ever deletes them.
+- The Drive **bytes** of a rejected candidate are retained for an operational window
+  (`REJECTED_MEDIA_RETENTION_DAYS`, default **180**), after which they may be archived or
+  purged — unless the attempt carries `retain_media = true`, set from the UI to mark a take as
+  reference material.
+- A purge **records itself**: `media_purged_at` and `media_purge_reason` on the attempt. It
+  never deletes the attempt row, never deletes or supersedes the evidence, and never clears
+  `content_digest`. An auditor reading a purged attempt still learns what was rejected, by
+  whom, against which digest, and that the bytes were removed on policy at a stated time.
+- A purge is refused for any attempt that is currently canonical for its segment, or whose
+  digest appears in the recorded canonical set of an assembled output still pinned by a
+  production. Rejected-and-superseded is purgeable; rejected-but-still-referenced is a bug.
 
 ### 4.7 Regeneration
 
@@ -632,9 +656,9 @@ constraint, but it must respect the two existing constraints it interacts with:
 | Step | Contents | Gate |
 |---|---|---|
 | **A** | Enum-only, no uses: `render_attempt_state` created; `production_job_status` gains `rendering` | — |
-| **B** | `render_attempts`, `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger | A deployed |
+| **B** | `render_attempts` (incl. `retain_media`, `media_purged_at`, `media_purge_reason` — D-J2), `canonical_renders`, `videos.content_digest`, `videos.drive_revision_id`, `production_jobs.gate_phase` + its CHECK + the widened freeze trigger, **and the production-plan segments array D-J1 requires** (`segment_key` is `NOT NULL` and has nothing to point at without it) | A deployed |
 | **C** | Durable poller + persistence/digest step — behaviour-neutral until D | B deployed |
-| **D** | Move the provider call behind dispatch; attempts created at enqueue; job moves to `rendering` | **A dispatcher is enabled and observed working** (§4.1), and C has run against production traffic |
+| **D** | Move the provider call behind dispatch; attempts created at enqueue; job moves to `rendering`; `Idempotency-Key` sent as the attempt id | **Three preconditions:** a dispatcher is enabled and observed working (§4.1); C has run against production traffic; **the HeyGen v3 migration has landed** (D-J3 / §11 — v2 offers no idempotency handle, and is retired 2026-11-01 regardless) |
 | **E** | The approval route, step-up, evidence writes; old route refuses | D deployed |
 | **F** | Assembly enforcement; publish reads the pin | E deployed, and §7.4's adoption pass complete |
 | **G** | UI | F deployed |
@@ -674,9 +698,16 @@ Two properties of the adoption pass are not optional:
    *between* the adoption pass and step F would hold a live evidence row the backfill then
    collides with — the same ordering hazard as B1.2 §13.5-before-§13.6.
 
-**This pass depends on open question 2.** `canonical_renders` is keyed by `segment_key`, and a
-legacy render has no segment identity. Until `segment_key` derivation is decided, the adoption
-pass cannot be written — which makes question 2 a blocker for step F, not a detail.
+**Segment identity for legacy rows — resolved by D-J1 (§10.1).** `canonical_renders` is keyed
+by `segment_key`, and a legacy render has no segment identity, so the adoption pass has to
+*create* one. It does not invent a derivation rule for old data: for each legacy A-Roll video
+it **mints one segment** on that production's plan and assigns the render to it, one segment
+per adopted render. This is deterministic, runs once, and is consistent with D-J1's rule that
+the key is a stored identifier rather than something re-derived from mutable text — a legacy
+production simply turns out to have had one segment per render all along, which is true.
+
+Productions whose renders were superseded before the pass keep only the adopted one as
+canonical; the rest are ordinary historical attempts under that same segment.
 
 ---
 
@@ -692,19 +723,180 @@ Not in this design, and not to be added to it without a founder decision:
 - **B-Roll, Higgsfield and stock renders.** They share the `videos` table and are deliberately
   untouched: no attempt row, no gate, current behaviour exactly.
 - **Issue #55** (the `POST /queue/:id/retry` read-then-write race).
+- **The HeyGen v2 → v3 migration itself.** Step D depends on it (§11.3) and it is on a fixed
+  external deadline of 2026-11-01, but it touches every HeyGen call in the repository, not
+  just A-Roll. Specified elsewhere, tracked on issue #56.
 
 ---
 
-## 9. Open questions for the founder
+## 9. Questions raised by this design — and how each was resolved
 
-1. **HeyGen idempotency tokens.** §4.3 is stronger if the provider accepts a client-supplied
-   key. Needs confirming against their current API before step D.
-2. **`segment_key` derivation.** Today an A-Roll render has no segment identity; productions
-   carry `characterIds` and per-segment structure lives in `config`. Whether `segment_key` is
-   the character id, an index, or an explicit script-segment id is a product question, and it
-   determines what "one canonical render per segment" means. **This one is a blocker, not a
-   detail:** §7.4's adoption pass keys legacy renders by `segment_key`, so step F cannot ship
-   until it is answered.
-3. **Retention horizon.** Rejected candidates are kept indefinitely under §4.6. If that is not
-   acceptable, the horizon must be stated — and deletion after it must supersede the evidence
-   rather than orphan it.
+This document went to the founder with three open questions. All three are now answered:
+
+| # | Question | Resolution |
+|---|---|---|
+| 1 | Does HeyGen support a client-supplied idempotency token? | **Yes, on v3; no, on v2.** Verified against the current API reference — §11. Recorded as **D-J3** |
+| 2 | How is `segment_key` derived? | It is **not derived** — it is stored. **D-J1**, §10.1 |
+| 3 | What is the retention horizon for rejected candidates? | Tiered: record permanent, bytes time-boxed. **D-J2**, §10.2 |
+
+Nothing in this design is now waiting on an unanswered question.
+
+---
+
+## 10. Founder decisions D-J1 – D-J3, recorded verbatim
+
+Ratified 2026-09-11, and governing for this track in the same way D-I is.
+
+### 10.1 D-J1 — Segment identity
+
+> **D-J1 — Segment identity:** `segment_key` is a stable logical segment identifier within a
+> production. Render attempts are children of that segment; approval selects one attempt as
+> canonical.
+
+The founder's stated model, which this design adopts without amendment:
+
+- one production can have multiple speaking segments;
+- one segment can have multiple render attempts;
+- one approved attempt becomes canonical for that segment.
+
+So: **production + `segment_key` → many render attempts → one canonical approved render.**
+
+The key is **deterministic from the production plan** — either an explicit path-like identifier
+such as `scene-03/master-rahm-intro` or a generated stable segment UUID stored on the plan. The
+founder's stated preference, and the rule this design implements: **a stored stable segment
+identifier, never a value derived from mutable text such as the script body.**
+
+That last clause is the load-bearing one, and it is worth stating why rather than just
+recording it. If `segment_key` were a hash of the script text, then editing a word of copy
+would silently re-key the segment: the production would acquire a second segment, the old
+canonical render would still exist but would no longer be canonical *for anything*, and
+assembly would find a segment with no approved take. Approval is supposed to be invalidated by
+a copy change — that is what the digest is for — but the *identity of the segment* must
+survive it. Mutable input, stable identity.
+
+**What this obliges, and where it lands.** Productions today have no segment structure at all
+(§1.7): `characterIds` and free-form `config`, nothing that names a speaking segment. So D-J1
+requires a production-plan change — a segments array on the plan, each entry carrying its
+stable id — and that work belongs to the A-Roll track's step B, alongside `render_attempts`.
+It is a prerequisite of the schema, not a later refinement, because `render_attempts.segment_key`
+is `NOT NULL` and has nothing to point at until the plan can produce one.
+
+For productions that predate the change, §7.4's adoption pass mints segments rather than
+deriving them.
+
+### 10.2 D-J2 — Rejected-asset retention
+
+> **D-J2 — Rejected asset retention:** audit metadata is permanent; rejected media bytes use a
+> tiered retention policy rather than permanent hot storage.
+
+Concretely, as the founder framed it:
+
+- metadata, digest, provenance, rejection reason and audit evidence — retained **indefinitely**;
+- the actual media bytes — retained for a defined operational period (**90–180 days**; this
+  design takes **180** as the default, configurable, and the longer end deliberately), unless
+  marked important/reference;
+- after that window the bytes may move to cheaper archival storage, or be deleted where policy
+  permits, **while the audit record remains**.
+
+§4.6 implements this. The two properties that make it safe rather than merely cheap:
+
+1. **A purge is a recorded event, not an absence.** `media_purged_at` and `media_purge_reason`
+   are written on the attempt. The failure mode this avoids is an auditor finding a rejected
+   attempt with no bytes and being unable to tell policy expiry from tampering.
+2. **The digest outlives the bytes.** A purged attempt can no longer be *re-verified* against
+   its content — that capability is genuinely given up, and the 180-day default is where the
+   founder's range buys the most of it — but the record of *what* was rejected, by whom, and
+   against which digest remains complete and permanent. Evidence is not deleted; a copy of the
+   artifact is.
+
+Purging is refused while an attempt is canonical, or while its digest is still named in the
+canonical set of a pinned assembled output.
+
+### 10.3 D-J3 — Provider retry semantics
+
+> **D-J3 — HeyGen retry semantics:** use provider idempotency if available; otherwise require
+> reconcile-before-retry and explicitly model paid submission as at-least-once until provider
+> capability proves otherwise.
+
+§11 discharges the conditional: **provider idempotency is available, on v3.** So the
+"if available" branch governs, and the design binds to it:
+
+- The **`Idempotency-Key` header is sent on every create-video call**, and its value is the
+  `render_attempts.id` — a value that exists *before* the call, is unique per attempt by
+  construction, and is exactly what a crash-and-retry in §4.3's dangerous window would reuse.
+  Reused inside HeyGen's 24-hour replay window, it returns the original response rather than
+  rendering again.
+- **Reconcile-before-retry remains, and is not made redundant by it.** The replay window is 24
+  hours; an attempt stranded longer than that falls outside it. Recovery past the window
+  queries `GET /v3/videos` filtered by `title` (and `callback_id`, §11) before deciding to
+  resubmit.
+- **Paid submission is still modelled as at-least-once outside that window.** The design does
+  not claim exactly-once as a property of the system; it claims it as a property of a bounded
+  window the recovery path is built to stay inside.
+- **Step D does not ship on v2.** v2 offers neither the header nor a searchable history, which
+  is §4.3's third row — the row on which this design already committed to not shipping. The
+  v3 migration is therefore step D's second precondition, alongside an enabled dispatcher.
+
+---
+
+## 11. HeyGen capability verification
+
+Checked 2026-09-11 against `developers.heygen.com` (the current documentation host;
+`docs.heygen.com` 301-redirects there) and against this repository's own client,
+`packages/integrations/src/heygen.ts`.
+
+### 11.1 What the repository calls today
+
+| Call | Endpoint | Idempotency handle |
+|---|---|---|
+| Submit | `POST /v2/video/generate` | **None.** The client sends `X-Api-Key` and `Content-Type` only; the body carries `video_inputs`, `dimension` and an optional `title` |
+| Status | `GET /v1/video_status.get?video_id=…` | Requires the `video_id` from the submit response |
+
+The only handle v2 gives back is the `video_id` in the response to the paid call — precisely
+the value lost in §4.3's dangerous window. There is no documented v2 list-by-title endpoint to
+search with instead. **On v2, the design's third row applies and step D cannot ship.**
+
+### 11.2 What v3 provides
+
+| Capability | v3 |
+|---|---|
+| Idempotency | **`Idempotency-Key` request header** on create-video — documented as "Optional client-supplied key for safely retrying mutations. Subsequent calls within 24 hours that share this key replay the original response" |
+| Searchable history | **`GET /v3/videos`** with `limit`, `token`, `folder_id` and a **`title` substring filter**; each row returns `id`, `title`, `status`, `created_at`, `completed_at`, media URLs, and `failure_code`/`failure_message` |
+| Caller-set correlation id | **`callback_id`** on the create body, alongside `callback_url` |
+| Completion push | **Webhooks** — `avatar_video.success` / `.fail` and siblings, signed with an endpoint secret, with `GET /v3/webhooks/events` to browse delivered events |
+| Status read | `GET /v3/videos/{id}` |
+
+So v3 supplies **all three** of the handles §4.3 asks for: a true idempotency key, a searchable
+history, and a caller-set correlation id. This is a better answer than the design assumed.
+
+### 11.3 The finding that is not about idempotency
+
+**v2 is retired on 2026-11-01** — the documentation's stated end-of-support date, with the
+operational window running through 2026-10-31. The repository's own client comments say the
+same. That is roughly seven weeks from this writing.
+
+Two consequences, and they point the same way:
+
+1. The v3 migration is **already mandatory** on a fixed external deadline, independent of
+   anything in this track. D-J3 does not create that work; it schedules step D behind work that
+   has to happen regardless.
+2. Sequencing step D after the migration is therefore the cheap ordering, not the expensive
+   one. Building step D against v2 would mean building it against an endpoint that is retired
+   before the step is finished, and building it without the one header that makes it safe.
+
+**The v3 migration is not in this design's scope** and is not specified here — it touches every
+HeyGen call in the repository, not just A-Roll. It is recorded on issue #56 as a prerequisite
+of step D and as a deadline item in its own right.
+
+### 11.4 Webhooks — noted, not adopted here
+
+v3's signed completion webhooks plus `callback_id` would let §4.3 be push-driven rather than
+polled, and `GET /v3/webhooks/events` covers a missed delivery. That is a genuinely better
+shape than the poller this design specifies.
+
+It is recorded and **not adopted in this pass.** §4.3's poller is specified, bounded, and built
+on lease machinery Phase A already proved; swapping it for an inbound webhook introduces a
+public authenticated endpoint and a signature-verification path, which is new surface and a
+new decision. **Step C evaluates poll-versus-webhook against the v3 client as it actually
+lands**, and either choice satisfies this design — what §4.3 requires is a durable server-side
+completion path, not specifically a poller.
