@@ -46,7 +46,7 @@ UI/automation — never assumed callable from an unattended worker.
 |---|---|---|---|---|
 | ALLEN | Brand-voice script + emotion direction + TTS proxy | HTTP (Fastify→FastAPI) | `ALLEN_URL`, `ALLEN_API_KEY` | `/draft`, `/direct`, `/speak`, `/emotion/profiles` |
 | ElevenLabs | Cloned-voice TTS (master audio); `eleven_v3` tags | REST | `ELEVENLABS_API_KEY`, `ALLEN_VOICE_ID` | text+voice → mp3 |
-| HeyGen | A-Roll talking head (Avatar IV / Talking Photo) | REST | `HEYGEN_API_KEY` | upload talking_photo, `/v2/video/generate`, status |
+| HeyGen | A-Roll talking head (Avatar IV / photo avatar) | REST **v3** | `HEYGEN_API_KEY` | `/v3/assets` + `/v3/avatars` (photo avatar), `/v3/videos` (submit, status, history) |
 | Higgsfield | Clean reference still + b-roll scenes (Soul IDs) | CLI `--json` | mounted creds, `HIGGSFIELD_ENABLED` | `generate create/get`, `soul-id`, `upload` |
 | Pexels + Pixabay | Free stock b-roll by transcript keywords | REST | `PEXELS_API_KEY`, `PIXABAY_API_KEY` | video search → clip URLs |
 | SuperCool | Finishing (music/captions) + social publishing | MCP/OAuth | session auth | `video_audio_enhance`, `tiktok`, `twitter` (see contract 15) |
