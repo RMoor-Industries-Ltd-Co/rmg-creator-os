@@ -1,9 +1,84 @@
 # B1.3 — Operational Activation & Deployment Health Guard
 
-Scope: configuration preflight, a secret-free startup configuration report, a three-tier
-`/health` model (process / dependency / capability readiness), a real post-deploy health gate,
-and the outstanding operator actions to bring B1.2's governance primitives fully live in
-production. **This directive did not begin A-Roll candidate/canonical implementation or B2.**
+**Status: COMPLETE** (closed 2026-09-12). Scope: configuration preflight, a secret-free startup
+configuration report, a three-tier `/health` model (process / dependency / capability
+readiness), a real post-deploy health gate, and the operator actions needed to bring B1.2's
+governance primitives fully live in production. **A-Roll candidate/canonical implementation and
+B2 were not started at any point during B1.3.**
+
+## Closing summary
+
+All of the following are true in production as of the `#73` deploy
+(`38aaf1f73bb39a6a47d8eef371627dd9348f029e`):
+
+| Item | Status |
+|---|---|
+| Configuration preflight (`config.ts` classification table) | Implemented |
+| Secret-free startup configuration report (`configReport.ts`) | Implemented |
+| Process / dependency / capability-readiness `/health` split | Implemented |
+| Deployment stabilization gate (`deploy.sh`) | Implemented, **proven in production** (caught a real deploy on `c125c281` reporting a defect live, and passed cleanly on `38aaf1f`) |
+| `STEP_UP_COOKIE_SECRET` | Live (`readiness.step_up: enabled`) |
+| `FOUNDER_PRINCIPALS` | Live (`readiness.founder_approval: enabled`) |
+| Google step-up OAuth redirect URI | Configured (`https://rmg-creator-os.rmasters.group/stepup-callback.html`, matching `StepUp.tsx`'s constructed `redirect_uri` exactly) |
+| `#65`–`#71` boot-crash incident | Documented — `docs/atelier/audits/incident-2026-09-11-stepup-cookie-secret.md` |
+| `#73` readiness-reporting defect | Documented and fixed — `docs/atelier/audits/incident-2026-09-11-founder-principal-count-object-keys.md`. **This was a reporting bug (`Object.keys()` on a `Map`), never a Founder-authorization failure or a Doppler/parser problem** — the distinction matters and is preserved here rather than conflated. |
+
+## Interactive Founder step-up: infrastructure vs. end-to-end validation
+
+**Infrastructure status: configured and production-ready.** Every piece exists and is wired
+correctly:
+
+- `StepUpPrompt` (`apps/dashboard/src/StepUp.tsx`) is mounted globally in `App.tsx` (its footer).
+- `apps/dashboard/src/api.ts`'s `req()` checks every response for `code: 'step_up_required'` and
+  calls `requestStepUp()` when it sees one.
+- `STEP_UP_REQUIRED_CODE` (`apps/gateway/src/stepup.ts:22`) is the discriminator the gateway
+  would use to signal this.
+- The OAuth redirect URI the popup constructs matches what's now configured in the Google
+  console.
+
+**Interactive end-to-end validation status: deferred, not failed, not blocked.** Verified by
+grepping the entire gateway source: **no deployed route currently returns
+`STEP_UP_REQUIRED_CODE`.** Founder authorization (`resolveFounderPrincipal()` / `isFounder()`)
+is likewise parsed and counted (for the readiness report) but never consulted by any live route
+handler. There is therefore no UI action today that can reach the `step_up_required` branch —
+not because anything is broken, but because B1.2 §13 step 6 (the founder-gated write path that
+would consume this) has not been implemented yet. This is a scope boundary, not a defect: never
+worked around here with a temporary trigger, test endpoint, or fabricated approval.
+
+**Future acceptance condition — binding on whichever PR implements the first Founder-gated
+write path.** That PR's acceptance tests (live or integration) must prove the full chain:
+
+1. An ordinary authenticated human session exists.
+2. That session's email resolves to a mapped Founder principal (`resolveFounderPrincipal`).
+3. The sensitive write requires a fresh step-up credential.
+4. Absent one, the gateway returns `step_up_required`.
+5. The dashboard's `req()` catches this and invokes `StepUpPrompt`.
+6. Google's OAuth flow returns through `/stepup-callback.html`.
+7. A fresh step-up credential is issued and accepted (`POST /auth/google/step-up`).
+8. The original write is retried and succeeds.
+9. The recorded approval evidence names the **mapped** Founder principal id (e.g.
+   `rahm@business`), never the raw authenticating email.
+10. Authenticating alone — steps 1-7 with no write attempted — creates no approval evidence and
+    advances no workflow state.
+
+## HeyGen v3 unpaid-read gate
+
+A safe, existing, read-only Studio action satisfies this gate without any code change:
+
+- **Navigation:** dashboard top nav → **Studio** tab (`/studio`). No further click needed.
+- **Mechanism:** `Studio.tsx`'s mount effect (`Studio.tsx:26`) calls `api.avatars()` and
+  `api.voices()` automatically, which hit `GET /heygen/avatars` / `GET /heygen/voices`
+  (`server.ts:435-444`) → `listAvatars()` / `listVoices()` (`packages/integrations/src/heygen.ts`)
+  → HeyGen **v3** `GET /v3/avatars/looks` and `GET /v3/voices` respectively, both paginated via
+  `next_token` until exhausted. Purely read-only: no video is created, no generation submitted,
+  no provider state mutated.
+- **Observable evidence:** on success, the avatar/voice pickers populate with real data. On
+  failure, `Studio.tsx:93` renders `"Couldn't load HeyGen: <error>"` with the underlying error
+  message — nothing is silently swallowed.
+- **Status:** the safe UI trigger exists; this session cannot itself drive a browser as the
+  Founder (no interactive session/credentials), so the live read itself is pending the Founder
+  opening the Studio tab once. **Gate: STILL OUTSTANDING** until that navigation happens and is
+  confirmed clean (no `loadError` banner, non-empty avatar/voice lists).
 
 ## 1–3. Configuration classification, startup report, health model
 
