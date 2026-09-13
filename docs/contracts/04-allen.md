@@ -44,10 +44,10 @@ Drive `06_CONTENT_ENGINE/BRAND_TEMPLATES/BRAND_PROMPTS`): System → Brand → P
 ## Out of scope (for now)
 - Knowledge gathering/research (that is ALLIE's job — ALLEN consumes its context).
 - Final model selection (deferred — choose the best fit for the intended brain later).
-- Video/graphic production (Story Director / My Poster).
+- Video/graphic production (Composer / My Poster).
 
 ## Dependencies
-- **Services:** ALLIE (knowledge/context), gateway (briefs/jobs), Story Director + My Poster (consumers of scripts/copy).
+- **Services:** ALLIE (knowledge/context), gateway (briefs/jobs), Composer + My Poster (consumers of scripts/copy).
 - **Integrations / external:** STT + TTS providers; LLM inference host (TBD).
 - **Models / AI:** company LLM (TBD); voice models.
 - **Data:** Postgres (voice profiles, prompt history); Drive/Docs (drafts).

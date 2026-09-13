@@ -13,7 +13,7 @@ A proprietary, in-house content ecosystem for marketing & sales.
 |---|---|
 | **Gateway / Orchestrator** | Control plane. The Job + Recipe engine that turns input into scheduled output by routing work across services. |
 | **Dashboard** | Unified control-plane UI at `rmg-creator-os.rmasters.group`. |
-| **Story Director** | Raw recording + script → edited, branded, captioned video packages. |
+| **Composer** | Raw recording + script (or canonical shots) → edited, branded, captioned video packages. |
 | **Social Manager** | Scheduling & publishing across social platforms and Shopify ad targets. |
 | **A.L.L.E.N** | Speech-enabled interface to the company LLM. Eventually owns scriptwriting + brand voice. |
 | **A.L.L.I.E** | Investigator agent. Feeds ALLEN knowledge from RSS, deep web research, and the personal library. |

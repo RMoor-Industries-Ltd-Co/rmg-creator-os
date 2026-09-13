@@ -41,7 +41,7 @@ SaaS fees, matches the in-house/PIAAR ethos).
 
 ## Out of scope (for now)
 - Metadata authoring + brand forms (My Poster) and research (ALLIE).
-- Creative generation (Story Director / My Poster cover).
+- Creative generation (Composer / My Poster cover).
 - Ads / paid placement and deep attribution analytics (later).
 
 ## Dependencies

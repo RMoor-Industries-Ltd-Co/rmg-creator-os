@@ -9,7 +9,7 @@
    │  CONTROL LINODE (new)                              │
    │   dashboard          (web UI)                      │
    │   gateway            (orchestrator: Job + Recipe)  │
-   │   story-director     (service)                     │
+   │   composer            (service)                     │
    │   social-manager     (service)                     │
    │   allen              (service)                     │
    │   allie              (service)                     │
@@ -35,7 +35,7 @@ input (image | video | music | transcript | topic)
 ```
 
 **Topic path:** ALLIE pulls RSS / deep-research / personal library → ALLEN drafts a
-brand-voice script → Story Director (video) or My Poster (graphic) → Social Manager
+brand-voice script → Composer (video) or My Poster (graphic) → Social Manager
 schedules to the platform / Shopify store.
 
 A `Job` is a single run of a `Recipe`. Both are first-class entities in the shared
@@ -61,7 +61,7 @@ Postgres DB and move between services as durable BullMQ jobs.
 apps/
   gateway/          social-manager/   allie/        worker-transcribe/
   dashboard/        allen/            my-poster/     worker-media/
-  story-director/                                    worker-render/  (→ render node)
+  composer/                                          worker-render/  (→ render node)
 packages/
   types/  brand-voice/  ai-prompts/  integrations/  db/  queue/  storage/  auth/  ui/
 infra/

@@ -44,7 +44,7 @@ On the render node, point the render worker at the control node's Redis over Tai
 
 ## 6. App services
 Added to `docker-compose.yml` as each service is built (gateway, dashboard,
-story-director, social-manager, allen, allie, my-poster). Each gets
+composer, social-manager, allen, allie, my-poster). Each gets
 `DATABASE_URL` + `REDIS_URL` and `depends_on` db+redis.
 
 ## 7. Backups — pg_dump → Google Drive (rclone)

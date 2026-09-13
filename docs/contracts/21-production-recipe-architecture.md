@@ -35,8 +35,8 @@ the pipeline that's actually alive.
 
 This matters for scope: **"Production Recipe" is not a new idea for this repo, it's
 completing an idea the repo already named and then didn't build.** The design below
-must explicitly reconcile with (not duplicate) the dormant `recipes`/`jobs` pair —
-see Open Decision D2.
+reconciles with (not duplicates) the dormant `recipes`/`jobs` pair — per ratified
+Decision D2, they are retired rather than repurposed.
 
 `docs/contracts/20-hvn-accord-promotion-package.md` (status: planned, spec only) is the
 existing evidence that a brand-flavored promotion pipeline was already anticipated — it
@@ -92,7 +92,8 @@ as a `StoreKey`, never a `BrandKey`.** Contract 12 documents HVN Global as its o
 micro-brand under it. There is no single DB-backed table unifying brand / store /
 jurisdiction. `productions.brand` is a raw string column that will happily accept
 `'hvn'` even though nothing today treats HVN as a valid production brand. **A recipe
-selector that reads "Brand" needs this resolved** — see Open Decision D4.
+selector that reads "Brand" needs this resolved** — resolved per ratified Decision D4
+below (a new `production_brands`/`brand_profiles` table).
 
 ### Provider execution: three coexisting patterns, one already-flagged bypass
 
@@ -122,18 +123,20 @@ it.
 hard-wired to the My Poster/publish stage only, not a general per-stage gate mechanism.
 It's the right shape to generalize (see Data Model below), not the right scope.
 
-### "Story Director" already means something specific here — a naming collision
+### "Story Director" naming — resolved (D1, ratified 2026-09-13)
 
-`docs/contracts/02-story-director.md` (status: in build) already names **Story
-Director** as the service that turns a raw scripted recording into a
-segmented/captioned/music-backed *editable timeline package* — i.e. **post-generation
-editing/finishing**, not pre-production shot planning. The founder directive's "Story
-Director" (brief → shot/scene plan → Human Storyboard Gate → provider production) is a
-**different, earlier-in-the-pipeline role** that happens to share the name. No code
-implements either version yet, so nothing is broken, but the name cannot be reused for
-both roles without confusion. **This needs a founder decision before implementation** —
-see Open Decision D1. "Composer" is unclaimed (the one hit is an unrelated UI term in
-`HiggsfieldPanel.tsx`).
+The original draft of this contract flagged a naming collision: `docs/contracts/
+02-story-director.md` (status: in build) named "Story Director" as post-generation
+editing/finishing, while this contract's "Story Director" (brief → shot/scene plan →
+Human Storyboard Gate → provider production) is a different, earlier-in-the-pipeline
+role. Since neither role was live in code, the founder ratified the clean fix rather
+than inventing a workaround name: **contract 02 is renamed Composer**
+(`docs/contracts/02-composer.md`) — its actual responsibility (assembly/finishing) was
+always closer to a Composer than a director. **Story Director** is now reserved
+exclusively for the pre-production role and has its own contract,
+`docs/contracts/22-story-director.md`. Every reference to "Story Director" in this
+document from here on means the pre-production role; every reference to "Composer"
+means the renamed assembly/finishing service.
 
 ### A cross-repo alignment worth naming directly
 
@@ -145,8 +148,9 @@ same thing — contract 37's `production_jobs` is an administration-layer concep
 owns; this repo's `productionJobs` is Master Atelier's own execution queue — but the
 naming and shape overlap enough that building the Promotion Story recipe without
 reconciling the two would produce two same-named, different-shaped stores across two
-repos administering the same campaign. This is a genuine founder-level architecture
-decision, not an implementation detail — see Open Decision D5.
+repos administering the same campaign. Resolved per ratified Decision D5: the two stores
+stay separate and domain-owned, correlated by an explicit cross-system identifier rather
+than merged into one table.
 
 ## Proposed hierarchy
 
@@ -157,7 +161,8 @@ Brand
             └─ Production Workflow Instance   (a `productions` row)
 ```
 
-- **Brand** — which organization/property this belongs to (resolves D4 below).
+- **Brand** — which organization/property this belongs to, resolved via the new
+  `production_brands`/`brand_profiles` table per ratified Decision D4.
 - **Production Recipe** — a workflow *definition*: required intake fields, ordered
   stages, which stages carry a human gate, which capabilities/providers each stage may
   use, and completion criteria. Recipes are data, not code branches.
@@ -190,15 +195,16 @@ execution, per the directive's Manhattan/Havenry/Vale example).
 This section states direction and constraints for a future migration, not schema to
 apply now.
 
-1. **A new recipe-definition table**, tentatively `production_recipes` (name TBD against
-   D2): `key` (stable slug, e.g. `creator-content`, `brand-promotion`,
+1. **A new recipe-definition table**, `production_recipes` (name settled — D2 ratified
+   retiring the dormant `recipes` table rather than repurposing it): `key` (stable slug,
+   e.g. `creator-content`, `brand-promotion`,
    `promotion-story`), `name`, `intake_schema` (jsonb — the fields a recipe's "New
    Production" form must collect), `stages` (ordered list, each with a `key`, whether it
    carries a human gate, and which `production_jobs.capability` values it may use),
    `completion_criteria`. This is what the dormant `recipes` table was reaching for at a
-   different altitude (service DAG, not workflow entry-contract + stage list) — D2
-   decides whether to repurpose that table, rename it, or retire it in favor of this new
-   one; they should not both exist under similar names.
+   different altitude (service DAG, not workflow entry-contract + stage list) — per
+   ratified Decision D2, that table is retired rather than repurposed, so the two never
+   coexist under similar names.
 2. **`productions` gains a recipe discriminator** (`recipeKey`, FK to
    `production_recipes.key`), defaulting existing rows to `creator-content` — additive,
    non-breaking.
@@ -242,7 +248,8 @@ preserves the screen as directed. The only new UI surface at first:
   HVN's cinematic-realism profile, RPS contract 37's gates (affirmative rights
   clearance, named-authority render approval, exact provider/model/version, final-cut
   technical QA), and the Havenry-only publication boundary. This is also where Open
-  Decision D5 (the two `production_jobs`) has to resolve before real implementation,
+  ratified Decision D5's cross-system correlation identifier (the two `production_jobs`
+  stores stay separate, correlated) has to be wired through before real implementation,
   since contract 37 is the concrete first consumer.
 - **Connection Circle** → Brand Promotion recipe, same machinery, different cast
   (none/human), different visual language, different CTA/channels — proving the
@@ -255,7 +262,8 @@ preserves the screen as directed. The only new UI surface at first:
 - Reconcile naming against the dormant `recipes`/`jobs` pair and against RPS's
   `production_jobs`.
 - UX entry point for recipe selection without disturbing Creator Content.
-- Identify the Story Director naming collision and the founder decisions it forces.
+- Identify the Story Director naming collision and record the founder's ratified
+  resolution (contracts 02 and 22).
 
 ## Out of scope (for now)
 
@@ -269,15 +277,29 @@ preserves the screen as directed. The only new UI surface at first:
 - Article Promotion Package, Ad Creative, and other future recipes named in the
   directive as "eventually" — the hierarchy accommodates them; none are specified here.
 
+## Provider authority (Artlist — founder-ratified 2026-09-13)
+
+Recorded here per founder decision alongside D1–D6, since it constrains what Story
+Director (contract 22) may assign per shot: **Artlist is approved as Master Atelier's
+B-roll / environmental / commodity visual-generation provider** — it passed realistic
+urban B-roll evaluation. Artlist is **not** character identity authority, avatar-
+performance authority, canonical voice authority, orchestration authority, approval
+authority, or final-render authority. A prior virtual-artist/music-composition test
+failed materially, so **Artlist is not approved as Master Atelier's music-composition
+authority**. Full detail lives in contract 22's Provider Authority section, since that's
+where a shot plan actually consumes this; this contract records the decision so it isn't
+missed when reading only the recipe architecture.
+
 ## Dependencies
 
 - **Services:** gateway, dashboard, ALLEN (script drafting stays Creator-Content-specific
-  input, not a recipe-wide assumption).
+  input, not a recipe-wide assumption), Story Director (contract 22, pre-production),
+  Composer (contract 02, assembly/finishing — formerly named Story Director).
 - **Cross-repo:** `rmg-piaar-system` contract 37 (HVN Havenry Adam intro — first
   Promotion Story validation case), contract 12 (brand/jurisdiction model), contract 20
   (HVN Accord promotion package — prior art for this exact instinct).
 - **Data:** `productions`, `characters`, `production_jobs`, the dormant `recipes`/`jobs`
-  pair (to be reconciled, not extended blind).
+  pair (retired per D2, not repurposed).
 
 ## Brands / stores touched
 
@@ -296,63 +318,70 @@ Connection Circle
 - HVN's Promotion Story recipe and RPS contract 37 agree on one `production_jobs`
   meaning, not two.
 
-## Open decisions (founder-level, block implementation)
+## Founder decisions (ratified 2026-09-13 — implementation still not started)
 
-- **D1 — Story Director naming collision.** Contract 02's Story Director (post-generation
-  editing/finishing, in build) and the directive's Story Director (pre-production brief →
-  shot plan, per Promotion Story) are different roles with the same name. Options: (a)
-  rename the new pre-production role (e.g. "Creative Director" / "Shot Planner") and keep
-  contract 02's name for finishing; (b) expand contract 02's Story Director to own both
-  ends of the pipeline; (c) rename contract 02's existing role instead, since it's still
-  only "in build," not live. Recommend (a) — least disruption to an in-flight contract —
-  but this is the founder's call.
-- **D2 — Dormant `recipes`/`jobs` tables.** Repurpose them into the new
-  `production_recipes` model, rename them out of the way, or drop them outright (nothing
-  reads/writes them today). Recommend renaming/retiring rather than repurposing, since
-  their shape (service DAG) doesn't match a workflow entry-contract + stage list.
-- **D3 — Recipe list for v1.** Confirm exactly `Creator Content`, `Brand Promotion`,
-  `Promotion Story` for the first implementation pass, and whether contract 20's
-  "Article Promotion Package" becomes its own fourth recipe now or stays a future
-  addition once these three prove the hierarchy.
-- **D4 — Brand/Store/Jurisdiction unification.** `BrandKey`, `StoreKey`, and contract
-  12's prose-only "jurisdictions" don't share a table. A recipe selector needs to know
-  "is HVN a valid Brand for production purposes" with one authoritative answer. Decide
-  whether Production Recipe's "Brand" step reads a new unified table, or whether HVN
-  gets treated as a `BrandKey`-equivalent specifically for recipe purposes without
-  touching its `StoreKey`/jurisdiction meaning elsewhere.
-- **D5 — Two `production_jobs`.** RPS contract 37 names `production_jobs` as its durable
-  job store; this repo already has a table with that name serving a different purpose.
-  Decide whether Master Atelier's `production_jobs` table is extended to also satisfy
-  contract 37's idempotency-key/rollback requirements for HVN Promotion Story jobs
-  specifically (one store, two consumers, careful key-namespacing), or whether RPS's
-  administration layer keeps its own separate record and this repo's table stays
-  execution-only with a documented mapping between the two. This must be resolved before
-  any Promotion Story implementation touches HVN, since contract 37 is already merged
-  and live as written.
-- **D6 — Provider-execution consolidation.** Fold the Renderer-registry vs.
-  inline-route-call vs. inline-worker-bypass cleanup into this work, or file it as a
-  separate contract/cleanup pass. Recommend separate — it's real debt but orthogonal to
-  the recipe hierarchy itself, and coupling them risks stalling the recipe work on an
-  unrelated refactor.
+- **D1 — RATIFIED.** "Story Director" is reserved for the pre-production creative-
+  direction role: brief/script → scene/shot plan → storyboard gate (contract 22).
+  Contract 02's post-generation editing/finishing role is renamed **Composer** /
+  **Production Composer** (`docs/contracts/02-composer.md`), since its responsibility
+  aligns with assembly/finishing rather than directing. Done in this revision — see the
+  "Story Director naming" section above.
+- **D2 — RATIFIED.** Do not repurpose the dormant `recipes`/`jobs` tables. They are a
+  legacy/dormant service-DAG abstraction at a different altitude than Production
+  Recipes. Verify they are unused/empty, then retire/rename/remove them through a later
+  controlled migration (Phase 1, below) rather than conflating them with the new model.
+- **D3 — RATIFIED.** v1 Production Recipes are exactly `Creator Content`, `Brand
+  Promotion`, and `Promotion Story`. Contract 20's "Article Promotion Package" remains
+  an input/source package for Brand Promotion, not a fourth recipe, for now — revisit
+  only if its workflow proves materially distinct once the first three prove the
+  hierarchy.
+- **D4 — RATIFIED DIRECTION.** Do not collapse `BrandKey`, `StoreKey`, and jurisdiction
+  into one overloaded concept, and do not make HVN pretend to be an existing `BrandKey`.
+  Introduce a canonical Master Atelier production-brand/property identity — tentatively
+  `production_brands` or `brand_profiles` — with stable slugs (`hvn`,
+  `connection-circle`, `mstr-rahm`, ...) and optional references to `StoreKey`,
+  jurisdiction, Drive roots, and publishing identity where applicable. Production
+  Recipe's "Brand" step consumes this one authoritative identity instead of overloading
+  `BrandKey`/`StoreKey`. This table is new schema (Phase 1/2, below), not merely a
+  reinterpretation of an existing one.
+- **D5 — RATIFIED.** Keep RPS's and Creator OS's `production_jobs` as separate,
+  domain-owned durable stores — do not share one physical table across repos merely
+  because the names match. RPS owns administrative/campaign orchestration for contract
+  37; Creator OS owns Master Atelier's execution queue. Add explicit cross-system
+  correlation (e.g. an `external_job_id`/`origin_system` pair, or a shared
+  correlation/idempotency identifier threaded through both records) and document the two
+  as distinct, qualified concepts (e.g. `rps.production_jobs` vs.
+  `creator_os.production_jobs`) rather than one name meaning two things.
+- **D6 — RATIFIED.** Provider-execution consolidation (Renderer-registry vs.
+  inline-route-call vs. inline-worker-bypass) is a separate cleanup track, not a
+  precondition for Production Recipe implementation. The recipe design defines a clean
+  capability/provider boundary (Story Director's per-shot provider assignment, contract
+  22) that a later consolidation can adopt without redesigning the recipe layer.
 
-## Migration sequence (once founder decisions above are made — not started)
+## Migration sequence (ratified direction above — implementation not started)
 
-1. **Phase 0 (this document).** Design pass; no code.
-2. **Phase 1 — schema, additive only.** New `production_recipes` table (or the
-   repurposed/renamed equivalent per D2); `productions.recipeKey` column defaulting all
-   existing rows to `creator-content`; no column removed, no existing behavior changed.
+1. **Phase 0 (this document + contracts 02/22).** Design pass; no code. Complete.
+2. **Phase 1 — schema, additive only.** New `production_recipes` table; new
+   `production_brands`/`brand_profiles` table per D4; `productions.recipeKey` and
+   `productions.brandRef` columns defaulting all existing rows to `creator-content` and
+   each existing `BrandKey` respectively; verify the dormant `recipes`/`jobs` tables are
+   empty/unused, then retire them per D2. No existing column removed, no existing
+   behavior changed.
 3. **Phase 2 — gateway generalization.** A generic "what stage is next / what does this
    stage require" read path driven by `production_recipes`, introduced alongside (not
-   replacing) today's bespoke per-step routes for Creator Content. New recipe-specific
-   routes only as Brand Promotion/Promotion Story are actually built.
+   replacing) today's bespoke per-step routes for Creator Content. Brand resolution
+   reads the new `production_brands` table. New recipe-specific routes only as Brand
+   Promotion/Promotion Story are actually built.
 4. **Phase 3 — dashboard recipe selector.** The "What are we producing?" entry point;
    `ProductionWizard.STEPS` becomes recipe-driven; Creator Content's rendered form is
    byte-for-byte the same as today.
-5. **Phase 4 — Story Director / shot-plan / human-gate generalization.** Only after D1
-   is resolved; builds the heavier Promotion Story path (shot plan → Human Storyboard
-   Gate → per-shot provider execution → canonical shot selection → Composer →
-   composition manifest → finishing → Human Final-Cut Gate), validated first against
-   HVN's Adam/Vale case under contract 37.
+5. **Phase 4 — Story Director / Composer / human-gate generalization.** Builds the
+   heavier Promotion Story path per contract 22 (shot plan → Human Storyboard Gate →
+   per-shot provider execution, respecting the Artlist/Higgsfield/HeyGen provider
+   authority split → canonical shot selection → Composer, contract 02 → composition
+   manifest → finishing → Human Final-Cut Gate), validated first against HVN's Adam/Vale
+   case under contract 37, with the D5 cross-system correlation identifier wired through
+   from the first Promotion Story job.
 6. **Phase 5 (optional, separate track) — provider-execution consolidation** per D6.
 
 ## Open questions
@@ -360,9 +389,10 @@ Connection Circle
 - What does a shot-plan/storyboard record actually look like in the DB once Phase 4
   starts — a jsonb blob on the production row, or a proper `shot_plans`/`shots` child
   table? (Likely the latter once Promotion Story's shape stabilizes, per the `recipeData`
-  guidance above — deferred to Phase 4 design, not this pass.)
+  guidance above — deferred to Phase 4 design, not this pass; also open in contract 22.)
 - Where does Composer's "composition manifest" concretely live, and does it reuse
   `videos`/`assets` or need its own table? Same deferral as above.
-- Does contract 02's Story Director (finishing) become a stage *inside* every recipe's
-  pipeline (including Creator Content, retroactively), or stay scoped to whichever
-  recipes need heavier finishing? Depends on D1's outcome.
+- Exact shape of the `production_brands`/`brand_profiles` table per D4 — deferred to
+  Phase 1 schema design, not this pass.
+- Exact shape of the D5 cross-system correlation identifier between RPS's and Creator
+  OS's `production_jobs` — deferred to Phase 4/contract 37 implementation, not this pass.
