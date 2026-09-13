@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
 import { api, TERMINAL, type HeyGenAvatar, type HeyGenVoice, type VideoRow } from './api';
+import { loadStudioData } from './studioLoad';
 
 const BRAND_OPTIONS = [
   { value: '', label: '— none —' },
@@ -11,7 +12,12 @@ export function Studio() {
   const [avatars, setAvatars] = useState<HeyGenAvatar[]>([]);
   const [voices, setVoices] = useState<HeyGenVoice[]>([]);
   const [videos, setVideos] = useState<VideoRow[]>([]);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // Independent per-surface errors, not one combined `loadError` — a failure loading avatars
+  // (e.g. an unscoped catalog exceeding HeyGen's pagination bound) must not hide whether voices
+  // or video history succeeded. See studioLoad.ts.
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   const [avatarFilter, setAvatarFilter] = useState('');
   const [avatarId, setAvatarId] = useState('');
@@ -23,13 +29,16 @@ export function Studio() {
   const [formError, setFormError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([api.avatars(), api.voices(), api.listVideos()])
-      .then(([a, v, vids]) => {
-        setAvatars(a);
-        setVoices(v);
-        setVideos(vids);
-      })
-      .catch((e: unknown) => setLoadError(String(e)));
+    loadStudioData({ avatars: api.avatars, voices: api.voices, videos: api.listVideos }).then(
+      (result) => {
+        if (result.avatars.data) setAvatars(result.avatars.data);
+        else setAvatarError(result.avatars.error);
+        if (result.voices.data) setVoices(result.voices.data);
+        else setVoiceError(result.voices.error);
+        if (result.videos.data) setVideos(result.videos.data);
+        else setVideoError(result.videos.error);
+      }
+    );
   }, []);
 
   // Poll any non-terminal videos until they finish.
@@ -90,11 +99,11 @@ export function Studio() {
     <div className="studio">
       <section className="panel">
         <h2>Generate avatar video</h2>
-        {loadError && <p className="err">Couldn't load HeyGen: {loadError}</p>}
 
         <div className="form-grid">
           <label>
             Avatar <span className="muted">({avatars.length})</span>
+            {avatarError && <p className="err">Couldn't load avatars: {avatarError}</p>}
             <input
               type="text"
               placeholder="filter avatars…"
@@ -113,6 +122,7 @@ export function Studio() {
 
           <label>
             Voice <span className="muted">({voices.length})</span>
+            {voiceError && <p className="err">Couldn't load voices: {voiceError}</p>}
             <select value={voiceId} onChange={(e) => setVoiceId(e.target.value)}>
               <option value="">— choose voice —</option>
               {voices.map((v) => (
@@ -158,7 +168,10 @@ export function Studio() {
 
       <section className="panel">
         <h2>Your videos</h2>
-        {videos.length === 0 && <p className="muted">No videos yet — generate your first above.</p>}
+        {videoError && <p className="err">Couldn't load video history: {videoError}</p>}
+        {videos.length === 0 && !videoError && (
+          <p className="muted">No videos yet — generate your first above.</p>
+        )}
         <div className="video-grid">
           {videos.map((v) => (
             <article key={v.id} className="video-card">
