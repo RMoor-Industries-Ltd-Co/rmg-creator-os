@@ -350,6 +350,50 @@ against the live API either way. The trade is a visible, immediate read failure 
 silent duplicate charge, and the unpaid live read mandated before any paid render (below) is
 exactly the check that would surface it.
 
+## Studio catalog scoping — production live-read failure and correction
+
+**Production live-read attempt #1: FAILED — UNSCOPED AVATAR CATALOG EXCEEDED PAGINATION SAFETY
+BOUND.** The founder performed the unpaid HeyGen v3 validation this migration required
+(Master Atelier → Studio) and production returned:
+
+> `Couldn't load HeyGen: Error: HeyGen /v3/avatars/looks: more than 40 pages of 50 — refusing
+> to return a partial catalog as if it were complete`
+
+**Root cause.** `listAvatars()`/`listVoices()` called `/v3/avatars/looks` and `/v3/voices` with
+no scope at all. Both endpoints document an ownership filter — `ownership=public|private` on
+avatars, `type=public|private` on voices — and omitting it resolves to HeyGen's **entire public
+preset library plus the account's own**, not just what Studio needs. That combined catalog is
+apparently large enough to exceed `listAll`'s 40-page (2,000-item) bound. Studio was never
+meant to load HeyGen's full public stock library; it only ever needs the account's own
+configured avatars and voices.
+
+**Safety behavior: correct.** The pagination bound did exactly what it exists to do — it
+refused to hand back an unproven partial result as if it were the whole catalog (D-J3a). The
+fix is narrowing what is requested, not raising or removing the bound; see the note on
+`listAll` in `packages/integrations/src/heygen.ts` for why "the bound was hit" and "the bound
+is wrong" are different findings, and only the first one was true here.
+
+**Correction.** `listAvatars()`/`listVoices()` now take a required `HeyGenCatalogScope`
+(`'private' | 'public'`) — there is no default that resolves to "everything," so a caller must
+say which slice it wants. `apps/gateway/src/heygenScope.ts` pins Studio's own two routes
+(`GET /heygen/avatars`, `GET /heygen/voices`) to always request `'private'` — the account's own
+catalog — while the generic integration remains capable of `'public'` for some future caller
+that legitimately wants HeyGen's public library (none exists today). A dedicated regression
+test (`apps/gateway/test/heygenScope.test.ts`) pins this so the scope cannot silently
+disappear or flip to `'public'` behind a passing typecheck.
+
+**A second, independent defect this incident surfaced.** Studio's dashboard component loaded
+avatars, voices, and video history with one `Promise.all` — so the avatar-catalog failure also
+erased the ability to observe whether voices or video history succeeded, which is why the
+founder's first live-read attempt could not tell the three surfaces apart. `apps/dashboard/src
+/studioLoad.ts` (`loadStudioData`, `Promise.allSettled` under a typed per-surface result) fixes
+this — an avatar failure, a voice failure, and a video-history failure are now each surfaced
+independently in the UI, and a successful surface stays populated when another fails.
+
+Neither fix touched `maxPages`, `pageState()`, or any reconciliation-path logic — the
+pagination-exhaustion, inconsistent-page, and bound-exceeded protections are unchanged and
+still covered by the existing tests above.
+
 ## Verification
 
 `pnpm typecheck` and `pnpm lint` clean; the full suite runs against real Postgres.

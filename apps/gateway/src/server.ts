@@ -49,6 +49,7 @@ import {
   STEP_UP_COOKIE
 } from './stepup.js';
 import { founderPrincipalCount, parseFounderPrincipals } from './founder.js';
+import { listStudioAvatars, listStudioVoices } from './heygenScope.js';
 import { buildConfigReport } from './configReport.js';
 import {
   createDriveClient,
@@ -435,13 +436,13 @@ async function heygenHandler<T>(reply: import('fastify').FastifyReply, fn: () =>
 app.get('/heygen/avatars', async (_request, reply) => {
   const client = withHeyGen(reply);
   if (!client) return reply;
-  return heygenHandler(reply, () => client.listAvatars());
+  return heygenHandler(reply, () => listStudioAvatars(client));
 });
 
 app.get('/heygen/voices', async (_request, reply) => {
   const client = withHeyGen(reply);
   if (!client) return reply;
-  return heygenHandler(reply, () => client.listVoices());
+  return heygenHandler(reply, () => listStudioVoices(client));
 });
 
 // Generate a video AND record it so the dashboard can show it later.

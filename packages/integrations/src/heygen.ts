@@ -51,6 +51,19 @@ export interface HeyGenVoice {
   gender?: string;
 }
 
+/**
+ * `/v3/avatars/looks` and `/v3/voices` each expose an unfiltered result set spanning HeyGen's
+ * entire public preset library plus the account's own — large enough, in production, to exceed
+ * `listAll`'s 40-page safety bound (docs/atelier/heygen-v3-migration.md, "Studio catalog
+ * scoping"). Every caller must say which slice it wants; there is deliberately no default that
+ * resolves to "everything" — a caller that actually needs the full library says `'public'`
+ * explicitly rather than getting it by omission. `ownership`/`type` are the provider's own wire
+ * names (`ownership` for avatars, `type` for voices) — kept distinct here rather than unified
+ * into one param name, so a caller reading this type signature sees the exact parameter HeyGen
+ * expects, not a synonym that needs re-translating at the call site.
+ */
+export type HeyGenCatalogScope = 'public' | 'private';
+
 export type HeyGenAspectRatio = '16:9' | '9:16' | '4:5' | '5:4' | '1:1';
 export type HeyGenResolution = '4k' | '1080p' | '720p';
 
@@ -133,8 +146,11 @@ export class HeyGenError extends Error {
 }
 
 export interface HeyGenClient {
-  listAvatars(): Promise<HeyGenAvatar[]>;
-  listVoices(): Promise<HeyGenVoice[]>;
+  /** `ownership` is required, not optional — see `HeyGenCatalogScope`. */
+  listAvatars(opts: { ownership: HeyGenCatalogScope }): Promise<HeyGenAvatar[]>;
+  /** `type` is HeyGen's own wire name for this filter on `/v3/voices` — required, not optional;
+   *  see `HeyGenCatalogScope`. */
+  listVoices(opts: { type: HeyGenCatalogScope }): Promise<HeyGenVoice[]>;
   /** Upload an image and create a photo avatar from it, returning the **look id** to pass as
    *  `avatarId`. Replaces v2's `uploadTalkingPhoto`; see the note on the implementation — this
    *  one is asynchronous on HeyGen's side and therefore polls. */
@@ -398,21 +414,25 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
    * loads once and filters client-side) it makes an avatar past the cut simply unselectable.
    *
    * `maxPages` is a safety stop, not a product limit: without it a server that kept returning
-   * a token would loop forever. It is set well above any plausible catalog — and **reaching
-   * it throws**. Returning what had accumulated would hand back a partial catalog that looks
-   * exactly like a complete one, which is the truncation bug this function exists to fix,
-   * reintroduced at a higher page count. The same applies to a server that claims more pages
-   * without giving a cursor.
+   * a token would loop forever. It is set well above any plausible SCOPED catalog — reaching
+   * it throws rather than silently truncating. **It is not a defense against requesting the
+   * wrong scope**: production exceeded it once by asking for HeyGen's unfiltered catalog
+   * (public + private) rather than a scoped one — the fix there was narrowing `extraParams`,
+   * not raising `maxPages` (docs/atelier/heygen-v3-migration.md, "Studio catalog scoping").
+   * Returning what had accumulated would hand back a partial catalog that looks exactly like a
+   * complete one, which is the truncation bug this function exists to fix, reintroduced at a
+   * higher page count. The same applies to a server that claims more pages without a cursor.
    */
   async function listAll<T>(
     path: string,
     pageSize: number,
+    extraParams: Record<string, string>,
     maxPages = 40
   ): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     let token: string | undefined;
     for (let page = 0; page < maxPages; page += 1) {
-      const params = new URLSearchParams({ limit: String(pageSize) });
+      const params = new URLSearchParams({ limit: String(pageSize), ...extraParams });
       if (token) params.set('token', token);
       const j = await req<{
         data?: Array<Record<string, unknown>>;
@@ -437,8 +457,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
   }
 
   const client: HeyGenClient = {
-    async listAvatars() {
-      const looks = await listAll('/v3/avatars/looks', 50);
+    async listAvatars(opts) {
+      const looks = await listAll('/v3/avatars/looks', 50, { ownership: opts.ownership });
       return looks.map((a) => ({
         avatar_id: String(a.id ?? ''),
         avatar_name: (a.name as string | undefined) ?? undefined,
@@ -447,8 +467,8 @@ export function createHeyGenClient(apiKey: string): HeyGenClient {
       }));
     },
 
-    async listVoices() {
-      const voices = await listAll('/v3/voices', 100);
+    async listVoices(opts) {
+      const voices = await listAll('/v3/voices', 100, { type: opts.type });
       return voices.map((v) => ({
         voice_id: String(v.voice_id ?? ''),
         name: (v.name as string | undefined) ?? undefined,
