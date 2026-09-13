@@ -693,7 +693,7 @@ describe('catalog pagination — v2 returned everything in one response', () => 
       { data: [{ id: 'lk_2', name: 'B' }], next: '2' },
       { data: [{ id: 'lk_3', name: 'C' }] }
     ]);
-    const avatars = await createHeyGenClient('k').listAvatars();
+    const avatars = await createHeyGenClient('k').listAvatars({ ownership: 'private' });
     // A single page would have returned one avatar, and lk_3 would be unselectable forever.
     expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1', 'lk_2', 'lk_3']);
     expect(calls).toHaveLength(3);
@@ -706,8 +706,43 @@ describe('catalog pagination — v2 returned everything in one response', () => 
       { data: [{ voice_id: 'vo_1' }], next: '1' },
       { data: [{ voice_id: 'vo_2' }] }
     ]);
-    const voices = await createHeyGenClient('k').listVoices();
+    const voices = await createHeyGenClient('k').listVoices({ type: 'private' });
     expect(voices.map((v) => v.voice_id)).toEqual(['vo_1', 'vo_2']);
+  });
+
+  it('sends ownership=private on the wire when requesting the private avatar catalog', async () => {
+    const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
+    await createHeyGenClient('k').listAvatars({ ownership: 'private' });
+    expect(calls[0]!.url).toContain('ownership=private');
+  });
+
+  it('sends ownership=public on the wire when requesting the public avatar catalog', async () => {
+    const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
+    await createHeyGenClient('k').listAvatars({ ownership: 'public' });
+    expect(calls[0]!.url).toContain('ownership=public');
+  });
+
+  it('sends type=private on the wire when requesting the private voice catalog', async () => {
+    const calls = pagedFetch('/v3/voices', [{ data: [{ voice_id: 'vo_1' }] }]);
+    await createHeyGenClient('k').listVoices({ type: 'private' });
+    expect(calls[0]!.url).toContain('type=private');
+  });
+
+  it('sends type=public on the wire when requesting the public voice catalog', async () => {
+    const calls = pagedFetch('/v3/voices', [{ data: [{ voice_id: 'vo_1' }] }]);
+    await createHeyGenClient('k').listVoices({ type: 'public' });
+    expect(calls[0]!.url).toContain('type=public');
+  });
+
+  it('carries the scope query param across every page, not just the first', async () => {
+    const calls = pagedFetch('/v3/avatars/looks', [
+      { data: [{ id: 'lk_1' }], next: '1' },
+      { data: [{ id: 'lk_2' }] }
+    ]);
+    await createHeyGenClient('k').listAvatars({ ownership: 'private' });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.url).toContain('ownership=private');
+    expect(calls[1]!.url).toContain('ownership=private');
   });
 
   it('refuses a page that says "no more" while still handing back a cursor', async () => {
@@ -723,14 +758,14 @@ describe('catalog pagination — v2 returned everything in one response', () => 
     // The message must name the pair actually seen. The accepted risk of this rule is that
     // HeyGen echoes a cursor on a final page — if that happens in production, an error that
     // asserted "no next_token" would hide the very response that caused it.
-    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(
+    await expect(createHeyGenClient('k').listAvatars({ ownership: 'private' })).rejects.toThrow(
       /has_more:false, next_token:"still-here"/
     );
   });
 
   it('completes on an explicit no-more with no cursor — the one proven end', async () => {
     const calls = pagedFetch('/v3/avatars/looks', [{ data: [{ id: 'lk_1' }] }]);
-    const avatars = await createHeyGenClient('k').listAvatars();
+    const avatars = await createHeyGenClient('k').listAvatars({ ownership: 'private' });
     expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1']);
     expect(calls).toHaveLength(1);
   });
@@ -744,7 +779,7 @@ describe('catalog pagination — v2 returned everything in one response', () => 
           ? { json: { data: [{ id: 'lk_x' }], has_more: true, next_token: 'endless' } }
           : undefined
     ]);
-    await expect(createHeyGenClient('k').listAvatars()).rejects.toThrow(/partial catalog/);
+    await expect(createHeyGenClient('k').listAvatars({ ownership: 'private' })).rejects.toThrow(/partial catalog/);
   });
 
   it('follows a cursor when has_more is omitted — absence is not an assertion of the end', async () => {
@@ -760,7 +795,7 @@ describe('catalog pagination — v2 returned everything in one response', () => 
           : { json: { data: [{ id: 'lk_2' }], has_more: false } };
       }
     ]);
-    const avatars = await createHeyGenClient('k').listAvatars();
+    const avatars = await createHeyGenClient('k').listAvatars({ ownership: 'private' });
     expect(avatars.map((a) => a.avatar_id)).toEqual(['lk_1', 'lk_2']);
     expect(calls).toHaveLength(2);
   });
@@ -771,7 +806,7 @@ describe('catalog pagination — v2 returned everything in one response', () => 
     mockFetch([
       (c) => (c.url.includes('/v3/voices') ? { json: { data: [{ voice_id: 'vo_1' }] } } : undefined)
     ]);
-    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(
+    await expect(createHeyGenClient('k').listVoices({ type: 'private' })).rejects.toThrow(
       /has_more omitted, no next_token/
     );
   });
@@ -783,7 +818,7 @@ describe('catalog pagination — v2 returned everything in one response', () => 
           ? { json: { data: [{ voice_id: 'vo_1' }], has_more: true, next_token: null } }
           : undefined
     ]);
-    await expect(createHeyGenClient('k').listVoices()).rejects.toThrow(/cannot establish/);
+    await expect(createHeyGenClient('k').listVoices({ type: 'private' })).rejects.toThrow(/cannot establish/);
   });
 });
 
@@ -800,7 +835,7 @@ describe('avatars and voices keep their v2-shaped output for the dashboard', () 
             }
           : undefined
     ]);
-    const avatars = await createHeyGenClient('k').listAvatars();
+    const avatars = await createHeyGenClient('k').listAvatars({ ownership: 'private' });
     expect(calls[0]!.url).toContain('/v3/avatars/looks');
     expect(avatars).toEqual([
       { avatar_id: 'lk_1', avatar_name: 'Rahm', gender: 'male', preview_image_url: 'https://p' }
@@ -819,7 +854,7 @@ describe('avatars and voices keep their v2-shaped output for the dashboard', () 
             }
           : undefined
     ]);
-    const voices = await createHeyGenClient('k').listVoices();
+    const voices = await createHeyGenClient('k').listVoices({ type: 'private' });
     expect(calls[0]!.url).toContain('/v3/voices');
     expect(voices[0]).toMatchObject({ voice_id: 'vo_1', name: 'Narrator' });
   });
@@ -836,8 +871,8 @@ describe('no v1 or v2 endpoint is reachable from this client', () => {
       (c) => (c.url.includes('/v3/voices') ? { json: { data: [], has_more: false } } : undefined)
     ]);
     const client = createHeyGenClient('k');
-    await client.listAvatars();
-    await client.listVoices();
+    await client.listAvatars({ ownership: 'private' });
+    await client.listVoices({ type: 'private' });
     await client.generateVideo({ avatarId: 'lk_1', audioUrl: 'https://a' });
     await client.getVideoStatus('v_1');
     await client.listVideos();
