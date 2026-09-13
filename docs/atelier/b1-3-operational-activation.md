@@ -22,6 +22,7 @@ All of the following are true in production as of the `#73` deploy
 | Google step-up OAuth redirect URI | Configured (`https://rmg-creator-os.rmasters.group/stepup-callback.html`, matching `StepUp.tsx`'s constructed `redirect_uri` exactly) |
 | `#65`–`#71` boot-crash incident | Documented — `docs/atelier/audits/incident-2026-09-11-stepup-cookie-secret.md` |
 | `#73` readiness-reporting defect | Documented and fixed — `docs/atelier/audits/incident-2026-09-11-founder-principal-count-object-keys.md`. **This was a reporting bug (`Object.keys()` on a `Map`), never a Founder-authorization failure or a Doppler/parser problem** — the distinction matters and is preserved here rather than conflated. |
+| HeyGen v3 unpaid-read gate (A-Roll prerequisite, tracked in this document though outside B1.3's own scope) | **DISCHARGED 2026-09-13** — production Studio validation: avatars and voices both load independently under the `#76` private-scope fix. See "HeyGen v3 unpaid-read gate" below for full evidence. Video-history status recorded separately, unobserved. |
 
 ## Interactive Founder step-up: infrastructure vs. end-to-end validation
 
@@ -95,12 +96,38 @@ A safe, existing, read-only Studio action satisfies this gate without any furthe
     either HeyGen catalog read (this was the second automated-review finding on this PR: the
     prior combined banner could not distinguish an unrelated database error from a HeyGen
     read-gate failure — no longer possible now that each surface has its own error state).
-- **Status:** the safe UI trigger exists; this session cannot itself drive a browser as the
-  Founder (no interactive session/credentials), so the live read itself is pending the Founder
-  opening the Studio tab. **Gate: STILL OUTSTANDING** until that navigation happens and both the
-  avatar and voice reads are independently confirmed clean (their own picker populates, no
-  avatar-specific or voice-specific error line) — video-history's outcome does not bear on this
-  gate either way.
+- **Status: DISCHARGED (2026-09-13).** The Founder performed the navigation, authenticated as
+  `rahm@rmasters.group` (a mapped Founder identity, `FOUNDER_PRINCIPALS`). Directly observed in
+  production:
+
+  | Surface | Result |
+  |---|---|
+  | Avatars | **PASS** — 15 avatars returned, picker populated, no avatar-specific error line |
+  | Voices | **PASS** — 14 voices returned, picker populated, no voice-specific error line |
+  | Video history | **STATUS REQUIRES DIRECT OBSERVATION** — not established either way by this validation; see note below |
+
+  The prior `HeyGen /v3/avatars/looks: more than 40 pages of 50` failure is absent. No
+  generation was initiated; this remained a read-only, unpaid validation. This production
+  observation demonstrates, together:
+
+  1. HeyGen authentication succeeds for the Studio read path.
+  2. `GET /v3/avatars/looks` succeeds with `ownership=private`.
+  3. `GET /v3/voices` succeeds with `type=private`.
+  4. The v3 response envelope maps correctly against the live API (not just the mocked test
+     suite).
+  5. Private-catalog pagination completes within the 40-page safety bound — the bound was never
+     actually a limit on this account's real (much smaller) private catalog; the earlier failure
+     was purely the unscoped-request defect `#76` fixed.
+  6. Avatar and voice surfaces populate **independently** (`loadStudioData`'s
+     `Promise.allSettled`), validating the `#76` decoupling fix in production, not just in tests.
+  7. No paid provider operation was required to establish any of the above.
+
+  **Video history is explicitly NOT claimed as passing or failing here.** The evidence available
+  did not distinguish whether `GET /heygen/videos` (a local database read, not a HeyGen call)
+  succeeded, returned empty, or errored. Per this section's own design (the independent
+  per-surface loading `#76` introduced), that surface's outcome has no bearing on the HeyGen
+  gate either way — but it is recorded separately, honestly, as unobserved rather than inferred
+  clean.
 
 ## 1–3. Configuration classification, startup report, health model
 
@@ -366,7 +393,12 @@ the `readiness` field and its reported values (never a value round-trip, only st
 confirm the deploy workflow itself reported success under the new gate, and report back before
 considering B1.3's production-activation verification fully closed.
 
-## 7. HeyGen live read — reaffirmed, still outstanding, still separate
+## 7. HeyGen live read — DISCHARGED (2026-09-13), historical framing below
+
+**This section is historical** — preserved as the state at the time this follow-up was written
+(before `#76`'s scoping fix and the Founder's production validation). **See the "HeyGen v3
+unpaid-read gate" section above for the current, discharged status** — do not read this section
+as describing today's state.
 
 Not touched by this directive and not authorized here. Before any paid A-Roll render, the
 outstanding requirement stands unchanged: one authenticated, unpaid HeyGen v3 read via the
