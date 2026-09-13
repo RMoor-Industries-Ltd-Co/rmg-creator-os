@@ -1,9 +1,106 @@
 # B1.3 — Operational Activation & Deployment Health Guard
 
-Scope: configuration preflight, a secret-free startup configuration report, a three-tier
-`/health` model (process / dependency / capability readiness), a real post-deploy health gate,
-and the outstanding operator actions to bring B1.2's governance primitives fully live in
-production. **This directive did not begin A-Roll candidate/canonical implementation or B2.**
+**Status: COMPLETE** (closed 2026-09-12). Scope: configuration preflight, a secret-free startup
+configuration report, a three-tier `/health` model (process / dependency / capability
+readiness), a real post-deploy health gate, and the operator actions needed to bring B1.2's
+governance primitives fully live in production. **A-Roll candidate/canonical implementation and
+B2 were not started at any point during B1.3.**
+
+## Closing summary
+
+All of the following are true in production as of the `#73` deploy
+(`38aaf1f73bb39a6a47d8eef371627dd9348f029e`):
+
+| Item | Status |
+|---|---|
+| Configuration preflight (`config.ts` classification table) | Implemented |
+| Secret-free startup configuration report (`configReport.ts`) | Implemented |
+| Process / dependency / capability-readiness `/health` split | Implemented |
+| Deployment stabilization gate (`deploy.sh`) | Implemented, **proven in production** (caught a real deploy on `c125c281` reporting a defect live, and passed cleanly on `38aaf1f`) |
+| `STEP_UP_COOKIE_SECRET` | Live (`readiness.step_up: enabled`) |
+| `FOUNDER_PRINCIPALS` | Live (`readiness.founder_approval: enabled`) |
+| Google step-up OAuth redirect URI | Configured (`https://rmg-creator-os.rmasters.group/stepup-callback.html`, matching `StepUp.tsx`'s constructed `redirect_uri` exactly) |
+| `#65`–`#71` boot-crash incident | Documented — `docs/atelier/audits/incident-2026-09-11-stepup-cookie-secret.md` |
+| `#73` readiness-reporting defect | Documented and fixed — `docs/atelier/audits/incident-2026-09-11-founder-principal-count-object-keys.md`. **This was a reporting bug (`Object.keys()` on a `Map`), never a Founder-authorization failure or a Doppler/parser problem** — the distinction matters and is preserved here rather than conflated. |
+
+## Interactive Founder step-up: infrastructure vs. end-to-end validation
+
+**Infrastructure status: configured and production-ready.** Every piece exists and is wired
+correctly:
+
+- `StepUpPrompt` (`apps/dashboard/src/StepUp.tsx`) is mounted globally in `App.tsx` (its footer).
+- `apps/dashboard/src/api.ts`'s `req()` checks every response for `code: 'step_up_required'` and
+  calls `requestStepUp()` when it sees one.
+- `STEP_UP_REQUIRED_CODE` (`apps/gateway/src/stepup.ts:22`) is the discriminator the gateway
+  would use to signal this.
+- The OAuth redirect URI the popup constructs matches what's now configured in the Google
+  console.
+
+**Interactive end-to-end validation status: deferred, not failed, not blocked.** Verified by
+grepping the entire gateway source: **no deployed route currently returns
+`STEP_UP_REQUIRED_CODE`.** Founder authorization (`resolveFounderPrincipal()` / `isFounder()`)
+is likewise parsed and counted (for the readiness report) but never consulted by any live route
+handler. There is therefore no UI action today that can reach the `step_up_required` branch —
+not because anything is broken, but because B1.2 §13 step 6 (the founder-gated write path that
+would consume this) has not been implemented yet. This is a scope boundary, not a defect: never
+worked around here with a temporary trigger, test endpoint, or fabricated approval.
+
+**Future acceptance condition — binding on whichever PR implements the first Founder-gated
+write path.** That PR's acceptance tests (live or integration) must prove the full chain:
+
+1. An ordinary authenticated human session exists.
+2. That session's email resolves to a mapped Founder principal (`resolveFounderPrincipal`).
+3. The sensitive write requires a fresh step-up credential.
+4. Absent one, the gateway returns `step_up_required`.
+5. The dashboard's `req()` catches this and invokes `StepUpPrompt`.
+6. Google's OAuth flow returns through `/stepup-callback.html`.
+7. A fresh step-up credential is issued and accepted (`POST /auth/google/step-up`).
+8. The original write is retried and succeeds.
+9. The recorded approval evidence names the **mapped** Founder principal id (e.g.
+   `rahm@business`), never the raw authenticating email.
+10. Authenticating alone — steps 1-7 with no write attempted — creates no approval evidence and
+    advances no workflow state.
+
+## HeyGen v3 unpaid-read gate
+
+**Updated after the production live-read attempt and its correction (`#76`,
+`docs/atelier/heygen-v3-migration.md`'s "Studio catalog scoping" section) — this section
+originally described the pre-`#76` Studio behavior and is corrected here rather than left
+standing.** The Founder's first attempt at this validation surfaced two real defects: an
+unscoped catalog request that exceeded the pagination safety bound, and a combined `Promise.all`
+load that meant one failing surface hid the state of the other two (finding raised on this PR by
+an automated review, and independently already the subject of `#76`). Both are fixed on `main`
+as of `#76` (`88392160...`); the description below reflects the corrected, current behavior.
+
+A safe, existing, read-only Studio action satisfies this gate without any further code change:
+
+- **Navigation:** dashboard top nav → **Studio** tab (`/studio`). No further click needed.
+- **Mechanism:** `Studio.tsx`'s mount effect calls `loadStudioData()` (`studioLoad.ts`), which
+  requests `api.avatars()`, `api.voices()`, and `api.listVideos()` **independently**
+  (`Promise.allSettled`, not `Promise.all`) — a failure in one no longer prevents the other two
+  from being observed. `api.avatars()`/`api.voices()` hit `GET /heygen/avatars` /
+  `GET /heygen/voices` (`server.ts`) → `heygenScope.ts`'s `listStudioAvatars()`/
+  `listStudioVoices()`, which always request HeyGen's **private** (account-owned) catalog →
+  `listAvatars({ ownership: 'private' })` / `listVoices({ type: 'private' })`
+  (`packages/integrations/src/heygen.ts`) → HeyGen **v3** `GET /v3/avatars/looks` and
+  `GET /v3/voices`, both scoped and paginated via `next_token` until exhausted. Purely read-only:
+  no video is created, no generation submitted, no provider state mutated.
+- **Observable evidence — each surface independent, per the corrected `Studio.tsx`:**
+  - **Avatars:** on success, the avatar picker populates. On failure, an avatar-specific
+    `"Couldn't load avatars: <error>"` line renders next to the avatar picker.
+  - **Voices:** on success, the voice picker populates. On failure, a voice-specific
+    `"Couldn't load voices: <error>"` line renders next to the voice picker.
+  - **Video history:** independent of both — a database-layer failure on `GET /heygen/videos`
+    surfaces as `"Couldn't load video history: <error>"` and must not be read as evidence about
+    either HeyGen catalog read (this was the second automated-review finding on this PR: the
+    prior combined banner could not distinguish an unrelated database error from a HeyGen
+    read-gate failure — no longer possible now that each surface has its own error state).
+- **Status:** the safe UI trigger exists; this session cannot itself drive a browser as the
+  Founder (no interactive session/credentials), so the live read itself is pending the Founder
+  opening the Studio tab. **Gate: STILL OUTSTANDING** until that navigation happens and both the
+  avatar and voice reads are independently confirmed clean (their own picker populates, no
+  avatar-specific or voice-specific error line) — video-history's outcome does not bear on this
+  gate either way.
 
 ## 1–3. Configuration classification, startup report, health model
 
@@ -60,6 +157,17 @@ and states that an automated rollback is a separate architectural decision, per 
 explicit instruction not to add one here.
 
 ## 5. B1.2 production activation — corrected status (updated after founder follow-up)
+
+**Historical: preserved as the pre-`#72`-merge investigation record, not the current state.**
+Everything below §5 through §6a describes what was true and what remained open *before* `#72`
+merged and deployed. All of it has since resolved — `#72` and `#73` both merged and deployed,
+the GCP redirect URI was added, and production has run with `readiness.founder_approval:
+"enabled"` since — see the **Closing summary** table at the top of this document for the
+authoritative current state. This section is kept rather than deleted or rewritten in place
+because it is the actual record of how the `FOUNDER_PRINCIPALS` parsing defect was found,
+diagnosed, and corrected (§5's critical-finding subsection below); an operator reading past this
+banner should treat every "outstanding"/"not yet done"/"one remaining precondition" statement
+below as describing that earlier moment, not today.
 
 **Both `STEP_UP_COOKIE_SECRET` and `FOUNDER_PRINCIPALS` have been added to Doppler
 (`master-atelier`, `prd`) by the founder.** This section previously said both "still need to be
