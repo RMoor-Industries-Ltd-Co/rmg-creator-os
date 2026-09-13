@@ -63,22 +63,44 @@ write path.** That PR's acceptance tests (live or integration) must prove the fu
 
 ## HeyGen v3 unpaid-read gate
 
-A safe, existing, read-only Studio action satisfies this gate without any code change:
+**Updated after the production live-read attempt and its correction (`#76`,
+`docs/atelier/heygen-v3-migration.md`'s "Studio catalog scoping" section) — this section
+originally described the pre-`#76` Studio behavior and is corrected here rather than left
+standing.** The Founder's first attempt at this validation surfaced two real defects: an
+unscoped catalog request that exceeded the pagination safety bound, and a combined `Promise.all`
+load that meant one failing surface hid the state of the other two (finding raised on this PR by
+an automated review, and independently already the subject of `#76`). Both are fixed on `main`
+as of `#76` (`88392160...`); the description below reflects the corrected, current behavior.
+
+A safe, existing, read-only Studio action satisfies this gate without any further code change:
 
 - **Navigation:** dashboard top nav → **Studio** tab (`/studio`). No further click needed.
-- **Mechanism:** `Studio.tsx`'s mount effect (`Studio.tsx:26`) calls `api.avatars()` and
-  `api.voices()` automatically, which hit `GET /heygen/avatars` / `GET /heygen/voices`
-  (`server.ts:435-444`) → `listAvatars()` / `listVoices()` (`packages/integrations/src/heygen.ts`)
-  → HeyGen **v3** `GET /v3/avatars/looks` and `GET /v3/voices` respectively, both paginated via
-  `next_token` until exhausted. Purely read-only: no video is created, no generation submitted,
-  no provider state mutated.
-- **Observable evidence:** on success, the avatar/voice pickers populate with real data. On
-  failure, `Studio.tsx:93` renders `"Couldn't load HeyGen: <error>"` with the underlying error
-  message — nothing is silently swallowed.
+- **Mechanism:** `Studio.tsx`'s mount effect calls `loadStudioData()` (`studioLoad.ts`), which
+  requests `api.avatars()`, `api.voices()`, and `api.listVideos()` **independently**
+  (`Promise.allSettled`, not `Promise.all`) — a failure in one no longer prevents the other two
+  from being observed. `api.avatars()`/`api.voices()` hit `GET /heygen/avatars` /
+  `GET /heygen/voices` (`server.ts`) → `heygenScope.ts`'s `listStudioAvatars()`/
+  `listStudioVoices()`, which always request HeyGen's **private** (account-owned) catalog →
+  `listAvatars({ ownership: 'private' })` / `listVoices({ type: 'private' })`
+  (`packages/integrations/src/heygen.ts`) → HeyGen **v3** `GET /v3/avatars/looks` and
+  `GET /v3/voices`, both scoped and paginated via `next_token` until exhausted. Purely read-only:
+  no video is created, no generation submitted, no provider state mutated.
+- **Observable evidence — each surface independent, per the corrected `Studio.tsx`:**
+  - **Avatars:** on success, the avatar picker populates. On failure, an avatar-specific
+    `"Couldn't load avatars: <error>"` line renders next to the avatar picker.
+  - **Voices:** on success, the voice picker populates. On failure, a voice-specific
+    `"Couldn't load voices: <error>"` line renders next to the voice picker.
+  - **Video history:** independent of both — a database-layer failure on `GET /heygen/videos`
+    surfaces as `"Couldn't load video history: <error>"` and must not be read as evidence about
+    either HeyGen catalog read (this was the second automated-review finding on this PR: the
+    prior combined banner could not distinguish an unrelated database error from a HeyGen
+    read-gate failure — no longer possible now that each surface has its own error state).
 - **Status:** the safe UI trigger exists; this session cannot itself drive a browser as the
   Founder (no interactive session/credentials), so the live read itself is pending the Founder
-  opening the Studio tab once. **Gate: STILL OUTSTANDING** until that navigation happens and is
-  confirmed clean (no `loadError` banner, non-empty avatar/voice lists).
+  opening the Studio tab. **Gate: STILL OUTSTANDING** until that navigation happens and both the
+  avatar and voice reads are independently confirmed clean (their own picker populates, no
+  avatar-specific or voice-specific error line) — video-history's outcome does not bear on this
+  gate either way.
 
 ## 1–3. Configuration classification, startup report, health model
 
@@ -135,6 +157,17 @@ and states that an automated rollback is a separate architectural decision, per 
 explicit instruction not to add one here.
 
 ## 5. B1.2 production activation — corrected status (updated after founder follow-up)
+
+**Historical: preserved as the pre-`#72`-merge investigation record, not the current state.**
+Everything below §5 through §6a describes what was true and what remained open *before* `#72`
+merged and deployed. All of it has since resolved — `#72` and `#73` both merged and deployed,
+the GCP redirect URI was added, and production has run with `readiness.founder_approval:
+"enabled"` since — see the **Closing summary** table at the top of this document for the
+authoritative current state. This section is kept rather than deleted or rewritten in place
+because it is the actual record of how the `FOUNDER_PRINCIPALS` parsing defect was found,
+diagnosed, and corrected (§5's critical-finding subsection below); an operator reading past this
+banner should treat every "outstanding"/"not yet done"/"one remaining precondition" statement
+below as describing that earlier moment, not today.
 
 **Both `STEP_UP_COOKIE_SECRET` and `FOUNDER_PRINCIPALS` have been added to Doppler
 (`master-atelier`, `prd`) by the founder.** This section previously said both "still need to be
