@@ -45,9 +45,14 @@ package ready for publishing.
 - Timeline assembly + edit; export request.
 
 ## Out of scope (for now)
+- **Approval authority of any kind.** Composer's output is a **final candidate**, never
+  a self-approved final — it does not pass the Human Final-Cut Gate on its own behalf.
+  The canonical control flow (contract 21) is `... → Composer → Final Candidate → Human
+  Approval → Publish`; Composer sits strictly before that gate, not after it.
 - Heavy rendering (runs on the **render node** via `worker-render`).
 - Scriptwriting (future: ALLEN) — for now scripts are provided.
-- Scheduling/publishing (Social Manager).
+- Scheduling/publishing (Social Manager) — which itself only acts after the Human
+  Final-Cut Gate has passed, not on Composer's output directly.
 - Pre-production creative direction, shot/scene planning, and the Human
   Storyboard Gate — that is Story Director's role (contract 22), upstream of
   this service.

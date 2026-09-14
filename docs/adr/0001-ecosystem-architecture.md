@@ -4,6 +4,13 @@
 - **Date:** 2026-05-31
 - **Deciders:** Rahm Moore
 
+> **Naming note (2026-09-13):** the "Story Director" service named below as part of
+> this decision's suite composition was later renamed **Composer**
+> (`docs/contracts/02-composer.md`), and "Story Director" was reserved for a distinct
+> pre-production role (`docs/contracts/22-story-director.md`) — see
+> `docs/contracts/21-production-recipe-architecture.md`, founder decision D1. This
+> record is left as originally decided rather than edited in place.
+
 ## Context
 
 Story Director began as a single video post-production app. The vision has grown into
