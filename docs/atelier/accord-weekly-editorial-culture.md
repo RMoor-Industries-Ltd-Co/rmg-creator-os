@@ -15,8 +15,13 @@ This is not a generic blog-writing feature. The Accord is a governed editorial c
 
 Two founder-reviewed reference articles define the initial acceptance standard:
 
-- **Elevate Your Private Space — HVN version**: practical/application Accord mode.
-- **The Intentional Private Space — SEO version**: foundational/doctrinal Accord mode, with SEO handled outside visible prose.
+- **Elevate Your Private Space**: practical/application Accord mode.
+- **The Intentional Private Space**: foundational/doctrinal Accord mode, with SEO handled outside visible prose.
+
+Neither is an "SEO version" of the other — "SEO version" is not Accord terminology. There is
+one Accord voice, expressed in these two modes; conventional search-language optimization
+belongs in metadata, structured data, taxonomy, internal links, alt text, and surrounding
+architecture, never in visible Accord prose.
 
 Master Atelier must recognize these as two modes of one culture, not two separate voices.
 
