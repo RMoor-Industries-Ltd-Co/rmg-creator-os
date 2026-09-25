@@ -73,7 +73,7 @@ A render should feel photographed before it feels generated.
 
 ## Staging QA
 
-Before adding products, mark:
+Before adding Impressions, mark:
 - principal / anchoring Impression zone
 - two required supporting Impression zones where room/function permits
 - one optional future Impression zone
@@ -82,7 +82,7 @@ Before adding products, mark:
 
 Prime commerce surfaces must not be permanently cluttered by non-clickable décor.
 
-## Product integration
+## Impression integration
 
 Principal and supporting Impressions remain independent alpha assets for showroom-commerce
 assets. A practical pairing is mandatory: each Impression must occupy a location where a
@@ -95,7 +95,7 @@ support it without turning the room into a catalog grid.
 
 No candidate is promoted from staging to approved until it passes:
 - Havenry Room Visual Doctrine
-- source/product fidelity
+- source/Impression fidelity
 - camera realism
 - architectural realism
 - layer completeness
