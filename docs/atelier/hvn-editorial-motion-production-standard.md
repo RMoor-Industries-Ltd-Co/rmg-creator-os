@@ -14,12 +14,12 @@ They are not interactive showroom surfaces.
 ## Motion-promo rule
 
 Motion promos may feature principal and supporting Impressions, but they do not support
-clickable products, hover outlines, or hotspot geometry. Their commercial contract is a
+clickable Impressions, hover outlines, or hotspot geometry. Their commercial contract is a
 clear CTA, destination, caption/package metadata, and funnel routing.
 
 ## Production lanes
 
-- `hvn-promotion-motion`: cinematic product/world display with CTA.
+- `hvn-promotion-motion`: cinematic Impression/world display with CTA.
 - `hvn-social-cutdown`: vertical, short-form, high-readability derivatives.
 - `character-led-promo`: HVN Character model introduces or inhabits the scene.
 - `hvn-accord-editorial`: visual culture, ritual, place, and philosophy.
@@ -74,7 +74,7 @@ status
 2. Select the output lane and camera grammar.
 3. Generate still scene candidates when needed as anchors.
 4. Generate motion variants from approved anchors or direct motion prompts.
-5. Validate HVN fit, lane fit, camera purpose, realism, product display, Character use,
+5. Validate HVN fit, lane fit, camera purpose, realism, Impression display, Character use,
    CTA readiness, and crop safety.
 6. Catalogue provider/model/seed/prompt/source/Drive metadata.
 7. Route approved candidates to HVN Accord, HVN Promotions, HVN Social Media, Character
