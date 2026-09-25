@@ -16,7 +16,7 @@ Appointment is now treated as the principal or anchoring Impression in a room.
 ## Required production package
 
 Each room candidate must deliver:
-1. clean product-free room background
+1. clean Impression-free room background
 2. isolated principal Impression PNG with transparency
 3. isolated PNG for every supporting Impression
 4. transparent combined foreground Impression layer
@@ -37,7 +37,7 @@ sterile showroom lighting, generic penthouse staging, or impossible architecture
 Every render must declare the lane it is made for before review:
 - `havenry-showroom-commerce`: layered stills, hover/hotspot capable.
 - `hvn-accord-editorial`: cultural atmosphere and HVN worldview.
-- `hvn-promotion-motion`: cinematic display with CTA; no clickable-object contract.
+- `hvn-promotion-motion`: cinematic Impression display with CTA; no clickable-object contract.
 - `hvn-social-cutdown`: vertical/social-first variations.
 - `character-led-promo`: HVN Character model presence, narration, or campaign role.
 - `detail-study`: material, ritual, flame, incense, reed, vessel, or surface detail.
@@ -115,7 +115,7 @@ validated and routed to one jurisdiction:
 - archive-only reference
 
 Showroom-commerce candidates require clean backgrounds, isolated Impression layers, and
-hotspot/hover readiness. Motion promos are editorial culture assets with product display
+hotspot/hover readiness. Motion promos are editorial culture assets with Impression display
 and CTA metadata; they do not require clickable layers.
 
 See also
