@@ -19,8 +19,10 @@ export const AllenDraftSchema = z
     title: z.string().optional().default(''),
     script: z.string(), // required: a draft with no script is malformed
     model: z.string().optional().default(''),
-    doc_url: z.string().optional(),
-    doc_id: z.string().optional()
+    // ALLEN returns null when a Drive draft was not created. It is optional
+    // metadata, not a reason to discard an otherwise usable script.
+    doc_url: z.string().nullable().optional().transform((value) => value ?? undefined),
+    doc_id: z.string().nullable().optional().transform((value) => value ?? undefined)
   })
   .passthrough();
 
