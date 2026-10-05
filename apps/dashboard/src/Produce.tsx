@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import { BRANDS } from '@rmg-creator-os/types';
 import { productions, type TopicSuggestion, type TrendItem } from './api';
-import { ProductionList } from './ProductionList';
 import { navigate } from './router';
 
 const BRAND_OPTIONS = BRANDS.filter((b) => b.contentFolder).map((b) => ({ value: b.key, label: b.code }));
@@ -78,8 +77,8 @@ export function Produce() {
   return (
     <div className="produce">
       <section className="panel">
-        <h2>New production</h2>
-        <p className="muted">Describe what you want — it's written in the brand voice and a draft is saved to Drive.</p>
+        <h2>Start a script</h2>
+        <p className="muted">Create a working draft. You will review, hear, edit, and accept it before voice work begins.</p>
 
         <div className="intake-meta">
           <label>
@@ -166,7 +165,7 @@ export function Produce() {
             onChange={onFile}
           />
           <button className="btn" onClick={submit} disabled={submitting}>
-            {submitting ? 'Writing your script…' : 'Submit'}
+            {submitting ? 'Writing your script…' : 'Create draft'}
           </button>
         </div>
         <p className="muted hint">
@@ -176,8 +175,6 @@ export function Produce() {
         {notice && <p className="notice">{notice}</p>}
         {error && <p className="err">{error}</p>}
       </section>
-
-      <ProductionList />
     </div>
   );
 }

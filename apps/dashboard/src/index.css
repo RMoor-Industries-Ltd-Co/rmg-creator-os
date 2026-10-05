@@ -85,6 +85,7 @@ footer a { color: var(--accent); text-decoration: none; }
   border-radius: 999px; padding: 6px 16px; font-size: 14px; cursor: pointer;
 }
 .tabs button.active { color: var(--text); border-color: var(--accent); background: #11161c; }
+.tabs button:disabled, .stepper li button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* form */
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -147,6 +148,18 @@ footer a { color: var(--accent); text-decoration: none; }
   width: 100%; box-sizing: border-box; margin-top: 10px; background: #0a0e12; color: var(--text);
   border: 1px solid var(--border); border-radius: 10px; padding: 14px; font: inherit; line-height: 1.55;
 }
+.script-accept { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+.script-accept .btn { margin-top: 0; }
+
+/* Status is the operational home, not a product catalogue. */
+.integration-grid { display: grid; gap: 8px; }
+.integration-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.integration-row:last-child { border-bottom: 0; }
+.integration-row strong, .integration-row .muted { display: block; }
+.integration-row .muted { font-size: 12px; }
 
 /* wizard stepper */
 .stepper { list-style: none; display: flex; gap: 8px; padding: 0; margin: 20px 0 4px; flex-wrap: wrap; }

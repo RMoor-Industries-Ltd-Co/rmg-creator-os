@@ -16,7 +16,7 @@ import { Post } from './Post';
 // single "Generate" page; the backend still tracks them under one coarse
 // `generate` stage (see ProductionList.resumeStep).
 export const STEPS = [
-  { key: 'script', label: 'Script' },
+  { key: 'script', label: 'Step 1 - Script' },
   { key: 'voice', label: 'Voice' },
   { key: 'assets', label: 'Assets' },
   { key: 'scenes', label: 'Scenes' },
@@ -32,6 +32,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [speaking, setSpeaking] = useState(false);
+  const [heard, setHeard] = useState(false);
+  const [accepting, setAccepting] = useState(false);
   const [version, setVersion] = useState(0);
   const [scriptDraft, setScriptDraft] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -65,7 +67,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
 
   const idx = Math.max(0, STEPS.findIndex((s) => s.key === step));
   const go = (i: number) => {
-    if (i >= 0 && i < STEPS.length) navigate(`/produce/${id}/${STEPS[i].key}`);
+    const allowed = i === 0 || (i === 1 && p?.scriptStatus === 'accepted') || (i > 1 && p?.emotionLocked);
+    if (i >= 0 && i < STEPS.length && allowed) navigate(`/produce/${id}/${STEPS[i].key}`);
   };
 
   async function saveScript() {
@@ -88,12 +91,33 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
     setSpeaking(true);
     setError(null);
     try {
-      const { url } = await productions.speak(p.id);
+      const current = scriptDraft === null ? p : await productions.saveScript(p.id, scriptDraft);
+      if (current !== p) {
+        setP(current);
+        setScriptDraft(null);
+      }
+      const { url } = await productions.speak(current.id);
       setAudioUrl(url);
     } catch (e: unknown) {
       setError(String(e));
     } finally {
       setSpeaking(false);
+    }
+  }
+
+  async function acceptScript() {
+    if (!p) return;
+    setAccepting(true);
+    setError(null);
+    try {
+      const current = scriptDraft === null ? p : await productions.saveScript(p.id, scriptDraft);
+      const updated = await productions.acceptScript(current.id);
+      setP(updated);
+      navigate(`/produce/${updated.id}/voice`);
+    } catch (e: unknown) {
+      setError(String(e));
+    } finally {
+      setAccepting(false);
     }
   }
 
@@ -205,7 +229,7 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
       <ol className="stepper">
         {STEPS.map((s, i) => (
           <li key={s.key} className={i === idx ? 'active' : i < idx ? 'done' : ''}>
-            <button onClick={() => go(i)}>
+            <button onClick={() => go(i)} disabled={i > 0 && (i === 1 ? p?.scriptStatus !== 'accepted' : !p?.emotionLocked)}>
               <span className="step-num">{i + 1}</span> {s.label}
             </button>
           </li>
@@ -248,7 +272,8 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                     className="script-view"
                     rows={14}
                     value={scriptDraft ?? p.scriptText ?? ''}
-                    onChange={(e) => setScriptDraft(e.target.value)}
+                    readOnly={p.scriptStatus === 'accepted'}
+                    onChange={(e) => { setScriptDraft(e.target.value); setHeard(false); setAudioUrl(null); }}
                   />
                   {scriptDraft !== null && (
                     <div className="intake-actions">
@@ -281,25 +306,35 @@ export function ProductionWizard({ id, step }: { id: string; step: string }) {
                   </div>
                   {audioUrl && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
-                      <audio controls src={audioUrl} style={{ flex: 1 }} />
+                      <audio controls src={audioUrl} onPlay={() => setHeard(true)} style={{ flex: 1 }} />
                       <a className="btn ghost" href={audioUrl} download={`${p.id.slice(0, 8)}_plain.mp3`}>
                         ⬇ Download
                       </a>
                     </div>
                   )}
+                  {p.scriptStatus === 'accepted' ? (
+                    <p className="notice">Script accepted. Voice preparation is now available in Step 2.</p>
+                  ) : (
+                    <div className="script-accept">
+                      <p className="muted">Listen to the current draft, then accept this wording before voice preparation.</p>
+                      <button className="btn" onClick={() => void acceptScript()} disabled={accepting || !heard}>
+                        {accepting ? 'Accepting…' : 'Accept script'}
+                      </button>
+                    </div>
+                  )}
                   <div className="intake-actions" style={{ marginTop: 16 }}>
-                    <button className="btn ghost" onClick={() => void enhanceVersion('v2')} disabled={Boolean(enhancing) || speaking}>
+                    <button className="btn ghost" onClick={() => void enhanceVersion('v2')} disabled={Boolean(enhancing) || speaking || p.scriptStatus !== 'accepted'}>
                       {enhancing === 'v2' ? 'Enhancing…' : '✨ Enhance v2'}
                     </button>
-                    <button className="btn ghost" onClick={() => void enhanceVersion('v3')} disabled={Boolean(enhancing) || speaking}>
+                    <button className="btn ghost" onClick={() => void enhanceVersion('v3')} disabled={Boolean(enhancing) || speaking || p.scriptStatus !== 'accepted'}>
                       {enhancing === 'v3' ? 'Enhancing…' : '✨ Enhance v3'}
                     </button>
-                    <button className="btn" onClick={() => void enhanceVersion('both')} disabled={Boolean(enhancing) || speaking}>
+                    <button className="btn" onClick={() => void enhanceVersion('both')} disabled={Boolean(enhancing) || speaking || p.scriptStatus !== 'accepted'}>
                       {enhancing === 'both' ? 'Enhancing…' : '✨ Enhance v2/v3'}
                     </button>
                   </div>
                   <p className="muted" style={{ marginTop: 6 }}>
-                    Enhance processes the script above once it's ready — dictate or type first, then enhance.
+                    Voice enhancement unlocks only after the script is accepted.
                   </p>
                 </>
               )}

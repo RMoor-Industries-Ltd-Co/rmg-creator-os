@@ -248,6 +248,7 @@ export const productions = {
   list: () => req<Production[]>('/productions'),
   saveScript: (id: string, scriptText: string) =>
     req<Production>(`/productions/${id}/script`, { method: 'PATCH', body: JSON.stringify({ scriptText }) }),
+  acceptScript: (id: string) => req<Production>(`/productions/${id}/script/accept`, { method: 'POST' }),
   topics: (brand: string, count = 6, useTrends = true) =>
     req<{ topics: TopicSuggestion[]; trends: TrendItem[] }>(
       `/brands/${brand}/topics?count=${count}&trends=${useTrends ? 1 : 0}`
