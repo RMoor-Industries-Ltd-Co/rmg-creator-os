@@ -24,7 +24,7 @@ function resumeStep(p: Production): string {
   return 'script';
 }
 
-/** Your saved productions — return to anything you've worked on. */
+/** The operational inbox: work that still needs a decision or next action. */
 export function ProductionList() {
   const [rows, setRows] = useState<Production[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -36,23 +36,25 @@ export function ProductionList() {
       .catch((e: unknown) => setError(String(e)));
   }, []);
 
+  const incomplete = rows?.filter((p) => !['published', 'archived', 'complete'].includes(p.status)) ?? [];
+
   return (
     <section className="panel">
       <div className="video-head">
-        <strong>Your productions</strong>
-        {rows && <span className="badge">{rows.length}</span>}
+        <strong>Master Atelier inbox</strong>
+        {rows && <span className="badge">{incomplete.length}</span>}
       </div>
-      <p className="muted">Pick up any script where you left off.</p>
+      <p className="muted">Every unfinished production stays here until it is completed or archived.</p>
 
       {error && <p className="err">{error}</p>}
       {!rows && !error && <p className="muted">Loading…</p>}
-      {rows && rows.length === 0 && (
-        <p className="muted">Nothing yet — create one above and it'll show up here.</p>
+      {rows && incomplete.length === 0 && (
+        <p className="muted">Nothing needs attention right now.</p>
       )}
 
-      {rows && rows.length > 0 && (
+      {rows && incomplete.length > 0 && (
         <ul className="prod-list">
-          {rows.map((p) => (
+          {incomplete.map((p) => (
             <li key={p.id}>
               <button
                 type="button"
