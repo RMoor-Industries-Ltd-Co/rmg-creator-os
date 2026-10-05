@@ -24,6 +24,12 @@ describe('AllenDraftSchema', () => {
     expect(out).toMatchObject({ script: 'just a script', title: '', model: '' });
   });
 
+  it('normalizes null Drive metadata to an absent value', () => {
+    const out = AllenDraftSchema.parse({ script: 'just a script', doc_url: null, doc_id: null });
+    expect(out.doc_url).toBeUndefined();
+    expect(out.doc_id).toBeUndefined();
+  });
+
   it('keeps unknown/extra keys (passthrough — new ALLEN fields never break)', () => {
     const out = AllenDraftSchema.parse({ script: 's', experimental_field: 42 }) as Record<string, unknown>;
     expect(out.experimental_field).toBe(42);
