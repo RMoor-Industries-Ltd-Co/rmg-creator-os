@@ -357,6 +357,9 @@ app.get('/health', async (): Promise<HealthResponse> => {
   checks.heygen = heygen ? 'ok' : 'unconfigured';
   checks.higgsfield = higgs ? 'ok' : 'unconfigured';
   checks.drive = drive ? 'ok' : 'unconfigured';
+  checks.postiz = postizConfigured() ? 'ok' : 'unconfigured';
+  checks.clickup = 'unconfigured';
+  checks.captions = 'unconfigured';
   // ALLEN health proxy — inspect llm/tts/stt sub-checks, not just HTTP 200. This IS a live call,
   // but to our own sibling dependency container over the internal network, not a paid external
   // provider, and ALLEN's own /health similarly never makes a paid call on our behalf.
@@ -679,7 +682,10 @@ app.patch<{ Params: { id: string }; Body: { scriptText: string } }>(
   '/productions/:id/script',
   async (request, reply) => {
     const { scriptText } = request.body ?? {};
-    if (typeof scriptText !== 'string') return reply.code(400).send({ error: 'scriptText required' });
+    if (typeof scriptText !== 'string' || !scriptText.trim()) return reply.code(400).send({ error: 'scriptText required' });
+    const [existing] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+    if (!existing) return reply.code(404).send({ error: 'production not found' });
+    if (existing.scriptStatus === 'accepted') return reply.code(409).send({ error: 'This script is accepted. Create a new revision to change it.' });
     const [row] = await db
       .update(tables.productions)
       .set({ scriptText, scriptStatus: 'draft', updatedAt: new Date() })
@@ -689,6 +695,15 @@ app.patch<{ Params: { id: string }; Body: { scriptText: string } }>(
     return row;
   }
 );
+
+app.post<{ Params: { id: string } }>('/productions/:id/script/accept', async (request, reply) => {
+  const [row] = await db.select().from(tables.productions).where(eq(tables.productions.id, request.params.id));
+  if (!row) return reply.code(404).send({ error: 'production not found' });
+  if (!row.scriptText?.trim()) return reply.code(400).send({ error: 'no script to accept' });
+  if (row.scriptStatus === 'accepted') return row;
+  const [updated] = await db.update(tables.productions).set({ scriptStatus: 'accepted', stage: 'voice', updatedAt: new Date() }).where(eq(tables.productions.id, row.id)).returning();
+  return updated;
+});
 
 // Emotion profiles + tag rules for the Voice Direction step (proxies ALLEN).
 app.get('/emotion/profiles', async (_request, reply) => {
@@ -721,6 +736,7 @@ app.post<{
     .where(eq(tables.productions.id, request.params.id));
   if (!row) return reply.code(404).send({ error: 'production not found' });
   if (!row.scriptText) return reply.code(400).send({ error: 'no script to direct' });
+  if (row.scriptStatus !== 'accepted') return reply.code(409).send({ error: 'Accept the script before preparing voice.' });
 
   const { voiceBrand, intensity, stabilityMode, lock, version } = request.body ?? {};
   const brand = voiceBrand || row.brand;

@@ -3,6 +3,7 @@ import type { HealthResponse } from '@rmg-creator-os/types';
 import { Produce } from './Produce';
 import { MorningBrief } from './MorningBrief';
 import { ProductionWizard } from './ProductionWizard';
+import { ProductionList } from './ProductionList';
 import { QueueWidget } from './QueueWidget';
 import { navigate, usePath } from './router';
 import { Studio } from './Studio';
@@ -13,6 +14,16 @@ import { setUnauthorizedHandler } from './authClient';
 import { useLoadingBar } from './loading';
 
 const API = import.meta.env.VITE_API_BASE_URL ?? '/api';
+
+const INTEGRATIONS = [
+  { name: 'ALLIE / ALLEN', check: 'allen', note: 'Research, drafts, and voice service' },
+  { name: 'Google Drive', check: 'drive', note: 'Production files and approved assets' },
+  { name: 'ClickUp', check: 'clickup', note: 'RMG story library' },
+  { name: 'Higgsfield', check: 'higgsfield', note: 'Creative generation' },
+  { name: 'HeyGen', check: 'heygen', note: 'Presenter video' },
+  { name: 'Captions', check: 'captions', note: 'Caption preparation' },
+  { name: 'Postiz', check: 'postiz', note: 'Publishing' }
+] as const;
 
 function Dot({ ok }: { ok: boolean }) {
   return <span className={`dot ${ok ? 'ok' : 'fail'}`} aria-hidden />;
@@ -61,7 +72,7 @@ export function App() {
   const isProduce = path === '/produce';
   const isStudio = path === '/studio';
   const isAdIndex = path === '/ad-index';
-  const isOverview = !wizard && !isProduce && !isStudio && !isAdIndex;
+  const isStatus = !wizard && !isProduce && !isStudio && !isAdIndex;
 
   useEffect(() => {
     fetch(`${API}/health`)
@@ -85,11 +96,11 @@ export function App() {
       </header>
 
       <nav className="tabs">
-        <button className={isOverview ? 'active' : ''} onClick={() => navigate('/')}>
-          Overview
+        <button className={isStatus ? 'active' : ''} onClick={() => navigate('/')}>
+          Status
         </button>
         <button className={path.startsWith('/produce') ? 'active' : ''} onClick={() => navigate('/produce')}>
-          Production
+          Step 1 - Script
         </button>
         <button className={isStudio ? 'active' : ''} onClick={() => navigate('/studio')}>
           Studio
@@ -105,27 +116,24 @@ export function App() {
       {isStudio && <Studio />}
       {isAdIndex && <AdIndex />}
 
-      {isOverview && (
+      {isStatus && (
       <>
       <MorningBrief />
       <section className="panel">
-        <h2>Control plane</h2>
+        <h2>Integration status</h2>
+        <p className="muted">Connection availability never promotes unfinished work.</p>
         {error && <p className="err">Gateway unreachable: {error}</p>}
         {!error && !health && <p className="muted">Checking gateway…</p>}
         {health && (
-          <ul className="checks">
-            <li>
-              <Dot ok={health.status === 'ok'} /> gateway: <strong>{health.status}</strong>
-            </li>
-            {Object.entries(health.checks).map(([k, v]) => (
-              <li key={k}>
-                <Dot ok={v === 'ok'} /> {k}: <strong>{v}</strong>
-              </li>
-            ))}
-          </ul>
+          <div className="integration-grid">
+            {INTEGRATIONS.map((integration) => {
+              const ok = health.checks[integration.check] === 'ok';
+              return <div className="integration-row" key={integration.check}><Dot ok={ok} /><div><strong>{integration.name}</strong><span className="muted">{integration.note}</span></div><span className={`badge ${ok ? 'live' : ''}`}>{ok ? 'Available' : 'Needs attention'}</span></div>;
+            })}
+          </div>
         )}
       </section>
-
+      <ProductionList />
 </>
       )}
 
