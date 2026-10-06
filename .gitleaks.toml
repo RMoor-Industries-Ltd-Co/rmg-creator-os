@@ -1,0 +1,18 @@
+# gitleaks config — extends the built-in ruleset with a PIAAR-specific allowlist.
+# Used by the local pre-commit hook and the CI gitleaks job.
+# Docs: https://github.com/gitleaks/gitleaks
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "PIAAR allowlist — example/placeholder values that are not real secrets"
+# Files that legitimately contain variable NAMES + docs, never real values.
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)README\.md$''',
+]
+# Placeholder patterns used in docs and .env.example.
+regexes = [
+  '''(?i)(your[-_ ]?(api[-_ ]?key|token|secret)|xxx+|placeholder|example|changeme|<[^>]+>)''',
+]
