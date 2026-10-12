@@ -1,6 +1,6 @@
 # Master Atelier — Accord Weekly Editorial Culture
 
-**Founder notice — 2026-09-15**
+**Founder notice — 2026-09-15; clarified 2026-09-19**
 
 This document is a design-level founder notice describing intended execution-lane behavior
 only. It is not an implementation record: no schema migration, dispatcher/worker code, new
@@ -25,17 +25,47 @@ architecture, never in visible Accord prose.
 
 Master Atelier must recognize these as two modes of one culture, not two separate voices.
 
+The calibration set is now expanded by Founder 88's revised **How to Scent a Private
+Space** and revised **Elevate Your Private Space**. These revisions are not merely
+replacement copy: they are evidence from which reusable voice, reasoning, Lexicon, and
+restraint rules are to be derived. The governed source artifacts should be referenced
+by approved locator/digest rather than copied casually between repositories.
+
+## Authorship and Brand Voice
+
+The production system must preserve this distinction:
+
+- **The Accord Brand Voice** is the governed language, reasoning, emotional register,
+  cultural expression, and use of the HVN Lexicon.
+- **The Emissary of the Accord** is the singular authorial office/title for Accord
+  articles and the public communicator of HVN cultural direction.
+
+Where the article presentation includes "By", the canonical rendering is **"By The
+Emissary of the Accord"** — not "By an Emissary of the Accord."
+
+Master Atelier generates and audits copy *in* the Accord Brand Voice; the resulting
+article remains authored by The Emissary of the Accord.
+
 ## Required writing model
 
 1. Start from an HVN thesis, not a keyword.
 2. Select the editorial mode: foundational/doctrinal or practical/application.
-3. Preserve established HVN controlled vocabulary and meaning.
+3. Preserve established HVN controlled vocabulary and meaning using a concept-first
+   rule: **concept → canonical Lexicon term → natural introduction → consistent usage**.
+   Never optimize for a minimum branded-term count.
 4. Keep conventional SEO language primarily in metadata, structured data, internal links, taxonomy, alt text, and surrounding architecture.
 5. Keep visible copy recognizably HVN.
 6. Avoid generic AI filler, commodity lifestyle-blog voice, grievance culture, misogyny, domination rhetoric, manipulative dating tactics, and empty luxury signaling.
 7. Product presence is optional and subordinate to editorial purpose.
 8. New controlled vocabulary remains founder-gated.
 9. Final publication remains founder-gated until authority is explicitly delegated.
+10. Classify meaningful founder corrections as article-specific or reusable; reusable
+    corrections must update the approved rubric/recipe rather than only patch the draft.
+11. Regression-test approved reusable corrections on subsequent generations and surface
+    recurrence as an exception.
+12. Provide a founder-facing transparency packet before approval showing the Brand Voice
+    and Lexicon versions/digests, fixtures, thesis, Lexicon rationale, audit results,
+    classified deltas, regression results, and unresolved exceptions.
 
 ## Not the legacy `recipes`/`jobs` tables
 
@@ -69,6 +99,9 @@ The production lane must durably retain:
 - approvals
 - site handoff package
 - preview QA evidence
+- founder-facing transparency packet
+- classified founder-delta record
+- correction-regression evidence
 - post-publication record
 
 No production state should depend on reconstructing an ephemeral chat transcript.
@@ -107,13 +140,33 @@ above; or agent-auth/approval wiring for autonomous execution. In particular:
 - None of this is imminent or in progress by default: it requires the durable-artifact schema
   design above and Contract 36 approval-evidence wiring before any of it is implemented.
 
+## Founder calibration loop
+
+The intended review loop is:
+
+**Generate → automated Brand/Culture Audit → founder review → classify corrections →
+approved rule/rubric update → regression test → next generation.**
+
+The target mature review posture is **Approve / Flag Exception**, but Master Atelier
+must earn that posture. It must not report pipeline maturity simply because an article
+was generated or because a founder corrected it once.
+
+Founder 88's durable contribution is separated into cultural judgment, Lexicon naming,
+and calibration review. The system should reduce repetitive calibration review over
+time without reducing or reinterpreting the first two contributions.
+
 ## Initial acceptance test
 
-The first recipe implementation must use the two founder-reviewed articles as fixtures and demonstrate that it can:
+The first recipe implementation must use the founder-reviewed calibration set —
+**The Intentional Private Space**, Founder 88's revised **Elevate Your Private Space**,
+and Founder 88's revised **How to Scent a Private Space** — and demonstrate that it can:
 
 - classify each article's editorial mode correctly;
 - preserve one Accord culture across both;
 - generate an SEO packet without contaminating visible prose with keyword stuffing;
+- use relevant Lexicon terms naturally and with restraint;
+- produce the founder-facing transparency packet;
+- classify reusable corrections and record regression evidence;
 - produce a founder-ready handoff package rather than publishing autonomously.
 
 This acceptance test is a design-level target for the first implementation pass, not a
